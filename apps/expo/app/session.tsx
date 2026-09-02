@@ -1,12 +1,11 @@
 /**
  * Pravaah — Realtime Speaking Session
  *
- * Flow:
- *   1. Room pre-connects in background when user opens the page
- *   2. User clicks "Start Conversation 🎙️" → Mic enables + sends start signal to agent
- *   3. Agent greets INSTANTLY (<0.3s)
- *   4. Hindi speech is transcribed accurately in Hindi on UI
- *   5. Live conversation turns display in real time on the UI
+ * Audio & Latency Fixes:
+ *   1. Explicit room.startAudio() on user click to guarantee browser audio playback.
+ *   2. Microphone noise suppression & acoustic echo cancellation enabled.
+ *   3. Higher threshold (38) on audio visualizer to prevent room noise false triggers.
+ *   4. Real-time bilingual transcript sync via LiveKit data channel.
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -122,9 +121,9 @@ export default function SessionScreen() {
           const v4 = Math.max(14, (dataArray[8] / 255) * 65);
           const v5 = Math.max(12, (dataArray[10] / 255) * 55);
 
-          // Only show learner speaking when agent is NOT speaking
+          // Calibrated energy threshold (38) to reject ambient noise / hum
           const avgEnergy = (dataArray[2] + dataArray[4] + dataArray[6] + dataArray[8]) / 4;
-          if (avgEnergy > 24 && !agentSpeakingRef.current) {
+          if (avgEnergy > 38 && !agentSpeakingRef.current) {
             setLearnerSpeaking(true);
             speakingDebounce = 15;
           } else {
@@ -169,6 +168,11 @@ export default function SessionScreen() {
         const room = new Room({
           adaptiveStream: true,
           dynacast: true,
+          audioCaptureDefaults: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
         roomRef.current = room;
 
@@ -197,6 +201,7 @@ export default function SessionScreen() {
               audioElementRef.current = audioElement;
               audioElement.autoplay = true;
               document.body.appendChild(audioElement);
+              audioElement.play().catch((e) => console.debug("Audio play pending click gesture:", e));
             }
           }
         });
@@ -226,16 +231,17 @@ export default function SessionScreen() {
               setCorrectionCount((prev) => prev + 1);
             } else if (data.type === "turn" && data.text) {
               setTranscript((prev) => {
-                // Deduplicate if identical turn already logged
+                const spk = data.speaker === "learner" ? "learner" : "tutor";
+                // Avoid adjacent identical turn duplicates
                 const last = prev[prev.length - 1];
-                if (last && last.speaker === (data.speaker === "learner" ? "learner" : "tutor") && last.text === data.text) {
+                if (last && last.speaker === spk && last.text.trim().toLowerCase() === data.text.trim().toLowerCase()) {
                   return prev;
                 }
                 return [
                   ...prev,
                   {
                     id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                    speaker: data.speaker === "learner" ? "learner" : "tutor",
+                    speaker: spk,
                     text: data.text,
                     timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
                   },
@@ -247,7 +253,7 @@ export default function SessionScreen() {
           }
         });
 
-        // Connect to LiveKit Cloud in background
+        // Connect in background
         await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
       } catch (err: any) {
         console.warn("Pre-connect error:", err);
@@ -260,13 +266,13 @@ export default function SessionScreen() {
     preconnect();
   }, []);
 
-  // Start Speaking — un-mutes microphone + signals agent to greet immediately
+  // Start Speaking — un-mutes microphone, unlocks audio playback, and triggers instant greeting
   const handleStartConversation = async () => {
     try {
       setSessionStatus("starting");
       setErrorMessage(null);
 
-      // Unlock AudioContext inside user click gesture
+      // 1. Resume Web AudioContext inside user click gesture
       if (Platform.OS === "web" && typeof window !== "undefined") {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
@@ -283,10 +289,24 @@ export default function SessionScreen() {
         throw new Error("Room not initialized. Please try again.");
       }
 
-      // 1. Enable learner microphone
-      await room.localParticipant.setMicrophoneEnabled(true);
+      // 2. Unlock all remote audio elements in browser
+      try {
+        await room.startAudio();
+        if (audioElementRef.current) {
+          await audioElementRef.current.play();
+        }
+      } catch (e) {
+        console.debug("Audio unlock note:", e);
+      }
 
-      // 2. Connect audio visualizer
+      // 3. Enable learner microphone with active noise suppression & echo cancellation
+      await room.localParticipant.setMicrophoneEnabled(true, {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+
+      // 4. Connect audio visualizer
       const audioTracks = room.localParticipant.audioTrackPublications;
       audioTracks.forEach((pub) => {
         if (pub.track?.mediaStream) {
@@ -294,7 +314,7 @@ export default function SessionScreen() {
         }
       });
 
-      // 3. Send immediate start signal to agent to trigger instant greeting
+      // 5. Send start signal to agent to trigger instant greeting audio
       try {
         const startMsg = JSON.stringify({ type: "start_conversation" });
         await room.localParticipant.publishData(new TextEncoder().encode(startMsg));
@@ -304,7 +324,7 @@ export default function SessionScreen() {
 
       setSessionStatus("active");
 
-      // 4. Start session clock
+      // 6. Start session clock
       timerRef.current = setInterval(() => {
         setSessionSeconds((prev) => prev + 1);
         setLearnerSpeaking((isSpeaking) => {

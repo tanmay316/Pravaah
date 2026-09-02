@@ -1,10 +1,10 @@
 /**
- * Pravaah — Realtime Speaking Session & In-Session Coaching
+ * Pravaah — Realtime Speaking Session
  *
- * Style reference: Origin Financial (Midnight gallery of quiet wealth).
- * Connects directly to LiveKit Cloud WebRTC voice room (wss://pravaah-qj6q5gxo.livekit.cloud).
- * Requires explicit user interaction (Start Session button) to ensure clean browser microphone
- * permissions and audio context activation.
+ * Optimized for perceived speed:
+ *   1. LiveKit room pre-connects on page entry (agent init happens in background)
+ *   2. "Start Conversation" only enables mic + triggers greeting (instant)
+ *   3. Clean, minimal UI — no tech stack info, no prompt details
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -50,8 +50,12 @@ export default function SessionScreen() {
     stage?: string;
   }>();
 
-  // Session lifecycle: "ready" (pre-session) -> "connecting" -> "active" -> "ended"
-  const [sessionStatus, setSessionStatus] = useState<"ready" | "connecting" | "active" | "ended">("ready");
+  // Session lifecycle:
+  //   "preconnecting" → "ready" (room connected, waiting for user click)
+  //   → "starting" (enabling mic) → "active" → "ended"
+  const [sessionStatus, setSessionStatus] = useState<
+    "preconnecting" | "ready" | "starting" | "active" | "ended"
+  >("preconnecting");
   const [reconnecting, setReconnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
@@ -66,6 +70,7 @@ export default function SessionScreen() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [preconnectError, setPreconnectError] = useState(false);
 
   // LiveKit Room ref
   const roomRef = useRef<Room | null>(null);
@@ -77,12 +82,18 @@ export default function SessionScreen() {
   const animFrameRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
 
+  // Track whether we already pre-connected
+  const preconnectedRef = useRef(false);
+
   // Animated wave bars
   const waveAnim1 = useRef(new Animated.Value(14)).current;
   const waveAnim2 = useRef(new Animated.Value(28)).current;
   const waveAnim3 = useRef(new Animated.Value(20)).current;
   const waveAnim4 = useRef(new Animated.Value(36)).current;
   const waveAnim5 = useRef(new Animated.Value(18)).current;
+
+  // Track agent speaking state for waveform suppression
+  const agentSpeakingRef = useRef(false);
 
   // Real-time Audio Visualizer setup
   const setupAudioVisualizer = (mediaStream: MediaStream) => {
@@ -112,8 +123,9 @@ export default function SessionScreen() {
           const v4 = Math.max(14, (dataArray[8] / 255) * 65);
           const v5 = Math.max(12, (dataArray[10] / 255) * 55);
 
+          // Only show learner speaking when agent is NOT speaking
           const avgEnergy = (dataArray[2] + dataArray[4] + dataArray[6] + dataArray[8]) / 4;
-          if (avgEnergy > 24) {
+          if (avgEnergy > 24 && !agentSpeakingRef.current) {
             setLearnerSpeaking(true);
             speakingDebounce = 15;
           } else {
@@ -139,13 +151,125 @@ export default function SessionScreen() {
     }
   };
 
-  // Start Speaking Session (Triggered directly on user click)
-  const handleStartSession = async () => {
+  // =========================================================================
+  // PRE-CONNECT: Create session + connect to LiveKit room on page load
+  // This runs the agent init in the background while user reads the page
+  // =========================================================================
+  useEffect(() => {
+    if (preconnectedRef.current) return;
+    preconnectedRef.current = true;
+
+    const preconnect = async () => {
+      try {
+        // 1. Create session on backend
+        const sessionRes = await createSession(
+          params.mode || "free_conversation",
+          params.target_skill,
+          params.lesson_id
+        );
+        setSessionId(sessionRes.session_id);
+
+        // 2. Initialize LiveKit Room
+        const room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+        });
+        roomRef.current = room;
+
+        room.on(RoomEvent.Connected, () => {
+          setSessionStatus("ready");
+          setReconnecting(false);
+        });
+
+        room.on(RoomEvent.Reconnecting, () => {
+          setReconnecting(true);
+        });
+
+        room.on(RoomEvent.Reconnected, () => {
+          setReconnecting(false);
+        });
+
+        room.on(RoomEvent.Disconnected, () => {
+          setSessionStatus((prev) => (prev !== "ended" ? "ended" : prev));
+        });
+
+        // Handle incoming remote tutor audio track
+        room.on(RoomEvent.TrackSubscribed, (track: Track, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (track.kind === Track.Kind.Audio) {
+            if (Platform.OS === "web") {
+              const audioElement = track.attach();
+              audioElementRef.current = audioElement;
+              audioElement.autoplay = true;
+              document.body.appendChild(audioElement);
+            }
+          }
+        });
+
+        // Active speakers tracking — update ref for waveform suppression
+        room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+          const remoteSpeaking = speakers.some((s) => !s.isLocal);
+          agentSpeakingRef.current = remoteSpeaking;
+          setAgentSpeaking(remoteSpeaking);
+          // Force learner speaking off when agent is speaking
+          if (remoteSpeaking) {
+            setLearnerSpeaking(false);
+          }
+        });
+
+        // Handle tutor data messages (transcripts & corrections)
+        room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+          try {
+            const str = new TextDecoder().decode(payload);
+            const data = JSON.parse(str);
+            if (data.type === "correction") {
+              setActiveCorrection({
+                original: data.original,
+                corrected: data.corrected,
+                explanation: data.explanation,
+                target_skill: data.target_skill,
+              });
+              setCorrectionCount((prev) => prev + 1);
+            } else if (data.type === "repetition_success") {
+              setRepetitionCount((prev) => prev + 1);
+              setActiveCorrection(null);
+            } else if (data.type === "turn" && data.text) {
+              setTranscript((prev) => [
+                ...prev,
+                {
+                  id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  speaker: data.speaker === "agent" || data.speaker === "tutor" ? "tutor" : "learner",
+                  text: data.text,
+                  timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                },
+              ]);
+            }
+          } catch (e) {
+            console.debug("Data message parse note:", e);
+          }
+        });
+
+        // 3. Connect to LiveKit Cloud (agent starts initializing NOW)
+        await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
+
+        // Room is connected — user sees "ready" state
+      } catch (err: any) {
+        console.warn("Pre-connect error:", err);
+        setPreconnectError(true);
+        setErrorMessage(err.message || "Failed to prepare session. Please go back and try again.");
+        setSessionStatus("ready");
+      }
+    };
+
+    preconnect();
+  }, []);
+
+  // Start Speaking — only enables mic (room is already connected!)
+  const handleStartConversation = async () => {
     try {
-      setSessionStatus("connecting");
+      setSessionStatus("starting");
       setErrorMessage(null);
 
-      // 1. Resume / create Web AudioContext inside user gesture
+      // Resume/create Web AudioContext inside user gesture
       if (Platform.OS === "web" && typeof window !== "undefined") {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
@@ -157,99 +281,15 @@ export default function SessionScreen() {
         }
       }
 
-      // 2. Create session on backend
-      const sessionRes = await createSession(
-        params.mode || "free_conversation",
-        params.target_skill,
-        params.lesson_id
-      );
+      const room = roomRef.current;
+      if (!room) {
+        throw new Error("Room not initialized. Please go back and try again.");
+      }
 
-      setSessionId(sessionRes.session_id);
-
-      // 3. Initialize LiveKit Room
-      const room = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-      });
-      roomRef.current = room;
-
-      room.on(RoomEvent.Connected, () => {
-        setSessionStatus("active");
-        setReconnecting(false);
-      });
-
-      room.on(RoomEvent.Reconnecting, () => {
-        setReconnecting(true);
-      });
-
-      room.on(RoomEvent.Reconnected, () => {
-        setReconnecting(false);
-        setSessionStatus("active");
-      });
-
-      room.on(RoomEvent.Disconnected, () => {
-        if (sessionStatus !== "ended") {
-          setSessionStatus("ended");
-        }
-      });
-
-      // Handle incoming remote tutor audio track
-      room.on(RoomEvent.TrackSubscribed, (track: Track, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-        if (track.kind === Track.Kind.Audio) {
-          if (Platform.OS === "web") {
-            const audioElement = track.attach();
-            audioElementRef.current = audioElement;
-            audioElement.autoplay = true;
-            document.body.appendChild(audioElement);
-          }
-        }
-      });
-
-      // Active speakers tracking
-      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-        const remoteSpeaking = speakers.some((s) => !s.isLocal);
-        setAgentSpeaking(remoteSpeaking);
-      });
-
-      // Handle tutor data messages (transcripts & corrections)
-      room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
-        try {
-          const str = new TextDecoder().decode(payload);
-          const data = JSON.parse(str);
-          if (data.type === "correction") {
-            setActiveCorrection({
-              original: data.original,
-              corrected: data.corrected,
-              explanation: data.explanation,
-              target_skill: data.target_skill,
-            });
-            setCorrectionCount((prev) => prev + 1);
-          } else if (data.type === "repetition_success") {
-            setRepetitionCount((prev) => prev + 1);
-            setActiveCorrection(null);
-          } else if (data.type === "turn" && data.text) {
-            setTranscript((prev) => [
-              ...prev,
-              {
-                id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                speaker: data.speaker === "agent" || data.speaker === "tutor" ? "tutor" : "learner",
-                text: data.text,
-                timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-              },
-            ]);
-          }
-        } catch (e) {
-          console.debug("Data message parse note:", e);
-        }
-      });
-
-      // 4. Connect to LiveKit Cloud
-      await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
-
-      // 5. Enable learner microphone
+      // Enable learner microphone
       await room.localParticipant.setMicrophoneEnabled(true);
 
-      // 6. Connect audio visualizer
+      // Connect audio visualizer
       const audioTracks = room.localParticipant.audioTrackPublications;
       audioTracks.forEach((pub) => {
         if (pub.track?.mediaStream) {
@@ -257,7 +297,9 @@ export default function SessionScreen() {
         }
       });
 
-      // 7. Start session clock
+      setSessionStatus("active");
+
+      // Start session clock
       timerRef.current = setInterval(() => {
         setSessionSeconds((prev) => prev + 1);
         setLearnerSpeaking((isSpeaking) => {
@@ -268,8 +310,8 @@ export default function SessionScreen() {
         });
       }, 1000);
     } catch (err: any) {
-      console.warn("LiveKit connection error:", err);
-      setErrorMessage(err.message || "Failed to establish voice connection. Please try again.");
+      console.warn("Start conversation error:", err);
+      setErrorMessage(err.message || "Failed to enable microphone. Please try again.");
       setSessionStatus("ready");
     }
   };
@@ -344,19 +386,17 @@ export default function SessionScreen() {
   };
 
   const getSpeakingStateLabel = () => {
-    if (reconnecting) return "RECONNECTING VOICE...";
-    if (sessionStatus === "connecting") return "CONNECTING TO COACH PRAVAAH...";
-    if (sessionStatus === "ready") return "READY TO START";
+    if (reconnecting) return "RECONNECTING...";
+    if (sessionStatus === "starting") return "STARTING...";
     if (sessionStatus === "ended") return "SESSION ENDED";
-    if (agentSpeaking) return "AI COACH IS SPEAKING";
-    if (learnerSpeaking) return "LEARNER SPEAKING • AUDIO STREAMING";
-    if (isMuted) return "MICROPHONE MUTED";
-    return "LISTENING • SPEAK FREELY IN ENGLISH";
+    if (agentSpeaking) return "COACH IS SPEAKING";
+    if (learnerSpeaking) return "YOU ARE SPEAKING";
+    if (isMuted) return "MUTED";
+    return "LISTENING...";
   };
 
   const getSpeakingStateColor = () => {
-    if (reconnecting || sessionStatus === "connecting") return theme.colors.amberWarning;
-    if (sessionStatus === "ready") return theme.colors.irisGleam;
+    if (reconnecting || sessionStatus === "starting") return theme.colors.amberWarning;
     if (sessionStatus === "ended") return theme.colors.fog;
     if (agentSpeaking) return theme.colors.orchidBloom;
     if (learnerSpeaking) return theme.colors.cyanSignal;
@@ -365,23 +405,29 @@ export default function SessionScreen() {
   };
 
   // =========================================================================
-  // VIEW 1: PRE-SESSION / READY TO START SCREEN
+  // VIEW 1: PRE-SESSION SCREEN (preconnecting / ready / starting)
   // =========================================================================
-  if (sessionStatus === "ready" || sessionStatus === "connecting") {
+  if (sessionStatus === "preconnecting" || sessionStatus === "ready" || sessionStatus === "starting") {
+    const isConnecting = sessionStatus === "preconnecting";
+    const isStarting = sessionStatus === "starting";
+    const isReady = sessionStatus === "ready" && !preconnectError;
+
     return (
       <View style={styles.container}>
         {/* Top Navigation */}
         <View style={styles.topHeader}>
           <Pressable style={styles.backBtn} onPress={() => router.replace("/")}>
-            <Text style={styles.backBtnText}>← Return to Plan</Text>
+            <Text style={styles.backBtnText}>← Back</Text>
           </Pressable>
-          <View style={styles.stageBadge}>
-            <Text style={styles.stageBadgeText}>{params.stage?.replace(/_/g, " ").toUpperCase() || "GUIDED PRACTICE"}</Text>
-          </View>
+          {params.stage ? (
+            <View style={styles.stageBadge}>
+              <Text style={styles.stageBadgeText}>{params.stage.replace(/_/g, " ").toUpperCase()}</Text>
+            </View>
+          ) : null}
         </View>
 
         <ScrollView contentContainerStyle={styles.preSessionScroll} showsVerticalScrollIndicator={false}>
-          {/* Logo & Headline */}
+          {/* Hero */}
           <View style={styles.preSessionHero}>
             <View style={styles.heroLogoWrapper}>
               <Image
@@ -391,72 +437,72 @@ export default function SessionScreen() {
                 accessibilityLabel="Pravaah"
               />
             </View>
-            <View style={styles.preSessionBadge}>
-              <Text style={styles.preSessionBadgeText}>REALTIME SPOKEN ENGLISH COACH</Text>
-            </View>
+
             <Text style={styles.preSessionTitle}>
-              <Text style={styles.heroHeadlineItalic}>Ready</Text> to speak?
+              {params.activity_title || "English Conversation"}
             </Text>
             <Text style={styles.preSessionSubhead}>
-              Your AI coach will listen, actively correct mistakes with simple 1-sentence explanations, and guide your pronunciation in real time.
+              Speak naturally. Your AI coach will help you improve.
             </Text>
           </View>
 
-          {/* Activity Target Card */}
-          <View style={styles.activityObjectiveCard}>
-            <Text style={styles.cardEyebrow}>TODAY'S TARGET SKILL & OBJECTIVE</Text>
-            <Text style={styles.activityMainTitle}>
-              {params.activity_title || "Spontaneous Spoken English Drill"}
-            </Text>
-            {params.target_skill ? (
-              <Text style={styles.targetSkillText}>
-                🎯 Focus: {params.target_skill.replace(/_/g, " ").toUpperCase()}
+          {/* Target Skill Card (only if there's a specific skill) */}
+          {params.target_skill ? (
+            <View style={styles.activityObjectiveCard}>
+              <Text style={styles.cardEyebrow}>TODAY'S FOCUS</Text>
+              <Text style={styles.activityMainTitle}>
+                {params.target_skill.replace(/_/g, " ")}
               </Text>
-            ) : null}
-            <Text style={styles.activityGuideText}>
-              💡 Speak freely in full English sentences. If you make a grammar mistake, Coach Pravaah will gently explain the rule and ask you to repeat.
-            </Text>
-          </View>
+            </View>
+          ) : null}
 
-          {/* Instructions checklist */}
+          {/* Quick Tips */}
           <View style={styles.tipsCard}>
-            <Text style={styles.tipsTitle}>BEFORE YOU BEGIN</Text>
             <View style={styles.tipRow}>
-              <Text style={styles.tipBullet}>✓</Text>
-              <Text style={styles.tipText}>Use earphones or a quiet room for crystal-clear microphone audio.</Text>
+              <Text style={styles.tipBullet}>🎧</Text>
+              <Text style={styles.tipText}>Use earphones for best audio quality</Text>
             </View>
             <View style={styles.tipRow}>
-              <Text style={styles.tipBullet}>✓</Text>
-              <Text style={styles.tipText}>Speak naturally. Feel free to ask for Hindi translations if you get stuck.</Text>
-            </View>
-            <View style={styles.tipRow}>
-              <Text style={styles.tipBullet}>✓</Text>
-              <Text style={styles.tipText}>Only 1 conversation question will be asked at a time to keep it natural.</Text>
+              <Text style={styles.tipBullet}>🗣️</Text>
+              <Text style={styles.tipText}>Speak naturally — Hindi is okay, coach will help you say it in English</Text>
             </View>
           </View>
 
-          {/* Error Banner if connection failed previously */}
+          {/* Connection Status */}
+          {isConnecting ? (
+            <View style={styles.connectingCard}>
+              <ActivityIndicator size="small" color={theme.colors.irisGleam} />
+              <Text style={styles.connectingText}>Preparing your session...</Text>
+            </View>
+          ) : null}
+
+          {/* Error Banner */}
           {errorMessage ? (
             <View style={styles.errorBanner}>
               <Text style={styles.errorBannerText}>{errorMessage}</Text>
             </View>
           ) : null}
 
-          {/* Big Start Button */}
+          {/* Start Button */}
           <View style={styles.startActionContainer}>
             <Pressable
               style={({ pressed }) => [
                 styles.bigStartButton,
-                sessionStatus === "connecting" && styles.bigStartButtonConnecting,
-                pressed && styles.buttonPressed,
+                (!isReady || isStarting) && styles.bigStartButtonDisabled,
+                pressed && isReady && styles.buttonPressed,
               ]}
-              onPress={handleStartSession}
-              disabled={sessionStatus === "connecting"}
+              onPress={handleStartConversation}
+              disabled={!isReady || isStarting}
             >
-              {sessionStatus === "connecting" ? (
+              {isStarting ? (
                 <View style={styles.buttonLoadingRow}>
                   <ActivityIndicator size="small" color={theme.colors.void} />
-                  <Text style={styles.bigStartButtonText}>Connecting to LiveKit Voice...</Text>
+                  <Text style={styles.bigStartButtonText}>Starting...</Text>
+                </View>
+              ) : isConnecting ? (
+                <View style={styles.buttonLoadingRow}>
+                  <ActivityIndicator size="small" color={theme.colors.void} />
+                  <Text style={styles.bigStartButtonText}>Preparing...</Text>
                 </View>
               ) : (
                 <Text style={styles.bigStartButtonText}>Start Conversation 🎙️</Text>
@@ -464,7 +510,7 @@ export default function SessionScreen() {
             </Pressable>
 
             <Pressable style={styles.ghostCancelBtn} onPress={() => router.replace("/")}>
-              <Text style={styles.ghostCancelText}>Not right now, return to dashboard</Text>
+              <Text style={styles.ghostCancelText}>Not right now</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -473,7 +519,7 @@ export default function SessionScreen() {
   }
 
   // =========================================================================
-  // VIEW 2: ACTIVE LIVE AUDIO STREAMING SESSION
+  // VIEW 2: ACTIVE SESSION
   // =========================================================================
   return (
     <View style={styles.container}>
@@ -496,26 +542,20 @@ export default function SessionScreen() {
         </View>
 
         <Pressable style={styles.endPillBtn} onPress={handleEndSession}>
-          <Text style={styles.endPillBtnText}>Finish ◼</Text>
+          <Text style={styles.endPillBtnText}>End ◼</Text>
         </Pressable>
       </View>
 
-      {/* Target Focus Banner */}
-      <View style={styles.targetBanner}>
-        <View style={styles.targetLeft}>
-          <Text style={styles.targetLabel}>CURRENT PRACTICE OBJECTIVE</Text>
+      {/* Target Banner (compact) */}
+      {params.activity_title ? (
+        <View style={styles.targetBanner}>
           <Text style={styles.targetTitle}>
-            {params.activity_title || "Spontaneous English Conversation"}
+            {params.activity_title}
           </Text>
         </View>
-        {params.stage ? (
-          <View style={styles.stageBadge}>
-            <Text style={styles.stageBadgeText}>{params.stage.replace(/_/g, " ").toUpperCase()}</Text>
-          </View>
-        ) : null}
-      </View>
+      ) : null}
 
-      {/* Main Audio Visualizer & Live Stream */}
+      {/* Main Content */}
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {errorMessage ? (
           <View style={styles.errorBanner}>
@@ -523,7 +563,7 @@ export default function SessionScreen() {
           </View>
         ) : null}
 
-        {/* Waveform Sound Card */}
+        {/* Waveform Visualizer */}
         <View style={styles.visualizerCard}>
           <View style={styles.waveBarsRow}>
             <Animated.View style={[styles.waveBar, { height: waveAnim1, backgroundColor: getSpeakingStateColor() }]} />
@@ -536,19 +576,19 @@ export default function SessionScreen() {
             {isMuted
               ? "Microphone muted"
               : agentSpeaking
-              ? "Listen to tutor feedback..."
+              ? "Coach is speaking..."
               : learnerSpeaking
-              ? "Audio streaming to Pravaah AI..."
-              : "Microphone active — Speak naturally in English"}
+              ? "Listening to you..."
+              : "Speak naturally in English"}
           </Text>
         </View>
 
-        {/* In-Session Correction Card (Pedagogical Feedback) */}
+        {/* In-Session Correction Card */}
         {activeCorrection ? (
           <View style={styles.correctionCard}>
             <View style={styles.correctionHeader}>
               <View style={styles.correctionBadge}>
-                <Text style={styles.correctionBadgeText}>💡 COACH CORRECTION</Text>
+                <Text style={styles.correctionBadgeText}>💡 CORRECTION</Text>
               </View>
               <Pressable onPress={() => setActiveCorrection(null)}>
                 <Text style={styles.dismissText}>✕</Text>
@@ -578,19 +618,18 @@ export default function SessionScreen() {
                 setActiveCorrection(null);
               }}
             >
-              <Text style={styles.tryAgainButtonText}>🎙 Try again with corrected phrasing</Text>
+              <Text style={styles.tryAgainButtonText}>Got it 👍</Text>
             </Pressable>
           </View>
         ) : null}
 
-        {/* Live Conversation Transcript */}
+        {/* Live Transcript */}
         <View style={styles.transcriptBlock}>
-          <Text style={styles.transcriptHeader}>REALTIME VOICE DIALOGUE</Text>
+          <Text style={styles.transcriptHeader}>CONVERSATION</Text>
           {transcript.length === 0 ? (
             <View style={styles.turnBubble}>
-              <Text style={styles.turnSpeaker}>LIVEKIT WEBRTC • AUDIO ACTIVE</Text>
               <Text style={styles.turnText}>
-                Connected to Coach Pravaah. Speak into your microphone and the AI tutor will respond in real time.
+                Your conversation will appear here...
               </Text>
             </View>
           ) : (
@@ -604,7 +643,7 @@ export default function SessionScreen() {
               >
                 <View style={styles.turnMetaRow}>
                   <Text style={styles.turnSpeaker}>
-                    {t.speaker === "tutor" ? "AI COACH (TUTOR)" : "YOU (LEARNER)"}
+                    {t.speaker === "tutor" ? "COACH" : "YOU"}
                   </Text>
                   <Text style={styles.turnTime}>{t.timestamp}</Text>
                 </View>
@@ -621,14 +660,14 @@ export default function SessionScreen() {
           style={[styles.muteButton, isMuted && styles.muteButtonActive]}
           onPress={handleToggleMute}
         >
-          <Text style={styles.muteButtonText}>{isMuted ? "🔇 Unmute" : "🎙 Mute Mic"}</Text>
+          <Text style={styles.muteButtonText}>{isMuted ? "🔇 Unmute" : "🎙 Mute"}</Text>
         </Pressable>
 
         <Pressable
           style={({ pressed }) => [styles.endButton, pressed && styles.buttonPressed]}
           onPress={handleEndSession}
         >
-          <Text style={styles.endButtonText}>End Practice & Save Progress →</Text>
+          <Text style={styles.endButtonText}>End & Save →</Text>
         </Pressable>
       </View>
 
@@ -645,24 +684,24 @@ export default function SessionScreen() {
               />
             </View>
             <View style={styles.summaryEyebrow}>
-              <Text style={styles.summaryEyebrowText}>PRACTICE SESSION COMPLETE</Text>
+              <Text style={styles.summaryEyebrowText}>SESSION COMPLETE</Text>
             </View>
 
             <Text style={styles.summaryTitle}>
-              <Text style={styles.heroHeadlineItalic}>Session</Text> recorded.
+              <Text style={styles.heroHeadlineItalic}>Great</Text> practice!
             </Text>
 
             <View style={styles.summaryMetricsGrid}>
               <View style={styles.metricBlock}>
                 <Text style={styles.metricValue}>{formatSeconds(sessionSeconds)}</Text>
-                <Text style={styles.metricLabel}>TOTAL TIME</Text>
+                <Text style={styles.metricLabel}>DURATION</Text>
               </View>
 
               <View style={styles.metricBlock}>
                 <Text style={styles.metricValue}>
                   {formatSeconds(learnerSpeakingSeconds || Math.max(1, Math.round(sessionSeconds * 0.45)))}
                 </Text>
-                <Text style={styles.metricLabel}>SPEAKING TIME</Text>
+                <Text style={styles.metricLabel}>SPEAKING</Text>
               </View>
 
               <View style={styles.metricBlock}>
@@ -672,15 +711,14 @@ export default function SessionScreen() {
 
               <View style={styles.metricBlock}>
                 <Text style={styles.metricValue}>{repetitionCount}</Text>
-                <Text style={styles.metricLabel}>REPETITIONS</Text>
+                <Text style={styles.metricLabel}>PRACTICED</Text>
               </View>
             </View>
 
             <View style={styles.summaryDetailBlock}>
-              <Text style={styles.summaryDetailLabel}>ACTIVITY RECORDED</Text>
-              <Text style={styles.summaryDetailTitle}>{params.activity_title || "Spoken English Practice"}</Text>
+              <Text style={styles.summaryDetailTitle}>{params.activity_title || "English Practice"}</Text>
               <Text style={styles.summaryDetailDesc}>
-                Your speaking evidence and mastery data have been asynchronously queued for adaptive curriculum progression.
+                Your progress has been saved. Keep practicing daily for best results!
               </Text>
             </View>
 
@@ -772,29 +810,16 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.mono,
   },
   targetBanner: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: theme.colors.graphiteCard,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderMuted,
-  },
-  targetLeft: {
-    flex: 1,
-  },
-  targetLabel: {
-    color: theme.colors.fog,
-    fontSize: 9,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
   },
   targetTitle: {
     color: theme.colors.pure,
     fontSize: 14,
     fontWeight: "600",
-    marginTop: 2,
   },
   stageBadge: {
     backgroundColor: "rgba(132, 125, 255, 0.15)",
@@ -835,7 +860,7 @@ const styles = StyleSheet.create({
   // Pre-Session Styles
   preSessionScroll: {
     padding: 24,
-    maxWidth: 680,
+    maxWidth: 580,
     width: "100%",
     alignSelf: "center",
     gap: 20,
@@ -843,53 +868,33 @@ const styles = StyleSheet.create({
   preSessionHero: {
     alignItems: "center",
     textAlign: "center",
-    paddingVertical: 12,
+    paddingVertical: 16,
   },
   heroLogoWrapper: {
-    marginBottom: 16,
+    marginBottom: 20,
   },
   preSessionLogo: {
     width: 140,
     height: 44,
   },
-  preSessionBadge: {
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-    borderWidth: 1,
-    borderColor: "rgba(132, 125, 255, 0.3)",
-    marginBottom: 16,
-  },
-  preSessionBadgeText: {
-    color: theme.colors.irisGleam,
-    fontSize: 10.5,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    fontWeight: "600",
-  },
   preSessionTitle: {
-    fontSize: 36,
-    fontWeight: "300",
+    fontSize: 28,
+    fontWeight: "600",
     color: theme.colors.pure,
-    fontFamily: theme.fonts.serif,
     textAlign: "center",
-    marginBottom: 12,
-  },
-  heroHeadlineItalic: {
-    fontStyle: "italic",
+    marginBottom: 8,
   },
   preSessionSubhead: {
     color: theme.colors.ash,
     fontSize: 14,
     lineHeight: 22,
     textAlign: "center",
-    maxWidth: 520,
+    maxWidth: 400,
   },
   activityObjectiveCard: {
     backgroundColor: theme.colors.graphiteCard,
     borderRadius: theme.radii.md,
-    padding: 20,
+    padding: 18,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
   },
@@ -902,35 +907,16 @@ const styles = StyleSheet.create({
   },
   activityMainTitle: {
     color: theme.colors.pure,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "600",
-    marginBottom: 6,
-  },
-  targetSkillText: {
-    color: theme.colors.orchidBloom,
-    fontSize: 12,
-    fontFamily: theme.fonts.mono,
-    marginBottom: 10,
-  },
-  activityGuideText: {
-    color: theme.colors.ash,
-    fontSize: 13,
-    lineHeight: 20,
   },
   tipsCard: {
     backgroundColor: theme.colors.obsidian,
     borderRadius: theme.radii.md,
-    padding: 18,
+    padding: 16,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
     gap: 10,
-  },
-  tipsTitle: {
-    color: theme.colors.fog,
-    fontSize: 9.5,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: 4,
   },
   tipRow: {
     flexDirection: "row",
@@ -938,15 +924,29 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   tipBullet: {
-    color: theme.colors.emeraldSuccess,
     fontSize: 14,
-    fontWeight: "bold",
   },
   tipText: {
     color: theme.colors.cloud,
     fontSize: 13,
     lineHeight: 18,
     flex: 1,
+  },
+  connectingCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    padding: 14,
+    backgroundColor: "rgba(132, 125, 255, 0.08)",
+    borderRadius: theme.radii.sm,
+    borderWidth: 1,
+    borderColor: "rgba(132, 125, 255, 0.2)",
+  },
+  connectingText: {
+    color: theme.colors.irisGleam,
+    fontSize: 13,
+    fontWeight: "500",
   },
   startActionContainer: {
     alignItems: "center",
@@ -974,8 +974,8 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  bigStartButtonConnecting: {
-    opacity: 0.8,
+  bigStartButtonDisabled: {
+    opacity: 0.6,
   },
   buttonLoadingRow: {
     flexDirection: "row",
@@ -1291,13 +1291,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
     marginBottom: 24,
-  },
-  summaryDetailLabel: {
-    color: theme.colors.fog,
-    fontSize: 9,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-    marginBottom: 4,
   },
   summaryDetailTitle: {
     color: theme.colors.pure,

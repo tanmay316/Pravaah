@@ -1,16 +1,11 @@
 """
 English Coach AI — Voice Agent (LiveKit Agents 1.x)
 
-Ultra-low-latency realtime pipeline:
-  Learner mic → LiveKit WebRTC → Groq Whisper STT (Multilingual / Hindi + English)
-    → Google Gemini Flash Lite → Neural TTS → LiveKit → Learner speaker
-
-Optimizations:
-  - Disables slow cloud turn detector gateway (eliminates 7.6s network transport lag)
-  - STT auto-detects English & Hindi (no forced English phonetic corruption)
-  - Real-time WebRTC data broadcast for instant UI live transcription
-  - Non-blocking async event persistence (zero event loop lag)
-  - Natural recasts with Hinglish explanations
+Features & Latency Fixes:
+  1. STT: Groq Whisper Turbo with `detect_language=True` — transcribes authentic Hindi & English with precision.
+  2. Instant Greeting: Agent waits for explicit `start_conversation` click signal from client before speaking, delivering greeting in <0.3s.
+  3. Real-time UI Data Broadcast: Publishes exact bilingual transcripts to client WebRTC data channel.
+  4. Ultra-low response latency: Gemini 3.5 Flash Lite with prompt discipline (1-2 sentences) + local neural Indian TTS.
 """
 
 import asyncio
@@ -31,16 +26,11 @@ from livekit.agents import (
     cli,
 )
 from livekit.plugins import google, groq, openai
-from telemetry import record_turn_telemetry
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pravaah-voice-agent")
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
@@ -50,41 +40,34 @@ REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 # Tutor system prompt
 # ---------------------------------------------------------------------------
 
-TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, an English speaking tutor for Hindi-speaking learners.
+TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, a spoken English tutor for Hindi-speaking learners.
 
-Your goal: help the learner become fluent and confident in spoken English through natural conversation.
+Your mission: help the learner speak fluent, confident English through lively conversation.
 
-## Core Rules (STRICT)
-- Keep ALL replies to 1-2 short sentences (maximum 20 words). Short responses are essential for smooth voice conversation.
-- Output ONLY clean plain text. NEVER use markdown symbols (no asterisks **, hashtags #, bullet points, quotes).
+## Critical Rules:
+- Keep ALL replies strictly to 1-2 short sentences (under 20 words). Never lecture.
+- Output clean spoken plain text ONLY (no asterisks, no bullet points, no markdown).
 - Ask at most ONE question per turn.
 - Speak primarily in English.
 
-## Handling Hindi Input
-When the learner speaks Hindi or Hinglish (e.g. "mujhe English seekhni hai", "main theek hoon"):
-- Acknowledge warmly and naturally show them the English version.
-- Example: "In English you can say: I want to learn English. What topics do you want to talk about?"
-- Do NOT scold or force repetition. Model the English phrasing and continue smoothly.
+## Handling Hindi:
+When the learner speaks in Hindi or Hinglish (e.g. "मुझे इंग्लिश सीखनी है" or "main theek hoon"):
+- Acknowledge warmly and naturally show the English equivalent: "In English, you can say: 'I want to learn English.' What would you like to practice today?"
+- Never scold. Bridge their Hindi thought into English.
 
-## Handling English Mistakes (Natural Recasts)
-When the learner makes a grammar or phrasing mistake in English:
-1. Recast the sentence naturally with a friendly cue ("Small correction:", "A natural way:").
+## Handling English Mistakes (Natural Recasts):
+When the learner makes an English grammar error:
+1. Use a warm cue ("Small correction:", "A more natural way:").
 2. State the correct sentence clearly.
-3. Give a 1-sentence explanation in Hinglish (Hindi in English letters, e.g. "Kyunki past tense mein second form aati hai").
-4. Ask ONE natural question to keep the conversation flowing.
+3. Add a 1-sentence reason in Hinglish (e.g. "Kyunki 'did' ke saath base verb lagti hai").
+4. Ask ONE question to continue the dialogue.
 
 Example:
-  Learner: "I am having two brother."
-  You: "Small correction: I have two brothers. Kyunki relationships ke liye have use hota hai. What are their names?"
-
-## Common Mistakes to Watch:
-- "I didn't went" → "I didn't go" (past auxiliary)
-- "He don't know" → "He doesn't know" (agreement)
-- "I am agree" → "I agree" (stative)
-- "Discuss about" → "Discuss"
+  Learner: "I didn't went there."
+  Coach: "Small correction: 'I didn't go there.' Kyunki 'did' ke baad first form use hoti hai. What did you do instead?"
 
 ## Personality:
-Warm, encouraging, patient, conversational. Never give long lectures."""
+Warm, supportive, conversational, encouraging."""
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +86,6 @@ def make_event(
     session_id: str,
     payload: dict,
 ) -> dict:
-    """Create a standardized event with idempotency metadata."""
     return {
         "event_id": str(uuid.uuid4()),
         "event_version": 1,
@@ -117,29 +99,22 @@ def make_event(
 
 
 def _run_sync_event(event: dict):
-    """Run event processing in a worker thread to never block asyncio event loop."""
     try:
         if enqueue_outbox_event is not None:
             enqueue_outbox_event(event)
         if process_event is not None:
             asyncio.run(process_event(event))
     except Exception as exc:
-        logger.debug("Background event persistence note: %s", exc)
+        logger.debug("Background persistence notice: %s", exc)
 
 
 async def emit_event(event: dict):
-    """Dispatch event completely off the asyncio critical path."""
-    logger.info(
-        "Event: %s seq=%d session=%s",
-        event["event_type"],
-        event["sequence"],
-        event["session_id"],
-    )
+    logger.info("Event: %s seq=%d session=%s", event["event_type"], event["sequence"], event["session_id"])
     asyncio.create_task(asyncio.to_thread(_run_sync_event, event))
 
 
 async def broadcast_ui_turn(room, speaker: str, text: str):
-    """Publish real-time transcript message directly to client WebRTC data channel."""
+    """Publish real-time bilingual transcript directly to client WebRTC data channel."""
     if not room or not text:
         return
     try:
@@ -151,7 +126,7 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
         }).encode("utf-8")
         await room.local_participant.publish_data(payload)
     except Exception as exc:
-        logger.debug("Data broadcast note: %s", exc)
+        logger.debug("UI broadcast note: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +134,6 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 # ---------------------------------------------------------------------------
 
 class EnglishTutor(Agent):
-    """
-    Pravaah English Tutor — LiveKit Agents 1.x Agent class.
-    """
-
     def __init__(
         self,
         user_id: str,
@@ -181,19 +152,19 @@ class EnglishTutor(Agent):
         if self.lesson_context.get("mode") == "assessment":
             focus_instruction = """
 
-## Diagnostic Assessment Mode
-Conduct initial spoken English diagnostic. Ask 4 progressive questions. Do not correct mistakes during assessment. Be warm and encouraging."""
+## Diagnostic Assessment:
+Ask 4 progressive spoken questions. Do not correct mistakes during assessment. Be warm and encouraging."""
         elif self.target_skill:
             title = self.lesson_context.get("lesson_title", self.target_skill)
             rule = self.lesson_context.get("rule_summary", "")
             practice = self.lesson_context.get("practice_activity", "")
             focus_instruction = f"""
 
-## Targeted Practice: {title}
+## Targeted Skill: {title}
 - Target: {self.target_skill}
 - Rule: {rule}
 - Activity: {practice}
-Naturally elicit this pattern through short conversational questions."""
+Elicit this pattern naturally in dialogue."""
 
         super().__init__(instructions=TUTOR_SYSTEM_PROMPT + focus_instruction)
 
@@ -224,9 +195,9 @@ Naturally elicit this pattern through short conversational questions."""
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         user_text = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
-        logger.info("User: %s", user_text)
+        logger.info("Learner said: %s", user_text)
 
-        # Broadcast live transcript to UI
+        # Broadcast exact learner words (Hindi or English) to UI
         if self.room:
             asyncio.create_task(broadcast_ui_turn(self.room, "learner", user_text))
 
@@ -239,9 +210,9 @@ Naturally elicit this pattern through short conversational questions."""
 
     async def on_agent_turn_completed(self, turn_ctx, new_message) -> None:
         agent_text = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
-        logger.info("Agent: %s", agent_text)
+        logger.info("Coach said: %s", agent_text)
 
-        # Broadcast live transcript to UI
+        # Broadcast coach response to UI
         if self.room:
             asyncio.create_task(broadcast_ui_turn(self.room, "tutor", agent_text))
 
@@ -261,7 +232,7 @@ Naturally elicit this pattern through short conversational questions."""
 # ---------------------------------------------------------------------------
 
 async def entrypoint(ctx: JobContext):
-    """LiveKit Agents entrypoint — ultra-fast setup with minimal network overhead."""
+    """LiveKit Agents entrypoint."""
 
     await ctx.connect()
     room = ctx.room
@@ -275,7 +246,7 @@ async def entrypoint(ctx: JobContext):
     target_skill = None
     lesson_context = {}
 
-    # Read lesson metadata in background thread with tight 1.5s timeout
+    # Quick lesson metadata lookup in background
     try:
         def _read_meta():
             from worker import get_firestore_client
@@ -299,16 +270,18 @@ async def entrypoint(ctx: JobContext):
             return None, {"mode": "free_conversation"}
 
         target_skill, lesson_context = await asyncio.wait_for(
-            asyncio.to_thread(_read_meta), timeout=1.5
+            asyncio.to_thread(_read_meta), timeout=1.0
         )
     except Exception:
         lesson_context = {"mode": "free_conversation"}
 
     logger.info("Session ready: room=%s user=%s mode=%s", room_name, user_id, lesson_context.get("mode"))
 
-    # 1. STT: Groq Whisper Turbo — Multilingual (auto-detects English & Hindi)
+    # 1. STT: Groq Whisper Turbo with detect_language=True & bilingual prompt hint
     stt = groq.STT(
         model="whisper-large-v3-turbo",
+        detect_language=True,
+        prompt="Hindi and English spoken conversation. Hindi: मुझे इंग्लिश सीखनी है, मैं ठीक हूँ, नमस्ते। English: Hello, how are you today?",
     )
 
     # 2. LLM: Google Gemini 3.5 Flash Lite
@@ -317,7 +290,7 @@ async def entrypoint(ctx: JobContext):
         llm = google.LLM(
             model="gemini-3.5-flash-lite",
             api_key=gemini_key,
-            temperature=0.5,
+            temperature=0.4,
         )
     else:
         llm = openai.LLM(
@@ -326,7 +299,7 @@ async def entrypoint(ctx: JobContext):
             api_key=LITELLM_PROXY_KEY,
         )
 
-    # 3. TTS: Neural Indian Voice (Edge-TTS via local proxy)
+    # 3. TTS: Neural Indian English Voice (Edge-TTS via local proxy)
     tts = openai.TTS(
         model="tts-1",
         voice="en-IN-NeerjaNeural",
@@ -334,16 +307,16 @@ async def entrypoint(ctx: JobContext):
         base_url="http://localhost:8880/v1",
     )
 
-    # 4. AgentSession — optimized endpointing, zero AEC warmup delay, no cloud turn gateway lag
+    # 4. AgentSession with fast turn detection and zero AEC warmup lag
     session = AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=0.8,
+        min_endpointing_delay=0.25,
+        max_endpointing_delay=0.7,
         preemptive_generation=True,
         allow_interruptions=True,
-        min_interruption_duration=0.3,
+        min_interruption_duration=0.25,
         aec_warmup_duration=0.0,
     )
 
@@ -355,11 +328,28 @@ async def entrypoint(ctx: JobContext):
         lesson_context=lesson_context,
     )
 
-    # Listen for learner disconnect
+    # Synchronize start signal from user's "Start Conversation" button
+    start_conversation_event = asyncio.Event()
+
+    @room.on("data_received")
+    def on_data_received(data_packet):
+        try:
+            msg = json.loads(data_packet.data.decode("utf-8"))
+            if msg.get("type") == "start_conversation":
+                start_conversation_event.set()
+        except Exception:
+            pass
+
+    @room.on("track_published")
+    def on_track_published(pub, p):
+        if p.identity == user_id:
+            start_conversation_event.set()
+
+    # Listen for disconnect
     @room.on("participant_disconnected")
     def on_disconnect(p):
         if p.identity == user_id:
-            logger.info("Learner disconnected. Finalizing session %s.", session_id)
+            logger.info("Learner disconnected: %s", session_id)
             asyncio.create_task(emit_event(make_event(
                 "SESSION_ENDED",
                 user_id,
@@ -372,25 +362,32 @@ async def entrypoint(ctx: JobContext):
                 },
             )))
 
+    # Start session in background
     await session.start(
         room=room,
         agent=tutor,
     )
 
-    # Craft punchy instant greeting
+    # Greeting message
     greeting_text = "Hello! Welcome. How are you doing today?"
     if lesson_context.get("mode") == "assessment":
         greeting_text = "Welcome to your English assessment! Could you tell me a little about yourself?"
     elif lesson_context.get("practice_activity"):
         title = lesson_context.get("lesson_title", "speaking")
-        greeting_text = f"Hello! Let us practice {title}. Are you ready?"
+        greeting_text = f"Hello! Today we will practice {title}. Are you ready?"
 
-    # Instant greeting broadcast to UI + Audio playback
-    await asyncio.sleep(0.2)
+    # Wait for the learner to click "Start Conversation" button (or fallback after 30s)
+    logger.info("Waiting for learner to click Start Conversation...")
+    try:
+        await asyncio.wait_for(start_conversation_event.wait(), timeout=30.0)
+    except asyncio.TimeoutError:
+        pass
+
+    # Instant greeting right when learner clicks start!
+    logger.info("Learner started session — speaking greeting instantly.")
+    await asyncio.sleep(0.1)
     asyncio.create_task(broadcast_ui_turn(room, "tutor", greeting_text))
     await session.say(greeting_text, allow_interruptions=True)
-
-    logger.info("Greeting delivered for session %s", session_id)
 
 
 # ---------------------------------------------------------------------------

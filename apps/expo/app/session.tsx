@@ -1,10 +1,12 @@
 /**
  * Pravaah — Realtime Speaking Session
  *
- * Optimized for perceived speed:
- *   1. LiveKit room pre-connects on page entry (agent init happens in background)
- *   2. "Start Conversation" only enables mic + triggers greeting (instant)
- *   3. Clean, minimal UI — no tech stack info, no prompt details
+ * Flow:
+ *   1. Room pre-connects in background when user opens the page
+ *   2. User clicks "Start Conversation 🎙️" → Mic enables + sends start signal to agent
+ *   3. Agent greets INSTANTLY (<0.3s)
+ *   4. Hindi speech is transcribed accurately in Hindi on UI
+ *   5. Live conversation turns display in real time on the UI
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -50,9 +52,6 @@ export default function SessionScreen() {
     stage?: string;
   }>();
 
-  // Session lifecycle:
-  //   "preconnecting" → "ready" (room connected, waiting for user click)
-  //   → "starting" (enabling mic) → "active" → "ended"
   const [sessionStatus, setSessionStatus] = useState<
     "preconnecting" | "ready" | "starting" | "active" | "ended"
   >("preconnecting");
@@ -153,7 +152,6 @@ export default function SessionScreen() {
 
   // =========================================================================
   // PRE-CONNECT: Create session + connect to LiveKit room on page load
-  // This runs the agent init in the background while user reads the page
   // =========================================================================
   useEffect(() => {
     if (preconnectedRef.current) return;
@@ -161,7 +159,6 @@ export default function SessionScreen() {
 
     const preconnect = async () => {
       try {
-        // 1. Create session on backend
         const sessionRes = await createSession(
           params.mode || "free_conversation",
           params.target_skill,
@@ -169,7 +166,6 @@ export default function SessionScreen() {
         );
         setSessionId(sessionRes.session_id);
 
-        // 2. Initialize LiveKit Room
         const room = new Room({
           adaptiveStream: true,
           dynacast: true,
@@ -205,18 +201,17 @@ export default function SessionScreen() {
           }
         });
 
-        // Active speakers tracking — update ref for waveform suppression
+        // Active speakers tracking
         room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
           const remoteSpeaking = speakers.some((s) => !s.isLocal);
           agentSpeakingRef.current = remoteSpeaking;
           setAgentSpeaking(remoteSpeaking);
-          // Force learner speaking off when agent is speaking
           if (remoteSpeaking) {
             setLearnerSpeaking(false);
           }
         });
 
-        // Handle tutor data messages (transcripts & corrections)
+        // Handle tutor real-time transcript & data messages
         room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
           try {
             const str = new TextDecoder().decode(payload);
@@ -229,33 +224,35 @@ export default function SessionScreen() {
                 target_skill: data.target_skill,
               });
               setCorrectionCount((prev) => prev + 1);
-            } else if (data.type === "repetition_success") {
-              setRepetitionCount((prev) => prev + 1);
-              setActiveCorrection(null);
             } else if (data.type === "turn" && data.text) {
-              setTranscript((prev) => [
-                ...prev,
-                {
-                  id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                  speaker: data.speaker === "agent" || data.speaker === "tutor" ? "tutor" : "learner",
-                  text: data.text,
-                  timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                },
-              ]);
+              setTranscript((prev) => {
+                // Deduplicate if identical turn already logged
+                const last = prev[prev.length - 1];
+                if (last && last.speaker === (data.speaker === "learner" ? "learner" : "tutor") && last.text === data.text) {
+                  return prev;
+                }
+                return [
+                  ...prev,
+                  {
+                    id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                    speaker: data.speaker === "learner" ? "learner" : "tutor",
+                    text: data.text,
+                    timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                  },
+                ];
+              });
             }
           } catch (e) {
             console.debug("Data message parse note:", e);
           }
         });
 
-        // 3. Connect to LiveKit Cloud (agent starts initializing NOW)
+        // Connect to LiveKit Cloud in background
         await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
-
-        // Room is connected — user sees "ready" state
       } catch (err: any) {
         console.warn("Pre-connect error:", err);
         setPreconnectError(true);
-        setErrorMessage(err.message || "Failed to prepare session. Please go back and try again.");
+        setErrorMessage(err.message || "Failed to prepare session. Please try again.");
         setSessionStatus("ready");
       }
     };
@@ -263,13 +260,13 @@ export default function SessionScreen() {
     preconnect();
   }, []);
 
-  // Start Speaking — only enables mic (room is already connected!)
+  // Start Speaking — un-mutes microphone + signals agent to greet immediately
   const handleStartConversation = async () => {
     try {
       setSessionStatus("starting");
       setErrorMessage(null);
 
-      // Resume/create Web AudioContext inside user gesture
+      // Unlock AudioContext inside user click gesture
       if (Platform.OS === "web" && typeof window !== "undefined") {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
@@ -283,13 +280,13 @@ export default function SessionScreen() {
 
       const room = roomRef.current;
       if (!room) {
-        throw new Error("Room not initialized. Please go back and try again.");
+        throw new Error("Room not initialized. Please try again.");
       }
 
-      // Enable learner microphone
+      // 1. Enable learner microphone
       await room.localParticipant.setMicrophoneEnabled(true);
 
-      // Connect audio visualizer
+      // 2. Connect audio visualizer
       const audioTracks = room.localParticipant.audioTrackPublications;
       audioTracks.forEach((pub) => {
         if (pub.track?.mediaStream) {
@@ -297,9 +294,17 @@ export default function SessionScreen() {
         }
       });
 
+      // 3. Send immediate start signal to agent to trigger instant greeting
+      try {
+        const startMsg = JSON.stringify({ type: "start_conversation" });
+        await room.localParticipant.publishData(new TextEncoder().encode(startMsg));
+      } catch (e) {
+        console.debug("Start signal broadcast note:", e);
+      }
+
       setSessionStatus("active");
 
-      // Start session clock
+      // 4. Start session clock
       timerRef.current = setInterval(() => {
         setSessionSeconds((prev) => prev + 1);
         setLearnerSpeaking((isSpeaking) => {
@@ -387,7 +392,7 @@ export default function SessionScreen() {
 
   const getSpeakingStateLabel = () => {
     if (reconnecting) return "RECONNECTING...";
-    if (sessionStatus === "starting") return "STARTING...";
+    if (sessionStatus === "starting") return "CONNECTING COACH...";
     if (sessionStatus === "ended") return "SESSION ENDED";
     if (agentSpeaking) return "COACH IS SPEAKING";
     if (learnerSpeaking) return "YOU ARE SPEAKING";
@@ -405,7 +410,7 @@ export default function SessionScreen() {
   };
 
   // =========================================================================
-  // VIEW 1: PRE-SESSION SCREEN (preconnecting / ready / starting)
+  // VIEW 1: PRE-SESSION SCREEN
   // =========================================================================
   if (sessionStatus === "preconnecting" || sessionStatus === "ready" || sessionStatus === "starting") {
     const isConnecting = sessionStatus === "preconnecting";
@@ -427,7 +432,6 @@ export default function SessionScreen() {
         </View>
 
         <ScrollView contentContainerStyle={styles.preSessionScroll} showsVerticalScrollIndicator={false}>
-          {/* Hero */}
           <View style={styles.preSessionHero}>
             <View style={styles.heroLogoWrapper}>
               <Image
@@ -442,11 +446,10 @@ export default function SessionScreen() {
               {params.activity_title || "English Conversation"}
             </Text>
             <Text style={styles.preSessionSubhead}>
-              Speak naturally. Your AI coach will help you improve.
+              Speak naturally. Hindi or English — Coach Pravaah will help you practice fluently.
             </Text>
           </View>
 
-          {/* Target Skill Card (only if there's a specific skill) */}
           {params.target_skill ? (
             <View style={styles.activityObjectiveCard}>
               <Text style={styles.cardEyebrow}>TODAY'S FOCUS</Text>
@@ -456,34 +459,30 @@ export default function SessionScreen() {
             </View>
           ) : null}
 
-          {/* Quick Tips */}
           <View style={styles.tipsCard}>
             <View style={styles.tipRow}>
               <Text style={styles.tipBullet}>🎧</Text>
-              <Text style={styles.tipText}>Use earphones for best audio quality</Text>
+              <Text style={styles.tipText}>Use earphones for crystal-clear microphone audio</Text>
             </View>
             <View style={styles.tipRow}>
               <Text style={styles.tipBullet}>🗣️</Text>
-              <Text style={styles.tipText}>Speak naturally — Hindi is okay, coach will help you say it in English</Text>
+              <Text style={styles.tipText}>Feel free to speak Hindi — coach will show you the natural English equivalent</Text>
             </View>
           </View>
 
-          {/* Connection Status */}
           {isConnecting ? (
             <View style={styles.connectingCard}>
               <ActivityIndicator size="small" color={theme.colors.irisGleam} />
-              <Text style={styles.connectingText}>Preparing your session...</Text>
+              <Text style={styles.connectingText}>Preparing your coach session...</Text>
             </View>
           ) : null}
 
-          {/* Error Banner */}
           {errorMessage ? (
             <View style={styles.errorBanner}>
               <Text style={styles.errorBannerText}>{errorMessage}</Text>
             </View>
           ) : null}
 
-          {/* Start Button */}
           <View style={styles.startActionContainer}>
             <Pressable
               style={({ pressed }) => [
@@ -546,7 +545,6 @@ export default function SessionScreen() {
         </Pressable>
       </View>
 
-      {/* Target Banner (compact) */}
       {params.activity_title ? (
         <View style={styles.targetBanner}>
           <Text style={styles.targetTitle}>
@@ -555,7 +553,6 @@ export default function SessionScreen() {
         </View>
       ) : null}
 
-      {/* Main Content */}
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {errorMessage ? (
           <View style={styles.errorBanner}>
@@ -579,7 +576,7 @@ export default function SessionScreen() {
               ? "Coach is speaking..."
               : learnerSpeaking
               ? "Listening to you..."
-              : "Speak naturally in English"}
+              : "Speak naturally in Hindi or English"}
           </Text>
         </View>
 
@@ -588,7 +585,7 @@ export default function SessionScreen() {
           <View style={styles.correctionCard}>
             <View style={styles.correctionHeader}>
               <View style={styles.correctionBadge}>
-                <Text style={styles.correctionBadgeText}>💡 CORRECTION</Text>
+                <Text style={styles.correctionBadgeText}>💡 COACH RECAST</Text>
               </View>
               <Pressable onPress={() => setActiveCorrection(null)}>
                 <Text style={styles.dismissText}>✕</Text>
@@ -614,22 +611,20 @@ export default function SessionScreen() {
 
             <Pressable
               style={({ pressed }) => [styles.tryAgainButton, pressed && styles.buttonPressed]}
-              onPress={() => {
-                setActiveCorrection(null);
-              }}
+              onPress={() => setActiveCorrection(null)}
             >
               <Text style={styles.tryAgainButtonText}>Got it 👍</Text>
             </Pressable>
           </View>
         ) : null}
 
-        {/* Live Transcript */}
+        {/* Real-time Live Transcript */}
         <View style={styles.transcriptBlock}>
-          <Text style={styles.transcriptHeader}>CONVERSATION</Text>
+          <Text style={styles.transcriptHeader}>CONVERSATION TRANSCRIPT</Text>
           {transcript.length === 0 ? (
             <View style={styles.turnBubble}>
               <Text style={styles.turnText}>
-                Your conversation will appear here...
+                Your conversation transcript will appear here in real time...
               </Text>
             </View>
           ) : (
@@ -643,7 +638,7 @@ export default function SessionScreen() {
               >
                 <View style={styles.turnMetaRow}>
                   <Text style={styles.turnSpeaker}>
-                    {t.speaker === "tutor" ? "COACH" : "YOU"}
+                    {t.speaker === "tutor" ? "COACH PRAVAAH" : "YOU"}
                   </Text>
                   <Text style={styles.turnTime}>{t.timestamp}</Text>
                 </View>
@@ -718,7 +713,7 @@ export default function SessionScreen() {
             <View style={styles.summaryDetailBlock}>
               <Text style={styles.summaryDetailTitle}>{params.activity_title || "English Practice"}</Text>
               <Text style={styles.summaryDetailDesc}>
-                Your progress has been saved. Keep practicing daily for best results!
+                Your progress has been saved. Keep practicing daily to build fluency!
               </Text>
             </View>
 

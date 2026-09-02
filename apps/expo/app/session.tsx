@@ -36,6 +36,7 @@ interface TranscriptTurn {
 }
 
 interface InSessionCorrection {
+  card_type?: "translation" | "correction";
   original: string;
   corrected: string;
   explanation: string;
@@ -239,6 +240,7 @@ export default function SessionScreen() {
             const data = JSON.parse(str);
             if (data.type === "correction") {
               setActiveCorrection({
+                card_type: data.card_type || "correction",
                 original: data.original,
                 corrected: data.corrected,
                 explanation: data.explanation,
@@ -609,12 +611,29 @@ export default function SessionScreen() {
           </Text>
         </View>
 
-        {/* In-Session Correction Card */}
+        {/* In-Session Translation / Correction Card */}
         {activeCorrection ? (
-          <View style={styles.correctionCard}>
+          <View
+            style={[
+              styles.correctionCard,
+              activeCorrection.card_type === "translation" && styles.translationCard,
+            ]}
+          >
             <View style={styles.correctionHeader}>
-              <View style={styles.correctionBadge}>
-                <Text style={styles.correctionBadgeText}>💡 COACH RECAST</Text>
+              <View
+                style={[
+                  styles.correctionBadge,
+                  activeCorrection.card_type === "translation" && styles.translationBadge,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.correctionBadgeText,
+                    activeCorrection.card_type === "translation" && styles.translationBadgeText,
+                  ]}
+                >
+                  {activeCorrection.card_type === "translation" ? "🌐 HINDI ➔ ENGLISH" : "💡 COACH RECAST"}
+                </Text>
               </View>
               <Pressable onPress={() => setActiveCorrection(null)}>
                 <Text style={styles.dismissText}>✕</Text>
@@ -623,19 +642,29 @@ export default function SessionScreen() {
 
             <View style={styles.correctionBody}>
               <View style={styles.correctionRow}>
-                <Text style={styles.correctionLabel}>You said:</Text>
-                <Text style={styles.youSaidText}>"{activeCorrection.original}"</Text>
+                <Text style={styles.correctionLabel}>
+                  {activeCorrection.card_type === "translation" ? "You said in Hindi:" : "You said:"}
+                </Text>
+                <Text style={activeCorrection.card_type === "translation" ? styles.youSaidHindiText : styles.youSaidText}>
+                  "{activeCorrection.original}"
+                </Text>
               </View>
 
               <View style={styles.correctionRow}>
-                <Text style={styles.correctionLabelCorrect}>Better:</Text>
+                <Text style={styles.correctionLabelCorrect}>
+                  {activeCorrection.card_type === "translation" ? "In English:" : "Better:"}
+                </Text>
                 <Text style={styles.betterText}>"{activeCorrection.corrected}"</Text>
               </View>
 
-              <View style={styles.correctionRow}>
-                <Text style={styles.correctionLabel}>Why:</Text>
-                <Text style={styles.whyText}>{activeCorrection.explanation}</Text>
-              </View>
+              {activeCorrection.explanation ? (
+                <View style={styles.correctionRow}>
+                  <Text style={styles.correctionLabel}>
+                    {activeCorrection.card_type === "translation" ? "Tip:" : "Why:"}
+                  </Text>
+                  <Text style={styles.whyText}>{activeCorrection.explanation}</Text>
+                </View>
+              ) : null}
             </View>
 
             <Pressable
@@ -1057,6 +1086,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.orchidBloom,
   },
+  translationCard: {
+    borderColor: theme.colors.cyanSignal,
+    backgroundColor: "rgba(0, 229, 255, 0.04)",
+  },
   correctionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1069,8 +1102,18 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: theme.radii.full,
   },
+  translationBadge: {
+    backgroundColor: "rgba(0, 229, 255, 0.15)",
+  },
   correctionBadgeText: {
     color: theme.colors.orchidBloom,
+    fontSize: 10,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "600",
+    letterSpacing: 1,
+  },
+  translationBadgeText: {
+    color: theme.colors.cyanSignal,
     fontSize: 10,
     fontFamily: theme.fonts.mono,
     fontWeight: "600",
@@ -1104,6 +1147,11 @@ const styles = StyleSheet.create({
   },
   youSaidText: {
     color: theme.colors.crimsonError,
+    fontSize: 14,
+    fontStyle: "italic",
+  },
+  youSaidHindiText: {
+    color: theme.colors.amberWarning,
     fontSize: 14,
     fontStyle: "italic",
   },

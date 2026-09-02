@@ -122,8 +122,9 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 
 async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id: str):
     """
-    Analyzes learner utterance for genuine English grammar/phrasing mistakes.
-    Never flags Hindi speech as an error card.
+    Analyzes learner utterance in parallel:
+      - If learner spoke in Hindi / Hinglish: generates a Translation Card ("Hindi -> English").
+      - If learner made an English grammar mistake: generates a Coach Recast Card.
     """
     if not text or len(text.strip().split()) < 2:
         return
@@ -140,38 +141,48 @@ async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id:
                 return None
             genai.configure(api_key=gemini_key)
             model = genai.GenerativeModel("gemini-2.5-flash")
-            prompt = f"""You are an English language accuracy analyzer for an Indian English learner.
+            prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
 Learner utterance: "{text}"
 
-Determine if there is a noticeable grammatical error or awkward phrasing in an English sentence (e.g. "didn't went", "I am having two brothers", "he don't know", "I am agree").
+Determine:
+1. Did the learner speak in Hindi or Hinglish (e.g. "मैं इंग्लिश सीखना चाहता हूँ", "main theek hoon", "mujhe bahar jana hai", "aaj khana kya bana hai")?
+   -> Generate a TRANSLATION card showing how to say that exact Hindi sentence in natural English.
+   Return JSON:
+   {{
+     "has_card": true,
+     "card_type": "translation",
+     "original": "{text}",
+     "corrected": "<natural conversational English translation>",
+     "explanation": "<1 short sentence in Hinglish explaining the usage or rule>"
+   }}
 
-CRITICAL RULES:
-1. If the user spoke in Hindi or Hinglish (e.g. "main theek hoon", "mujhe English sikhni hai", "kuch nahi"), do NOT flag this as an error. Return {{"has_error": false}}.
-2. Only flag genuine grammatical mistakes in English sentences.
+2. Did the learner speak in English with a grammatical error or awkward phrasing (e.g. "didn't went", "I am having two brothers", "he don't know", "my hobbies are watching anime")?
+   -> Generate a CORRECTION card.
+   Return JSON:
+   {{
+     "has_card": true,
+     "card_type": "correction",
+     "original": "{text}",
+     "corrected": "<corrected natural English sentence>",
+     "explanation": "<1 short sentence explanation in Hinglish (Hindi in English letters)>"
+   }}
 
-If there IS a genuine English grammar or vocabulary error:
-Return JSON:
-{{
-  "has_error": true,
-  "original": "{text}",
-  "corrected": "<natural English sentence>",
-  "explanation": "<1 short sentence explanation in Hinglish (Hindi in English letters)>"
-}}
-
-If there is NO error or the user was speaking Hindi:
-Return JSON:
-{{ "has_error": false }}
+3. Did the learner speak natural, grammatically correct English?
+   Return JSON:
+   {{ "has_card": false }}
 
 JSON ONLY:"""
             res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             return json.loads(res.text.strip())
 
         analysis = await asyncio.to_thread(_analyze)
-        if analysis and analysis.get("has_error") and analysis.get("corrected"):
-            logger.info("Correction card emitted: '%s' -> '%s'", analysis.get("original"), analysis.get("corrected"))
+        if analysis and analysis.get("has_card") and analysis.get("corrected"):
+            card_type = analysis.get("card_type", "correction")
+            logger.info("Card emitted (%s): '%s' -> '%s'", card_type, analysis.get("original"), analysis.get("corrected"))
             if room:
                 payload = json.dumps({
                     "type": "correction",
+                    "card_type": card_type,
                     "original": analysis.get("original", text),
                     "corrected": analysis.get("corrected", ""),
                     "explanation": analysis.get("explanation", ""),

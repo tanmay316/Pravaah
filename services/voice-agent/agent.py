@@ -1,15 +1,17 @@
 """
 English Coach AI — Voice Agent (LiveKit Agents 1.x)
 
-Realtime pipeline:
-  Learner mic → LiveKit/WebRTC → Silero VAD → Groq Whisper STT
-    → LiteLLM (Gemini 3.5 Flash-Lite) → Kokoro TTS → LiveKit → Learner speaker
+Ultra-low-latency realtime pipeline:
+  Learner mic → LiveKit/WebRTC → Groq Whisper STT
+    → Google Gemini Flash Lite → Edge-TTS Streaming → LiveKit → Learner speaker
 
 Architecture rules:
   - Uses AgentSession (NOT deprecated VoicePipelineAgent)
   - Firestore / LangGraph / analytics NEVER block the voice response
   - Events are dispatched asynchronously to the learning engine
   - No model/provider IDs hardcoded in business logic
+  - Grammar analysis runs OFF the critical path (parallel, never blocks reply)
+  - Replies capped to 1-2 sentences for fast TTS + pedagogy
 """
 
 import asyncio
@@ -27,9 +29,8 @@ from livekit.agents import (
     JobContext,
     WorkerOptions,
     cli,
-    inference,
 )
-from livekit.plugins import google, groq, openai, silero
+from livekit.plugins import google, groq, openai
 from telemetry import record_turn_telemetry
 
 load_dotenv()
@@ -46,87 +47,67 @@ LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gemini-2.5-flash")
 
-# TTS Configuration — Kokoro (OSS, primary) or Google Cloud TTS (optional fallback)
-# TTS_PROVIDER: "kokoro" (default, requires Kokoro-FastAPI on localhost:8880)
-#               "google" (optional, requires GOOGLE_APPLICATION_CREDENTIALS)
+# TTS Configuration
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "kokoro")
 KOKORO_BASE_URL = os.getenv("KOKORO_BASE_URL", "http://localhost:8880/v1")
 KOKORO_VOICE = os.getenv("KOKORO_VOICE", "hf_alpha")
 
 # ---------------------------------------------------------------------------
-# Tutor system prompt (derived from AI.md)
+# Tutor system prompt — optimized for low-latency + natural recasts
 # ---------------------------------------------------------------------------
 
-TUTOR_SYSTEM_PROMPT = """You are an English speaking tutor for a Hindi-speaking learner.
+TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, an English speaking tutor for Hindi-speaking learners.
 
-Your primary goal is to help the learner become more fluent and accurate in spoken English through natural conversation.
+Your goal: help the learner become fluent and accurate in spoken English through natural conversation.
 
-You are both:
-- a natural conversation partner
-- an active English teacher
+## Core Rules (STRICT)
+- Keep ALL replies to 1-2 sentences maximum (under 25 words). This is critical for voice latency.
+- Output ONLY clean plain text. NEVER use markdown: no asterisks, hashtags, bullet points, or special formatting.
+- Ask at most ONE question per turn. Never stack multiple questions.
+- Speak mostly in English. Use Hindi/Hinglish ONLY for explanations of corrections.
 
-## Default Conversation Behavior
-- Speak mostly English. Adapt vocabulary, sentence length, and complexity to the learner's level.
-- Use Hindi only when the learner explicitly asks, clearly doesn't understand, or is stuck.
-- After clarification, return to English. Keep responses concise (2-3 sentences max).
-- **STRICT SINGLE-QUESTION RULE**: Ask at most ONE direct conversational question per turn. Never stack multiple questions in a single response (e.g. ask "What did you do yesterday?", NOT "What did you do yesterday, where did you go, and who were you with?").
+## When User Speaks Hindi
+If the learner says something in Hindi (like "mujhe English seekhni hai" or "main theek hoon"):
+- Do NOT ask them to repeat in English.
+- Instead, naturally show them the English version: "In English, you can say: 'I want to learn English.' Now you try!"
+- Be encouraging. Hindi input means they're trying — help them bridge to English.
 
-## Active Correction Behavior
-When the learner makes a meaningful English mistake, correct it naturally.
-Do NOT silently ignore important recurring mistakes. Do NOT correct every tiny imperfection.
+## Correction Style: Natural Recasts (FAST PATH)
+When the learner makes a meaningful English mistake:
+1. Do NOT lecture or run grammar analysis. Just naturally recast the corrected version in your reply.
+2. Use a brief friendly cue: "Small correction:" or "Almost!" or "A more natural way:"
+3. Show the correct sentence clearly.
+4. Explain WHY in Hinglish (Hindi using English letters). Example: "Kyunki past tense mein 'did' ke saath base form use hota hai."
+5. Then ask ONE follow-up question to continue the conversation.
 
-Prioritize mistakes that are:
-1. Grammatically important
-2. Repeated by the learner
-3. Likely to affect natural communication
-4. Related to the current lesson
-5. Useful for the learner's current level
+Example correction flow:
+  User: "I didn't went to school"
+  You: "Small correction: 'I didn't go to school.' Kyunki 'did' ke baad hamesha base form aati hai. What did you do instead?"
 
-## Correction Pattern
-When correcting an important mistake:
-1. Use a friendly phrase: "Small correction.", "Almost!", "A more natural way to say that is..."
-2. Show the correct sentence clearly in English.
-3. Explain WHY simply. YOU MUST EXPLAIN THE REASON IN HINGLISH (Hindi using English alphabet, e.g., "Kyunki past tense mein verb ka second form use hota hai"). This makes it easy for the learner to understand without sounding unnatural with the English voice.
-4. Ask the learner to repeat the corrected sentence when the mistake is important.
-5. If they get it right, praise warmly using natural phrasing (e.g. "Perfect, that was very clear and natural!" or "Exactly right, well done!"). Avoid flat, isolated 1-2 word outputs.
-6. Return to the conversation immediately with ONE natural follow-up question.
+## Do NOT Ask to Repeat
+- Do NOT say "Can you repeat that?" or "Say it again" unless the user's audio was genuinely unclear.
+- Instead of asking for repetition, naturally model the correct form and move the conversation forward.
+- If you do need the user to practice a specific phrase, say the exact phrase clearly: "Try saying: 'I have two brothers.'"
 
-## Repeated-Mistake Memory Hooks
-When a learner struggles with a recurring grammar mistake across multiple sessions and has Hindi support enabled:
-- You may offer a concise 1-sentence Hindi/Hinglish memory hook (e.g. "Remember: did/didn't ke saath hamesha verb ki base form lagti hai — say 'didn't go', not 'didn't went'.").
-- Only provide the memory hook once when pedagogically helpful; do NOT repeat the same memory hook every turn.
-
-## Roleplay Silence Rescue
-In roleplay mode:
-- If the learner is silent for >5 seconds or hesitates, STAY IN CHARACTER.
-- Provide a helpful, supportive in-character prompt (e.g. Hiring Manager: "Take your time. Whenever you're ready, tell me about your background." / Barista: "No rush at all! Take a moment — what can I get started for you today?").
-- Do NOT break character or switch to generic tutor language unless explicitly requested.
-
-## Hindi-Speaker Patterns to Watch
-Recognize common Hindi-English patterns:
+## Common Hindi-English Mistakes to Watch
 - "I am having two brothers" → "I have two brothers" (stative verbs)
 - "He don't know" → "He doesn't know" (subject-verb agreement)
 - "I didn't went" → "I didn't go" (past simple + auxiliary)
 - "I am agree" → "I agree" (be verb + main verb)
 - "Discuss about this" → "Discuss this" (preposition error)
 - "She is knowing him" → "She knows him" (stative verbs)
-When these appear, explain the underlying English rule simply.
+When these appear, briefly explain the rule in Hinglish.
 
 ## Do NOT
-- Ask more than ONE question in a single response
-- Interrupt the learner mid-sentence to correct grammar
-- Turn every conversation into a grammar lecture
-- Correct tiny wording differences, accents, or harmless shortcuts
-- Invent mistakes or claim uncertain style preferences are grammar errors
-- Fabricate learner history or previous mistakes
-
-## Strict Spoken Voice & Latency Rules
-- Output clean conversational plain text ONLY. NEVER use markdown symbols like asterisks (**), hashtags (#), or bullet points, as they confuse the speech engine and add delay.
-- Keep all responses SHORT and punchy: strictly 1 to 2 sentences (maximum 20-25 words total).
-- Always end your turn with ONE clear, short question to keep the conversation moving naturally.
+- Ask more than ONE question per turn
+- Interrupt mid-sentence
+- Turn conversation into a grammar lecture
+- Correct tiny accent/wording differences
+- Use markdown formatting of any kind
+- Give long responses (keep it SHORT)
 
 ## Personality
-Be patient, encouraging, friendly, conversational, supportive, and teacher-like when correction is needed. Never judgmental. Celebrate successful corrections warmly.
+Be warm, patient, encouraging, conversational. Celebrate successes naturally. Never judgmental.
 
 Correct at the earliest natural point AFTER the learner finishes their turn."""
 
@@ -264,31 +245,27 @@ class EnglishTutor(Agent):
             focus_instruction = """
 
 ## Diagnostic Assessment Mode
-You are currently conducting an initial spoken English diagnostic assessment for a new learner.
+You are conducting an initial spoken English diagnostic assessment for a new learner.
 Guidelines:
 1. Be extremely encouraging, welcoming, and warm.
 2. The assessment evaluates 4 core tasks:
-   - Task 1: Introduction & Daily Routine (A1/A2)
-   - Task 2: Past Experience & Storytelling (A2/B1)
-   - Task 3: Opinion & Reasoning (B1/B2)
-   - Task 4: Hypothetical & Complex Discussion (B2/C1)
-3. DO NOT interrupt the learner mid-sentence and DO NOT correct grammar mistakes during this assessment session. Let the learner speak freely and naturally so we can evaluate their authentic speaking ability.
-4. Listen attentively and acknowledge their answers warmly with brief encouraging remarks (e.g. "Thank you for sharing that!", "Great job.") before guiding them to the next question."""
+   - Task 1: Introduction and Daily Routine (A1/A2)
+   - Task 2: Past Experience and Storytelling (A2/B1)
+   - Task 3: Opinion and Reasoning (B1/B2)
+   - Task 4: Hypothetical and Complex Discussion (B2/C1)
+3. DO NOT correct grammar during assessment. Let the learner speak freely.
+4. Listen attentively and acknowledge warmly before guiding to the next question."""
         elif self.lesson_context.get("mode") == "roleplay":
             scenario = self.lesson_context.get("scenario", "Job Interview")
             role = self.lesson_context.get("tutor_role", "Hiring Manager")
             focus_instruction = f"""
 
 ## Roleplay Mode: {scenario}
-- Your Character / Role: {role}
-- Scenario: Natural, interactive spoken roleplay scenario.
-
-Roleplay Guidelines:
-1. Stay in character at all times. Embody the {role} naturally.
-2. Keep turns conversational and concise (2-3 sentences max).
-3. STRICT SINGLE-QUESTION RULE: Ask at most ONE conversational question per turn.
-4. Silence Rescue: If the learner hesitates or stays silent for >5 seconds, provide a supportive in-character prompt (e.g. "Take your time. Whenever you're ready, tell me about..."). Do NOT break character or switch to generic tutor mode unless explicitly asked.
-5. Natural Feedback: Maintain the immersion while offering friendly encouragement."""
+- Your Character: {role}
+- Stay in character at all times.
+- Keep turns to 1-2 sentences. Ask ONE question per turn.
+- If the learner hesitates more than 5 seconds, provide a supportive in-character prompt.
+- Do NOT break character unless explicitly asked."""
         elif self.target_skill:
             title = self.lesson_context.get("lesson_title", self.target_skill)
             rule = self.lesson_context.get("rule_summary", "")
@@ -297,30 +274,30 @@ Roleplay Guidelines:
             mastery = self.lesson_context.get("mastery_score", 0.5)
             hook_text = ""
             if self.lesson_context.get("memory_hook_eligible") and self.lesson_context.get("memory_hook"):
-                hook_text = f"\n- Recurring Error Memory Hook: {self.lesson_context.get('memory_hook')} (Use once if learner repeats error)."
+                hook_text = f"\n- Memory Hook: {self.lesson_context.get('memory_hook')} (Use once if learner repeats error)."
 
             stage_guidelines = {
-                "introduction": "This is an introductory lesson. Introduce the concept gently with a clear, short example before inviting the learner's first attempt.",
-                "guided_practice": "This is guided practice. Lead with the practice prompt and prompt for repetition upon mistakes using quotes (e.g. \"Say '...' Can you repeat that?\").",
-                "conversational_practice": "This is conversational practice. Carry out an engaging back-and-forth dialogue; weave the target skill naturally into the discussion.",
-                "review": "This is a review check-in for a strong skill. Casually verify retention through natural conversation without overwhelming the learner.",
-            }.get(stage, "Conduct lively, natural speaking practice.")
+                "introduction": "Introduce the concept gently with a clear example before inviting the learner's first attempt.",
+                "guided_practice": "Lead with the practice prompt. Model the correct phrase clearly if they make an error.",
+                "conversational_practice": "Carry out an engaging dialogue; weave the target skill naturally.",
+                "review": "Casually verify retention through natural conversation.",
+            }.get(stage, "Conduct lively speaking practice.")
 
             focus_instruction = f"""
 
 ## Targeted Practice Session: {title} (Stage: {stage.replace('_', ' ').title()})
-- Target Skill: `{self.target_skill}`
-- Current Learner Mastery: {round(mastery * 100)}%
-- Rule Summary: {rule}
-- Practice Prompt to Elicit: {practice}{hook_text}
+- Target Skill: {self.target_skill}
+- Mastery: {round(mastery * 100)}%
+- Rule: {rule}
+- Practice: {practice}{hook_text}
 
-Targeted Session Guidelines:
-1. Stage Approach: {stage_guidelines}
-2. Conversational Elicitation: Lead naturally with conversational questions that encourage the learner to use the target pattern (e.g. "{practice}").
-3. No Lectures: Do NOT give long grammar lectures or treat this as a worksheet. Keep it a lively, natural speaking conversation.
-4. Skill Prioritization: Prioritize active corrections on errors relating to `{self.target_skill}`.
-5. Prompted Repetition: When correcting an error on `{self.target_skill}`, state the correct phrase clearly in quotes and invite the learner to repeat it (e.g. "Say 'I didn't go.' Can you repeat that?").
-6. Celebrate Success: Acknowledge and praise the learner warmly when they produce or repeat the correct pattern!"""
+Session Guidelines:
+1. {stage_guidelines}
+2. Use conversational questions to elicit the target pattern.
+3. No grammar lectures. Keep it a lively conversation.
+4. Prioritize corrections on errors relating to {self.target_skill}.
+5. When correcting, state the correct phrase clearly and explain in Hinglish.
+6. Celebrate success warmly!"""
 
         super().__init__(instructions=TUTOR_SYSTEM_PROMPT + focus_instruction)
 
@@ -351,7 +328,6 @@ Targeted Session Guidelines:
                 "lesson_id": self.lesson_context.get("lesson_id"),
             },
         ))
-        logger.info("Session ended: %s", self.session_id)
         logger.info("Session ended: %s", self.session_id)
 
     async def on_user_turn_completed(
@@ -449,10 +425,14 @@ async def entrypoint(ctx: JobContext):
     participant = await ctx.wait_for_participant()
     user_id = participant.identity
 
-    # Read lesson target context selected by the learner
+    # Read lesson target context selected by the learner — run in background thread
     target_skill = None
     lesson_context = {}
-    if process_event is not None:
+
+    async def _load_lesson_context():
+        nonlocal target_skill, lesson_context
+        if process_event is None:
+            return
         try:
             def read_target_context():
                 from worker import get_firestore_client
@@ -481,6 +461,12 @@ async def entrypoint(ctx: JobContext):
         except Exception as exc:
             logger.warning("Could not load lesson target for session %s: %s", session_id, exc)
 
+    # Load lesson context (with a short timeout to not delay greeting too much)
+    try:
+        await asyncio.wait_for(_load_lesson_context(), timeout=3.0)
+    except asyncio.TimeoutError:
+        logger.warning("Lesson context load timed out after 3s, using defaults")
+
     logger.info(
         "Agent joined room=%s session=%s user=%s (target_skill=%s, mode=%s)",
         room_name,
@@ -492,17 +478,14 @@ async def entrypoint(ctx: JobContext):
 
     # --- Build the STT → LLM → TTS pipeline ---
 
-    # STT: Groq Whisper Turbo - ultra-low latency (~100ms)
+    # STT: Groq Whisper Turbo — ultra-low latency (~100ms)
+    # Using multilingual model with English bias (handles Hindi fallback without 2 STT passes)
     stt = groq.STT(
         model="whisper-large-v3-turbo",
         language="en",
     )
 
-    # LLM Priority Hierarchy:
-    # 1. Primary: Google Gemini Flash Lite
-    # 2. Fallback 1: OpenRouter (MiniMax M3 / Mini)
-    # 3. Fallback 2: NVIDIA Nemotron
-    # 4. Fallback 3: LiteLLM Proxy
+    # LLM Priority: Gemini > OpenRouter > NVIDIA > LiteLLM
     gemini_key = os.getenv("GEMINI_API_KEY")
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     nvidia_key = os.getenv("NVIDIA_API_KEY")
@@ -513,52 +496,52 @@ async def entrypoint(ctx: JobContext):
             api_key=gemini_key,
             temperature=0.6,
         )
-        logger.info("LLM [Primary]: Google Gemini 3.5 Flash lite")
+        logger.info("LLM: Google Gemini 3.5 Flash Lite")
     elif openrouter_key:
         llm = openai.LLM(
             model="minimax/minimax-m3:free",
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_key,
         )
-        logger.info("LLM [Fallback 1]: OpenRouter (minimax/minimax-m3:free)")
+        logger.info("LLM: OpenRouter (minimax/minimax-m3:free)")
     elif nvidia_key:
         llm = openai.LLM(
             model="nvidia/nemotron-3.5-lightning-30b-a3b",
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=nvidia_key,
         )
-        logger.info("LLM [Fallback 2]: NVIDIA Nemotron (nemotron-3.5-lightning-30b-a3b)")
+        logger.info("LLM: NVIDIA Nemotron")
     else:
         llm = openai.LLM(
             model=REALTIME_MODEL,
             base_url=LITELLM_PROXY_URL,
             api_key=LITELLM_PROXY_KEY,
         )
-        logger.info("LLM [Fallback 3]: LiteLLM proxy at %s", LITELLM_PROXY_URL)
+        logger.info("LLM: LiteLLM proxy at %s", LITELLM_PROXY_URL)
 
-    # Fast, Natural Indian Voice TTS via local server (Edge-TTS / Kokoro)
+    # TTS: Fast streaming Edge-TTS via local server (pre-warmed cache)
     tts = openai.TTS(
         model="tts-1",
         voice="en-IN-NeerjaNeural",
         api_key="not-needed",
         base_url="http://localhost:8880/v1",
     )
-    logger.info("TTS [Primary]: Indian Neural Voice (en-IN-NeerjaNeural) at http://localhost:8880/v1")
+    logger.info("TTS: Indian Neural Voice (en-IN-NeerjaNeural) at http://localhost:8880/v1")
 
-    # --- Create the AgentSession with Low-Latency Turn Detection ---
+    # --- Create the AgentSession with fast turn detection ---
     session = AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
-        min_endpointing_delay=0.3, # Fast 300ms turn commit
+        min_endpointing_delay=0.3,       # Fast 300ms turn commit
         max_endpointing_delay=1.0,
-        preemptive_generation=True, # Speculative LLM execution on partial transcript
-        allow_interruptions=True,   # Instant barge-in on user speech
+        preemptive_generation=True,       # Speculative LLM on partial transcript
+        allow_interruptions=True,         # Instant barge-in
         min_interruption_duration=0.25,
         resume_false_interruption=True,
     )
 
-    # --- Start the tutor ---
+    # --- Create the tutor agent ---
     tutor = EnglishTutor(
         user_id=user_id,
         session_id=session_id,
@@ -566,7 +549,7 @@ async def entrypoint(ctx: JobContext):
         lesson_context=lesson_context,
     )
 
-    # Listen for participant disconnect to cleanly finalize session & trigger analysis
+    # Listen for participant disconnect to cleanly finalize session
     @room.on("participant_disconnected")
     def on_participant_disconnected(p):
         if p.identity == user_id:
@@ -588,23 +571,21 @@ async def entrypoint(ctx: JobContext):
         agent=tutor,
     )
 
-    # Instant greeting — tailor warmly to mode / objective
+    # Instant greeting — short text for fast TTS (pre-warmed in cache)
+    greeting_text = "Hello! Welcome to your English speaking session. How are you doing today?"
+
     if lesson_context.get("mode") == "assessment":
         greeting_text = (
-            "Welcome to your Pravaah spoken assessment! I will ask you four questions. "
-            "Please speak as naturally as you can. Let's begin: Could you tell me a little about yourself and why you want to practice English?"
+            "Welcome to your Pravaah spoken assessment! "
+            "Could you tell me a little about yourself?"
         )
     elif lesson_context and lesson_context.get("practice_activity"):
-        greeting_text = (
-            f"Hello! Welcome to today's lesson on {lesson_context.get('lesson_title', 'conversation')}. "
-            "How are you doing today, and are you ready to practice?"
-        )
-    else:
-        greeting_text = "Hello! Welcome to your English speaking session. How are you doing today, and what would you like to talk about?"
+        title = lesson_context.get("lesson_title", "conversation")
+        greeting_text = f"Hello! Today we will practice {title}. Are you ready?"
 
-    # Small delay for WebRTC audio track setup
-    await asyncio.sleep(0.5)
-    
+    # Minimal delay for WebRTC audio track setup
+    await asyncio.sleep(0.3)
+
     # Speak the greeting directly (instant playback, 0s LLM delay)
     await session.say(greeting_text, allow_interruptions=True)
 

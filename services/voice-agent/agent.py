@@ -1,11 +1,20 @@
 """
 English Coach AI — Voice Agent (LiveKit Agents 1.x)
 
-Complete Latency, Noise & Hindi Transcription Architecture:
-  1. Silero VAD Gate: Suppresses room noise & silence completely (prevents Whisper ghost transcripts).
-  2. Bilingual STT: Groq Whisper Turbo with detect_language=True & natural sentence prompt (accurate Hindi & English).
-  3. Realtime UI Broadcast: session.on("conversation_item_added") automatically streams every turn to the UI transcript.
-  4. Synchronized Instant Greeting: Agent waits for client "start_conversation" event and greets immediately (<0.3s).
+Two-Path Parallel Architecture:
+  1. FAST PATH (Audio Response ~1s):
+     - LLM replies conversationally in 1 short sentence (max 15-20 words).
+     - No grammar parsing or lecture generation in the voice response loop.
+     - Instant audio playback with Neural Indian English TTS.
+
+  2. PARALLEL PATH (UI Feedback & Deep Analysis):
+     - Background async task analyzes grammar & vocabulary in parallel.
+     - Automatically emits interactive UI correction cards over WebRTC data channel.
+     - Zero audio lag / zero blocking on the voice critical path.
+
+  3. NOISE & VAD GATING:
+     - Silero VAD filters fan noise, background hum, and room echo.
+     - Groq Whisper with detect_language=True for authentic Hindi & English transcription.
 """
 
 import asyncio
@@ -37,37 +46,26 @@ LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
-# Tutor system prompt
+# Fast Conversational System Prompt (Fast Path)
 # ---------------------------------------------------------------------------
 
-TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, a spoken English tutor for Hindi-speaking learners.
+TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, a friendly, encouraging English speaking partner.
 
-Your mission: help the learner speak fluent, confident English through lively conversation.
+Your goal is natural back-and-forth English conversation.
 
-## Critical Rules:
-- Keep ALL replies strictly to 1-2 short sentences (under 20 words).
-- Output clean spoken plain text ONLY (no asterisks, no bullet points, no markdown formatting).
-- Ask at most ONE conversational question per turn.
-- Speak primarily in English.
+## Critical Voice Rules:
+- Reply in strictly 1 to 2 short sentences (maximum 15-20 words total).
+- Always end with ONE natural conversational question to keep the dialogue moving.
+- Output clean spoken plain text ONLY (no asterisks, no bullet points, no markdown).
+- Do NOT lecture or give long grammar explanations. Just converse naturally.
 
-## Handling Hindi:
-When the learner speaks in Hindi or Hinglish (e.g. "मैं इंग्लिश सीखना चाहता हूँ" or "main theek hoon"):
-- Acknowledge warmly and show how to say it in English: "In English, you can say: 'I want to learn English.' What would you like to talk about today?"
-- Never scold or lecture. Naturally bridge Hindi into English.
+## Handling Hindi Input:
+If the learner speaks in Hindi (e.g. "मैं इंग्लिश सीखना चाहता हूँ" or "main theek hoon"):
+- Warmly show how to say it in English, then ask a follow-up question:
+  "In English you can say: 'I want to learn English.' What topics do you like?"
 
-## Handling English Mistakes (Natural Recasts):
-When the learner makes an English grammar error:
-1. Use a warm cue ("Small correction:", "A natural way:").
-2. State the correct sentence clearly.
-3. Add a 1-sentence explanation in Hinglish (e.g. "Kyunki 'did' ke baad verb ki first form aati hai").
-4. Ask ONE question to continue the dialogue.
-
-Example:
-  Learner: "I didn't went there."
-  Coach: "Small correction: 'I didn't go there.' Kyunki 'did' ke baad first form use hoti hai. What did you do instead?"
-
-## Personality:
-Warm, supportive, conversational, encouraging."""
+## Tone:
+Warm, energetic, supportive, friendly."""
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +128,68 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 
 
 # ---------------------------------------------------------------------------
+# Parallel Path: Async Background Grammar & Accuracy Analysis
+# ---------------------------------------------------------------------------
+
+async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id: str):
+    """
+    Executes in parallel in a background thread while the voice reply is playing.
+    Detects grammar/vocabulary errors and emits visual correction cards to the UI.
+    """
+    if not text or len(text.strip().split()) < 2:
+        return
+
+    # Skip pure simple greetings
+    clean_lower = text.strip().lower()
+    if clean_lower in ["hello", "hi", "hey", "yes", "no", "okay", "thank you", "thanks"]:
+        return
+
+    try:
+        def _analyze():
+            import google.generativeai as genai
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_key:
+                return None
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            prompt = f"""You are an English language accuracy analyzer for an Indian English learner.
+Learner utterance: "{text}"
+
+Determine if there is a noticeable grammatical error, awkward phrasing, or common Hindi-English mistake (e.g. "didn't went", "I am having two brothers", "he don't", "I am agree").
+
+If there IS an error:
+Return JSON:
+{{
+  "has_error": true,
+  "original": "{text}",
+  "corrected": "<natural English sentence>",
+  "explanation": "<1 short sentence explanation in Hinglish (Hindi in English alphabet)>"
+}}
+
+If there is NO meaningful error:
+Return JSON:
+{{ "has_error": false }}
+
+JSON ONLY:"""
+            res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(res.text.strip())
+
+        analysis = await asyncio.to_thread(_analyze)
+        if analysis and analysis.get("has_error") and analysis.get("corrected"):
+            logger.info("Parallel correction card emitted: '%s' -> '%s'", analysis.get("original"), analysis.get("corrected"))
+            if room:
+                payload = json.dumps({
+                    "type": "correction",
+                    "original": analysis.get("original", text),
+                    "corrected": analysis.get("corrected", ""),
+                    "explanation": analysis.get("explanation", ""),
+                }).encode("utf-8")
+                await room.local_participant.publish_data(payload)
+    except Exception as exc:
+        logger.debug("Parallel analysis notice: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # English Tutor Agent
 # ---------------------------------------------------------------------------
 
@@ -150,21 +210,10 @@ class EnglishTutor(Agent):
 
         focus_instruction = ""
         if self.lesson_context.get("mode") == "assessment":
-            focus_instruction = """
-
-## Diagnostic Assessment:
-Ask 4 progressive spoken questions. Do not correct mistakes during assessment. Be warm and encouraging."""
+            focus_instruction = "\n## Assessment Mode: Ask 4 short progressive questions. Be warm and encouraging."
         elif self.target_skill:
             title = self.lesson_context.get("lesson_title", self.target_skill)
-            rule = self.lesson_context.get("rule_summary", "")
-            practice = self.lesson_context.get("practice_activity", "")
-            focus_instruction = f"""
-
-## Targeted Skill: {title}
-- Target: {self.target_skill}
-- Rule: {rule}
-- Activity: {practice}
-Elicit this pattern naturally in dialogue."""
+            focus_instruction = f"\n## Focus Topic: {title}. Weave questions related to {title} naturally."
 
         super().__init__(instructions=TUTOR_SYSTEM_PROMPT + focus_instruction)
 
@@ -195,8 +244,13 @@ Elicit this pattern naturally in dialogue."""
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         user_text = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
-        logger.info("Learner said: %s", user_text)
+        logger.info("Learner: %s", user_text)
 
+        # 1. Trigger parallel accuracy analysis off the voice critical path
+        if self.room:
+            asyncio.create_task(run_parallel_accuracy_check(self.room, user_text, self.user_id, self.session_id))
+
+        # 2. Persist event asynchronously
         await emit_event(make_event(
             "USER_UTTERANCE",
             self.user_id,
@@ -210,7 +264,7 @@ Elicit this pattern naturally in dialogue."""
 # ---------------------------------------------------------------------------
 
 async def entrypoint(ctx: JobContext):
-    """LiveKit Agents entrypoint."""
+    """LiveKit Agents entrypoint — ultra-low latency conversational setup."""
 
     await ctx.connect()
     room = ctx.room
@@ -255,20 +309,20 @@ async def entrypoint(ctx: JobContext):
 
     logger.info("Session ready: room=%s user=%s mode=%s", room_name, user_id, lesson_context.get("mode"))
 
-    # 1. Silero VAD — local voice activity detector to eliminate ghost noise
+    # 1. Silero VAD — filters ambient noise, fan hum & silence
     vad = silero.VAD.load(
-        min_speech_duration=0.2,
-        min_silence_duration=0.45,
+        min_speech_duration=0.25,
+        min_silence_duration=0.5,
     )
 
-    # 2. STT: Groq Whisper Turbo with detect_language=True & natural bilingual prompt
+    # 2. STT: Groq Whisper Turbo with detect_language=True & bilingual prompt
     stt = groq.STT(
         model="whisper-large-v3-turbo",
         detect_language=True,
         prompt="नमस्ते, मैं इंग्लिश बोलना सीखना चाहता हूँ। Hello, I want to practice speaking English fluently.",
     )
 
-    # 3. LLM: Google Gemini 3.5 Flash Lite
+    # 3. LLM: Google Gemini 3.5 Flash Lite (ultra-fast 15-word conversational responses)
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         llm = google.LLM(
@@ -291,14 +345,14 @@ async def entrypoint(ctx: JobContext):
         base_url="http://localhost:8880/v1",
     )
 
-    # 5. AgentSession with VAD noise gating, fast turn detection and zero AEC warmup lag
+    # 5. AgentSession with fast turn commitment & preemptive generation
     session = AgentSession(
         stt=stt,
         vad=vad,
         llm=llm,
         tts=tts,
         min_endpointing_delay=0.3,
-        max_endpointing_delay=0.8,
+        max_endpointing_delay=0.75,
         preemptive_generation=True,
         allow_interruptions=True,
         min_interruption_duration=0.3,
@@ -328,27 +382,10 @@ async def entrypoint(ctx: JobContext):
             if not text:
                 return
             speaker = "learner" if role == "user" else "tutor"
-            logger.info("Turn broadcast [%s]: %s", speaker, text[:60])
+            logger.info("Transcript broadcast [%s]: %s", speaker, text[:60])
             asyncio.create_task(broadcast_ui_turn(room, speaker, text))
         except Exception as exc:
             logger.debug("conversation_item_added broadcast note: %s", exc)
-
-    # Synchronize start signal from user's "Start Conversation" button click
-    start_conversation_event = asyncio.Event()
-
-    @room.on("data_received")
-    def on_data_received(data_packet):
-        try:
-            msg = json.loads(data_packet.data.decode("utf-8"))
-            if msg.get("type") == "start_conversation":
-                start_conversation_event.set()
-        except Exception:
-            pass
-
-    @room.on("track_published")
-    def on_track_published(pub, p):
-        if p.identity == user_id:
-            start_conversation_event.set()
 
     # Listen for disconnect
     @room.on("participant_disconnected")
@@ -373,23 +410,17 @@ async def entrypoint(ctx: JobContext):
         agent=tutor,
     )
 
-    greeting_text = "Hello! Welcome. How are you doing today?"
+    # Greeting message
+    greeting_text = "Hello! Welcome to your English speaking practice. How are you doing today?"
     if lesson_context.get("mode") == "assessment":
         greeting_text = "Welcome to your English assessment! Could you tell me a little about yourself?"
     elif lesson_context.get("practice_activity"):
         title = lesson_context.get("lesson_title", "speaking")
         greeting_text = f"Hello! Today we will practice {title}. Are you ready?"
 
-    # Wait for the learner to click "Start Conversation" button
-    logger.info("Waiting for learner to click Start Conversation...")
-    try:
-        await asyncio.wait_for(start_conversation_event.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        pass
-
-    # Instant greeting right when learner clicks start
-    logger.info("Learner started session — speaking greeting instantly.")
-    await asyncio.sleep(0.1)
+    # Instant greeting upon WebRTC track stabilization (<0.3s)
+    logger.info("Delivering greeting for session %s", session_id)
+    await asyncio.sleep(0.3)
     await session.say(greeting_text, allow_interruptions=True)
 
 

@@ -121,24 +121,40 @@ export default function SessionScreen() {
           const v4 = Math.max(14, (dataArray[8] / 255) * 65);
           const v5 = Math.max(12, (dataArray[10] / 255) * 55);
 
-          // Calibrated energy threshold (38) to reject ambient noise / hum
+          // Calibrated energy threshold (45) to reject ambient noise / fan hum
           const avgEnergy = (dataArray[2] + dataArray[4] + dataArray[6] + dataArray[8]) / 4;
-          if (avgEnergy > 38 && !agentSpeakingRef.current) {
+          const isUserActuallySpeaking = avgEnergy > 45 && !agentSpeakingRef.current;
+
+          if (isUserActuallySpeaking) {
             setLearnerSpeaking(true);
             speakingDebounce = 15;
+            waveAnim1.setValue(v1);
+            waveAnim2.setValue(v2);
+            waveAnim3.setValue(v3);
+            waveAnim4.setValue(v4);
+            waveAnim5.setValue(v5);
           } else {
             if (speakingDebounce > 0) {
               speakingDebounce -= 1;
             } else {
               setLearnerSpeaking(false);
             }
+            if (agentSpeakingRef.current) {
+              // Gentle wave for coach speaking
+              waveAnim1.setValue(18);
+              waveAnim2.setValue(32);
+              waveAnim3.setValue(24);
+              waveAnim4.setValue(38);
+              waveAnim5.setValue(20);
+            } else {
+              // Idle calm state
+              waveAnim1.setValue(12);
+              waveAnim2.setValue(14);
+              waveAnim3.setValue(16);
+              waveAnim4.setValue(14);
+              waveAnim5.setValue(12);
+            }
           }
-
-          waveAnim1.setValue(v1);
-          waveAnim2.setValue(v2);
-          waveAnim3.setValue(v3);
-          waveAnim4.setValue(v4);
-          waveAnim5.setValue(v5);
 
           animFrameRef.current = requestAnimationFrame(loop);
         };

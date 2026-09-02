@@ -1,0 +1,67 @@
+# === Dependencies ===
+node_modules/
+.pnp
+.pnp.js
+
+# === Secrets & Keys — NEVER commit ===
+secrets/
+*.p12
+*.pem
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+**/service-account*.json
+
+# === Large Binaries, Model Weights & Archives ===
+ffmpeg.zip
+ffmpeg-master-latest-win64-gpl/
+Kokoro-FastAPI/
+services/voice-agent/models/
+*.onnx
+*.bin
+*.pt
+*.safetensors
+*.wav
+*.mp3
+tests/audio_e2e/*.wav
+tests/audio_e2e/*.mp3
+
+# === Logs & Caches ===
+*.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === Expo / React Native ===
+apps/expo/android/
+apps/expo/ios/
+apps/expo/.expo/
+apps/expo/dist/
+apps/expo/web-build/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.Python
+
+# === IDE & OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+

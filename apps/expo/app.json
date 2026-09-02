@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Pravaah",
+    "slug": "pravaah",
+    "version": "0.1.0",
+    "scheme": "pravaah",
+    "platforms": ["ios", "android", "web"],
+    "icon": "./assets/icon.png",
+    "newArchEnabled": true,
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      [
+        "@livekit/react-native-expo-plugin",
+        {
+          "android": { "audioType": "communication" },
+          "ios": { "enableMultitaskingCameraAccess": false }
+        }
+      ],
+      "@config-plugins/react-native-webrtc"
+    ],
+    "android": {
+      "package": "com.pravaah.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f1011"
+      },
+      "permissions": [
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "INTERNET"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.pravaah.app",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Pravaah needs your microphone for English conversation practice."
+      }
+    }
+  }
+}

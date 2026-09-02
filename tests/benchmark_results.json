@@ -1,0 +1,134 @@
+{
+  "timestamp": 1788167703.3553977,
+  "ttfa_statistics": {
+    "min": 1328.98,
+    "p50": 1420.475,
+    "p95": 1515.31,
+    "max": 1515.31,
+    "sample_count": 10,
+    "samples": [
+      1328.98,
+      1413.44,
+      1515.31,
+      1453.04,
+      1438.48,
+      1406.43,
+      1441.12,
+      1367.16,
+      1427.51,
+      1340.63
+    ]
+  },
+  "utterance_records": [
+    {
+      "utterance_id": "utt_01",
+      "text": "Yesterday I didn't went to office because I was sick.",
+      "ttfa_ms": 1328.98,
+      "vad_ms": 184.26,
+      "stt_ms": 252.49,
+      "llm_ttft_ms": 765.15,
+      "tts_ms": 127.07,
+      "response": "You're doing great, but let's fix one little mistake! \n\nInstead of *\"I didn't went\"*, you should say **\"I didn't go\"**. \n\n*Rule:* Always use the base form of the verb (go) after \"did not\" because \"did\" already shows the past tense. \n\nCould you please repeat the correct sentence: **\"Yesterday I didn't go to office because I was sick\"**",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_02",
+      "text": "I am agree with your opinion on this topic.",
+      "ttfa_ms": 1413.44,
+      "vad_ms": 206.01,
+      "stt_ms": 294.74,
+      "llm_ttft_ms": 786.15,
+      "tts_ms": 126.54,
+      "response": "Almost! In English, we say **\"I agree\"** instead of \"I am agree.\" \n\n*Rule:* \"Agree\" is a verb, not an adjective, so you don't need the helping verb \"am.\"\n\nCould you please repeat the correct sentence: **\"I agree with your opinion\"**?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_03",
+      "text": "Yesterday I am go to market to buy fruits.",
+      "ttfa_ms": 1515.31,
+      "vad_ms": 198.46,
+      "stt_ms": 254.86,
+      "llm_ttft_ms": 929.75,
+      "tts_ms": 132.23,
+      "response": "Hello! You are doing great, but let's fix a small error in your sentence. \n\nInstead of *\"I am go\"*, you should say: **\"I went\"**. \n*Rule:* We use the past tense (**went**) for actions that happened yesterday, because \"am go\" mixes the present and past. \n\nCan you please repeat this correct sentence: **\"Yesterday I went to the market to buy fruits.\"**?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_04",
+      "text": "He don't know the answer to this question.",
+      "ttfa_ms": 1453.04,
+      "vad_ms": 201.15,
+      "stt_ms": 327.4,
+      "llm_ttft_ms": 812.57,
+      "tts_ms": 111.92,
+      "response": "Almost! You should say: **\"He doesn't know the answer to this question.\"** \n\nWe use \"doesn't\" instead of \"don't\" with singular third-person subjects like \"he,\" \"she,\" or \"it.\" \n\nCould you please repeat the correct sentence for me: *\"He doesn't know the answer to this question\"*?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_05",
+      "text": "We need to discuss about the project plan today.",
+      "ttfa_ms": 1438.48,
+      "vad_ms": 189.92,
+      "stt_ms": 248.05,
+      "llm_ttft_ms": 880.26,
+      "tts_ms": 120.25,
+      "response": "You're doing great, but let's fix one little word! \n\nInstead of saying *\"discuss about,\"* you should just say *\"discuss\"* because the word \"discuss\" already includes the meaning of \"about.\" \n\nCan you please repeat the correct sentence: **\"We need to discuss the project plan today\"**?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_06",
+      "text": "I have visited Delhi last year during Diwali.",
+      "ttfa_ms": 1406.43,
+      "vad_ms": 202.37,
+      "stt_ms": 306.78,
+      "llm_ttft_ms": 764.04,
+      "tts_ms": 133.24,
+      "response": "Namaste! That sounds like a wonderful trip to Delhi during Diwali. \n\nHowever, there is a small grammar mistake in your sentence. Instead of *\"I have visited\"*, you should say, **\"I visited Delhi last year during Diwali.\"**\n\n*Rule:* Use the simple past tense (visited) instead of the present perfect (have visited) when you mention a specific time in the past (like \"last year\"), because the action is finished and has no connection",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_07",
+      "text": "She does not has any experience in marketing.",
+      "ttfa_ms": 1441.12,
+      "vad_ms": 217.85,
+      "stt_ms": 298.63,
+      "llm_ttft_ms": 794.11,
+      "tts_ms": 130.54,
+      "response": "You're doing great, but there is a small mistake here! \n\nInstead of \"does not has,\" you should say, **\"does not have.\"** \n\n*Rule:* After helping verbs like \"does,\" we always use the base form of the verb (\"have\") because \"does\" already shows the present tense. \n\nCould you please repeat the correct sentence: **\"She does not have any experience in marketing\"**?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_08",
+      "text": "Why you are late for the meeting today?",
+      "ttfa_ms": 1367.16,
+      "vad_ms": 217.0,
+      "stt_ms": 268.7,
+      "llm_ttft_ms": 746.41,
+      "tts_ms": 135.04,
+      "response": "You're doing great! Just a small correction: instead of \"Why you are late,\" we should say, **\"Why *are you* late?\"**\n\nIn English questions, the helping verb (*are*) must come before the subject (*you*). \n\nCould you please repeat the correct sentence: **\"Why are you late for the meeting today?\"**?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_09",
+      "text": "I am working in this company since two years.",
+      "ttfa_ms": 1427.51,
+      "vad_ms": 200.38,
+      "stt_ms": 261.81,
+      "llm_ttft_ms": 826.56,
+      "tts_ms": 138.76,
+      "response": "You are doing great, but let's fix a small error! \n\nInstead of \"I am working,\" you should say: **\"I have been working in this company for two years.\"**\n\n*Rule:* Use \"have been + -ing\" with \"for\" when an action started in the past and is still continuing.\n\nCould you please repeat that correct sentence for me?",
+      "first_content_useful": true
+    },
+    {
+      "utterance_id": "utt_10",
+      "text": "Although he was tired, but he finished the work.",
+      "ttfa_ms": 1340.63,
+      "vad_ms": 194.82,
+      "stt_ms": 275.93,
+      "llm_ttft_ms": 755.88,
+      "tts_ms": 114.0,
+      "response": "You're doing great, but there is a small grammar mistake here! \n\nWe don't use **\"although\"** and **\"but\"** together in the same sentence because both are used to show a contrast, making one of them unnecessary. \n\nCould you please repeat this correct sentence: **\"Although he was tired, he finished the work.\"**?",
+      "first_content_useful": true
+    }
+  ]
+}

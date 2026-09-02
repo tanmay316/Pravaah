@@ -30,27 +30,33 @@ flowchart TD
     User([Learner Microphone & Speaker]) <-->|WebRTC Opus Audio| LiveKitCloud[LiveKit Cloud Gateway]
     
     subgraph Voice Pipeline [services/voice-agent]
-        LiveKitCloud -->|Audio Stream| STT[Groq Whisper-large-v3-turbo]
-        STT -->|Realtime Transcript| TurnDetector[Cloud Turn Detector & VAD]
-        TurnDetector -->|Committed Turn| LLM[Google Gemini 3.5 Flash Lite]
-        LLM -->|Streamed Tokens| TTS[Fast Neural TTS Server: Port 8880]
-        TTS -->|MP3 / PCM Stream| LiveKitCloud
+        LiveKitCloud -->|Audio Stream| STT["Groq Whisper-large-v3-turbo"]
+        STT -->|Realtime Transcript| TurnDetector["Cloud Turn Detector"]
+        TurnDetector -->|Committed Turn| LLM["Google Gemini 3.5 Flash Lite"]
+        LLM -->|Streamed Tokens| TTS["Fast Neural TTS Server"]
+        TTS -->|MP3 Stream| LiveKitCloud
     end
 
-    subgraph Learning Engine [services/learning-engine]
-        Voice Pipeline -.->|Async Events / Outbox| Engine[Mastery & Spaced Repetition Worker]
-        Engine <-->|Profile, Analytics & Plans| Firestore[(Firebase Firestore)]
+    subgraph LearningEngine ["Learning Engine (services/learning-engine)"]
+        Engine["Mastery & Spaced Repetition Worker"]
+        Firestore[("Firebase Firestore")]
+        Engine <-->|Profile & Plans| Firestore
     end
 
-    subgraph Backend API [services/api]
-        FastAPI[FastAPI Server: Port 8000] <--> Firestore
-        FastAPI -->|Token Minting| LiveKitAPI[LiveKit Cloud API]
+    subgraph BackendAPI ["Backend API (services/api)"]
+        FastAPI["FastAPI Server :8000"]
+        LiveKitAPI["LiveKit Cloud API"]
+        FastAPI <--> Firestore
+        FastAPI -->|Token Minting| LiveKitAPI
     end
 
-    subgraph Client App [apps/expo]
-        WebClient[Expo React Native Web: Port 8081] <--> FastAPI
+    subgraph ClientApp ["Client App (apps/expo)"]
+        WebClient["Expo React Native Web :8081"]
+        WebClient <--> FastAPI
         WebClient <-->|LiveKit Client SDK| LiveKitCloud
     end
+
+    TTS -.->|Async Events| Engine
 ```
 
 ---

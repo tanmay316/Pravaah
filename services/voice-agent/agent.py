@@ -1,11 +1,12 @@
 """
 English Coach AI — Voice Agent (LiveKit Agents 1.x)
 
-Features:
-  1. Natural Recasts in Voice: Seamlessly corrects errors with a 1-sentence Hinglish reason in the voice stream.
-  2. Parallel UI Visual Cards: Emits structured correction cards to the UI in parallel.
-  3. Hindi Bridging: Converts Hindi thoughts into natural spoken English equivalents.
-  4. Noise & Sniffing Rejection: Silero VAD (0.35s min speech) + Groq Whisper temperature=0.0 to eliminate ghost words.
+Features & Optimizations:
+  1. Flagship Multilingual STT: Groq Whisper Large v3 (`whisper-large-v3`, 1550M params) for ultra-accurate Indian English & Hindi recognition.
+  2. Spoken Recasts in Voice: Seamless natural corrections with friendly Hinglish reasons in the voice stream.
+  3. Parallel Accuracy Cards: Emits visual UI cards ONLY for genuine English grammar/word errors (never flags Hindi speech as an error).
+  4. Hindi Bridging: Converts Hindi speech into natural spoken English equivalents.
+  5. Noise & Sniffing Rejection: Silero VAD (0.35s min speech) + temperature=0.0 to eliminate ghost words.
 """
 
 import asyncio
@@ -121,7 +122,8 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 
 async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id: str):
     """
-    Analyzes learner utterance for mistakes and emits an interactive UI card.
+    Analyzes learner utterance for genuine English grammar/phrasing mistakes.
+    Never flags Hindi speech as an error card.
     """
     if not text or len(text.strip().split()) < 2:
         return
@@ -141,9 +143,13 @@ async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id:
             prompt = f"""You are an English language accuracy analyzer for an Indian English learner.
 Learner utterance: "{text}"
 
-Check if there is a grammatical error, awkward phrasing, or common Hindi-English mistake.
+Determine if there is a noticeable grammatical error or awkward phrasing in an English sentence (e.g. "didn't went", "I am having two brothers", "he don't know", "I am agree").
 
-If there IS an error:
+CRITICAL RULES:
+1. If the user spoke in Hindi or Hinglish (e.g. "main theek hoon", "mujhe English sikhni hai", "kuch nahi"), do NOT flag this as an error. Return {{"has_error": false}}.
+2. Only flag genuine grammatical mistakes in English sentences.
+
+If there IS a genuine English grammar or vocabulary error:
 Return JSON:
 {{
   "has_error": true,
@@ -152,7 +158,7 @@ Return JSON:
   "explanation": "<1 short sentence explanation in Hinglish (Hindi in English letters)>"
 }}
 
-If there is NO meaningful error:
+If there is NO error or the user was speaking Hindi:
 Return JSON:
 {{ "has_error": false }}
 
@@ -299,11 +305,11 @@ async def entrypoint(ctx: JobContext):
         min_silence_duration=0.55,
     )
 
-    # 2. STT: Groq Whisper Turbo with temperature=0.0 (eliminates hallucinated random words)
+    # 2. STT: Full Flagship Groq Whisper Large v3 (1550M params) with temperature=0.0
     stt = groq.STT(
-        model="whisper-large-v3-turbo",
+        model="whisper-large-v3",
         detect_language=True,
-        prompt="नमस्ते, मैं इंग्लिश बोलना सीखना चाहता हूँ। Hello, I want to practice speaking English fluently.",
+        prompt="Bilingual English and Hindi practice. Common phrases: Hello, how are you? I want to practice speaking. नमस्ते, मैं ठीक हूँ।",
     )
 
     # 3. LLM: Google Gemini 3.5 Flash Lite

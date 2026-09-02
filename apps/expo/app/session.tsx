@@ -506,13 +506,6 @@ export default function SessionScreen() {
             </View>
           </View>
 
-          {isConnecting ? (
-            <View style={styles.connectingCard}>
-              <ActivityIndicator size="small" color={theme.colors.irisGleam} />
-              <Text style={styles.connectingText}>Preparing your coach session...</Text>
-            </View>
-          ) : null}
-
           {errorMessage ? (
             <View style={styles.errorBanner}>
               <Text style={styles.errorBannerText}>{errorMessage}</Text>

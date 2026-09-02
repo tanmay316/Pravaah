@@ -1,31 +1,29 @@
 """
-Fast TTS Server — Streaming Edge-TTS with LRU Cache
+Fast Neural Indian TTS Server (Edge-TTS + Pre-warmed LRU Cache)
 
-Key optimizations:
-  1. STREAMING response: chunks sent to client as Edge-TTS produces them
-     (no more buffering entire audio before responding → ~3x lower TTFA)
-  2. In-memory LRU cache for repeated/greeting phrases (instant replay)
-  3. Pre-warmed cache for common greetings on startup
-  4. Kokoro ONNX fallback if Edge-TTS fails (offline mode)
+Features:
+  - High-fidelity Neural Indian English voice (`en-IN-NeerjaNeural`)
+  - Complete, glitch-free MP3 frame delivery (prevents audio emitter flush / breaking voice)
+  - Pre-warmed in-memory cache for instant greetings & common tutor responses
+  - Automatic fallback to Kokoro ONNX if offline
 """
 
 import asyncio
 import io
+import logging
 import os
 import time
-import logging
 
 import edge_tts
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tts-server")
 
-app = FastAPI(title="Fast Streaming TTS Server", version="2.0.0")
+app = FastAPI(title="Fast Indian TTS Server", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,22 +57,22 @@ def get_kokoro():
 
 
 # ---------------------------------------------------------------------------
-# In-memory LRU cache (capped at 300 entries)
+# In-memory LRU cache
 # ---------------------------------------------------------------------------
 _tts_cache: dict[str, bytes] = {}
-MAX_CACHE = 300
+MAX_CACHE = 400
 
 VALID_VOICES = {"en-IN-NeerjaNeural", "en-IN-PrabhatNeural", "hi-IN-SwaraNeural"}
 DEFAULT_VOICE = "en-IN-NeerjaNeural"
 
-# Greetings to pre-warm on startup (instant playback for first session)
 PREWARM_PHRASES = [
+    "Hello! Welcome. How are you doing today?",
     "Hello! Welcome to your English speaking session. How are you doing today?",
-    "Hello! Welcome to your English speaking session. How are you doing today, and what would you like to talk about?",
+    "Welcome to your English assessment! Could you tell me a little about yourself?",
     "Okay.",
     "Great job!",
     "Perfect, that was very clear and natural!",
-    "Can you try saying that again?",
+    "Exactly right, well done!",
 ]
 
 
@@ -87,8 +85,8 @@ class SpeechRequest(BaseModel):
 
 
 def _clean(text: str) -> str:
-    """Strip markdown artifacts that confuse TTS."""
-    t = text.strip().replace("**", "").replace("*", "").replace("#", "").replace('"', "")
+    """Strip markdown artifacts and punctuation that confuse TTS."""
+    t = text.strip().replace("**", "").replace("*", "").replace("#", "").replace('"', "").replace("`", "")
     return t if t else "Okay."
 
 
@@ -106,7 +104,7 @@ def _cache_key(voice: str, text: str) -> str:
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "engine": "edge-tts-streaming", "cached": len(_tts_cache)}
+    return {"status": "ok", "engine": "edge-tts", "cached_items": len(_tts_cache)}
 
 
 @app.post("/v1/audio/speech")
@@ -116,61 +114,39 @@ async def generate_speech(req: SpeechRequest):
     voice = _resolve_voice(req.voice)
     key = _cache_key(voice, clean_text)
 
-    # --- Cache hit: instant response ---
+    # --- 1. In-memory Cache Hit (0ms) ---
     if key in _tts_cache:
         elapsed = (time.monotonic() - t0) * 1000
-        logger.debug("TTS cache HIT [%.0fms] %s", elapsed, clean_text[:60])
+        logger.info("TTS [CACHE HIT] %.0fms: %s", elapsed, clean_text[:50])
         return Response(
             content=_tts_cache[key],
             media_type="audio/mpeg",
             headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
         )
 
-    # --- Streaming Edge-TTS synthesis ---
+    # --- 2. High-speed Edge-TTS Synthesis ---
     try:
         communicate = edge_tts.Communicate(clean_text, voice=voice)
+        audio_buf = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_buf.extend(chunk["data"])
 
-        # For short text (< 100 chars), buffer completely for caching + speed
-        if len(clean_text) < 100:
-            audio_buf = bytearray()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_buf.extend(chunk["data"])
-            result = bytes(audio_buf)
+        result_bytes = bytes(audio_buf)
+        if result_bytes:
             if len(_tts_cache) < MAX_CACHE:
-                _tts_cache[key] = result
+                _tts_cache[key] = result_bytes
             elapsed = (time.monotonic() - t0) * 1000
-            logger.info("TTS synth [%.0fms] (%d bytes) %s", elapsed, len(result), clean_text[:60])
+            logger.info("TTS [SYNTH] %.0fms (%d bytes): %s", elapsed, len(result_bytes), clean_text[:50])
             return Response(
-                content=result,
+                content=result_bytes,
                 media_type="audio/mpeg",
                 headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
             )
-
-        # For longer text, stream chunks to client as they arrive
-        async def audio_stream():
-            buf = bytearray()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    data = chunk["data"]
-                    buf.extend(data)
-                    yield data
-            # Cache the full result after streaming completes
-            if len(_tts_cache) < MAX_CACHE:
-                _tts_cache[key] = bytes(buf)
-
-        elapsed = (time.monotonic() - t0) * 1000
-        logger.info("TTS streaming start [%.0fms] %s", elapsed, clean_text[:60])
-        return StreamingResponse(
-            audio_stream(),
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
-        )
-
     except Exception as edge_err:
-        logger.warning("Edge-TTS error, trying Kokoro fallback: %s", edge_err)
+        logger.warning("Edge-TTS error, falling back to Kokoro: %s", edge_err)
 
-    # --- Kokoro ONNX fallback (offline) ---
+    # --- 3. Kokoro Fallback (offline) ---
     try:
         import soundfile as sf
         kokoro = get_kokoro()
@@ -187,7 +163,7 @@ async def generate_speech(req: SpeechRequest):
                 headers={"Content-Disposition": 'attachment; filename="speech.wav"'},
             )
     except Exception as kokoro_err:
-        logger.error("Kokoro fallback also failed: %s", kokoro_err)
+        logger.error("Kokoro fallback failed: %s", kokoro_err)
 
     raise HTTPException(status_code=500, detail="TTS generation failed")
 
@@ -198,22 +174,20 @@ async def generate_speech(req: SpeechRequest):
 
 @app.on_event("startup")
 async def prewarm_cache():
-    """Pre-synthesize common greetings so first session is instant."""
-    logger.info("Pre-warming TTS cache with %d phrases...", len(PREWARM_PHRASES))
+    """Pre-synthesize common greetings for 0s greeting latency."""
+    logger.info("Pre-warming TTS cache...")
     for phrase in PREWARM_PHRASES:
         try:
-            voice = DEFAULT_VOICE
-            key = _cache_key(voice, phrase)
-            communicate = edge_tts.Communicate(phrase, voice=voice)
+            key = _cache_key(DEFAULT_VOICE, phrase)
+            communicate = edge_tts.Communicate(phrase, voice=DEFAULT_VOICE)
             buf = bytearray()
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     buf.extend(chunk["data"])
             _tts_cache[key] = bytes(buf)
-            logger.info("  Cached: %s (%d bytes)", phrase[:50], len(buf))
         except Exception as e:
-            logger.warning("  Failed to cache: %s — %s", phrase[:50], e)
-    logger.info("TTS cache pre-warmed: %d entries ready", len(_tts_cache))
+            logger.warning("Prewarm notice for '%s': %s", phrase[:30], e)
+    logger.info("TTS ready with %d pre-cached phrases.", len(_tts_cache))
 
 
 if __name__ == "__main__":

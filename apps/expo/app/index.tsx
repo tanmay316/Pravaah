@@ -21,7 +21,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import {
   getProfile,
   getDailyPlan,
@@ -269,6 +269,12 @@ export default function DashboardScreen() {
     const timer = setTimeout(() => setLoading(false), 1200);
     return () => clearTimeout(timer);
   }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -648,47 +654,93 @@ export default function DashboardScreen() {
 
             {/* ACTIVITY SCHEDULE CHECKLIST */}
             <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>TODAY'S ACTIVITY SEQUENCE</Text>
+              <Text style={styles.sectionTitle}>TODAY'S ACTIVITY SEQUENCE & ASSIGNMENTS</Text>
               <View style={styles.activityList}>
                 {(!dailyPlan?.activities || dailyPlan.activities.length === 0) ? (
                   <View style={styles.emptyCard}>
                     <Text style={styles.emptyText}>No activities generated yet. Select a daily goal above to initialize.</Text>
                   </View>
                 ) : (
-                  dailyPlan.activities.map((activity, idx) => (
-                    <Pressable
-                      key={activity.activity_id}
-                      style={({ pressed }) => [
-                        styles.activityItem,
-                        activity.is_completed && styles.activityItemCompleted,
-                        pressed && styles.buttonPressed,
-                      ]}
-                      onPress={() => handleLaunchActivity(activity)}
-                    >
-                      <View style={styles.activityStatusCol}>
-                        <Text style={styles.activityStatusIcon}>
-                          {activity.is_completed ? "✓" : idx === dailyPlan.current_activity_index ? "▶" : "⏳"}
-                        </Text>
-                      </View>
+                  dailyPlan.activities.map((activity, idx) => {
+                    const isCurrent = idx === (dailyPlan.current_activity_index ?? 0) && !activity.is_completed;
+                    const modeTag =
+                      activity.mode === "free_conversation"
+                        ? "☕ WARMUP FLUENCY"
+                        : activity.mode === "grammar_practice"
+                        ? "🎯 GRAMMAR DRILL"
+                        : "💬 VOCABULARY & COLLOCATIONS";
 
-                      <View style={styles.activityContentCol}>
-                        <View style={styles.activityMetaRow}>
-                          <Text style={styles.activityStageBadge}>
-                            {activity.stage?.toUpperCase() || "PRACTICE"}
-                          </Text>
-                          <Text style={styles.activityDurationText}>
-                            {activity.duration_minutes} MIN
-                          </Text>
+                    return (
+                      <Pressable
+                        key={activity.activity_id}
+                        style={({ pressed }) => [
+                          styles.activityItem,
+                          activity.is_completed && styles.activityItemCompleted,
+                          isCurrent && styles.activityItemCurrent,
+                          pressed && styles.buttonPressed,
+                        ]}
+                        onPress={() => handleLaunchActivity(activity)}
+                      >
+                        <View style={styles.activityStatusCol}>
+                          <View
+                            style={[
+                              styles.activityIconCircle,
+                              activity.is_completed && styles.activityIconCircleCompleted,
+                              isCurrent && styles.activityIconCircleCurrent,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.activityStatusIcon,
+                                activity.is_completed && styles.activityStatusIconCompleted,
+                                isCurrent && styles.activityStatusIconCurrent,
+                              ]}
+                            >
+                              {activity.is_completed ? "✓" : isCurrent ? "▶" : `${idx + 1}`}
+                            </Text>
+                          </View>
                         </View>
-                        <Text style={styles.activityTitleText}>{activity.title}</Text>
-                        <Text style={styles.activityObjectiveText}>{activity.objective}</Text>
-                      </View>
 
-                      <View style={styles.activityActionCol}>
-                        <Text style={styles.activityActionArrow}>→</Text>
-                      </View>
-                    </Pressable>
-                  ))
+                        <View style={styles.activityContentCol}>
+                          <View style={styles.activityMetaRow}>
+                            <Text style={styles.activityModeTag}>{modeTag}</Text>
+                            <Text style={styles.activityDurationText}>
+                              ⏱ {activity.duration_minutes} MIN
+                            </Text>
+                            {activity.is_completed ? (
+                              <View style={styles.completedBadge}>
+                                <Text style={styles.completedBadgeText}>COMPLETED</Text>
+                              </View>
+                            ) : isCurrent ? (
+                              <View style={styles.upNextBadge}>
+                                <Text style={styles.upNextBadgeText}>UP NEXT</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.activityTitleText}>{activity.title}</Text>
+                          <Text style={styles.activityObjectiveText}>{activity.objective}</Text>
+                        </View>
+
+                        <View style={styles.activityActionCol}>
+                          <View
+                            style={[
+                              styles.activityActionBtn,
+                              isCurrent && styles.activityActionBtnCurrent,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.activityActionBtnText,
+                                isCurrent && styles.activityActionBtnTextCurrent,
+                              ]}
+                            >
+                              {activity.is_completed ? "Review" : isCurrent ? "Start →" : "Start"}
+                            </Text>
+                          </View>
+                        </View>
+                      </Pressable>
+                    );
+                  })
                 )}
               </View>
             </View>
@@ -1495,16 +1547,53 @@ const styles = StyleSheet.create({
     }),
   },
   activityItemCompleted: {
-    opacity: 0.65,
+    opacity: 0.75,
+    borderColor: "rgba(34, 197, 94, 0.25)",
+  },
+  activityItemCurrent: {
+    borderColor: "rgba(0, 229, 255, 0.4)",
+    backgroundColor: "rgba(15, 25, 35, 0.8)",
+    ...Platform.select({
+      web: {
+        boxShadow: "0 4px 20px rgba(0, 229, 255, 0.1)",
+      } as any,
+    }),
   },
   activityStatusCol: {
-    width: 36,
+    width: 44,
     alignItems: "center",
   },
+  activityIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+  },
+  activityIconCircleCompleted: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    borderColor: theme.colors.emeraldSuccess,
+  },
+  activityIconCircleCurrent: {
+    backgroundColor: "rgba(0, 229, 255, 0.15)",
+    borderColor: theme.colors.cyanSignal,
+  },
   activityStatusIcon: {
-    color: theme.colors.cyanSignal,
-    fontSize: 16,
+    color: theme.colors.fog,
+    fontSize: 13,
     fontWeight: "bold",
+    fontFamily: theme.fonts.mono,
+  },
+  activityStatusIconCompleted: {
+    color: theme.colors.emeraldSuccess,
+    fontSize: 15,
+  },
+  activityStatusIconCurrent: {
+    color: theme.colors.cyanSignal,
+    fontSize: 12,
   },
   activityContentCol: {
     flex: 1,
@@ -1516,6 +1605,13 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 4,
   },
+  activityModeTag: {
+    color: theme.colors.orchidBloom,
+    fontSize: 10,
+    fontFamily: theme.fonts.mono,
+    letterSpacing: 0.8,
+    fontWeight: "600",
+  },
   activityStageBadge: {
     color: theme.colors.irisGleam,
     fontSize: 10,
@@ -1526,6 +1622,30 @@ const styles = StyleSheet.create({
     color: theme.colors.fog,
     fontSize: 10,
     fontFamily: theme.fonts.mono,
+  },
+  completedBadge: {
+    backgroundColor: "rgba(34, 197, 94, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: theme.radii.full,
+  },
+  completedBadgeText: {
+    color: theme.colors.emeraldSuccess,
+    fontSize: 9,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "600",
+  },
+  upNextBadge: {
+    backgroundColor: "rgba(0, 229, 255, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: theme.radii.full,
+  },
+  upNextBadgeText: {
+    color: theme.colors.cyanSignal,
+    fontSize: 9,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "600",
   },
   activityTitleText: {
     color: theme.colors.pure,
@@ -1539,6 +1659,27 @@ const styles = StyleSheet.create({
   },
   activityActionCol: {
     paddingLeft: 8,
+  },
+  activityActionBtn: {
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: theme.radii.sm,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  activityActionBtnCurrent: {
+    backgroundColor: theme.colors.pure,
+    borderColor: theme.colors.pure,
+  },
+  activityActionBtnText: {
+    color: theme.colors.fog,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  activityActionBtnTextCurrent: {
+    color: theme.colors.void,
+    fontWeight: "700",
   },
   activityActionArrow: {
     color: theme.colors.fog,

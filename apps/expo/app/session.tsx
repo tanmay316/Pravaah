@@ -23,7 +23,7 @@ import {
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { Room, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } from "livekit-client";
-import { completeDailyActivity, createSession } from "../lib/api";
+import { completeDailyActivity, completeSession, createSession } from "../lib/api";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = "wss://pravaah-qj6q5gxo.livekit.cloud";
@@ -84,12 +84,14 @@ export default function SessionScreen() {
   // Track whether we already pre-connected
   const preconnectedRef = useRef(false);
 
-  // Animated wave bars
-  const waveAnim1 = useRef(new Animated.Value(14)).current;
-  const waveAnim2 = useRef(new Animated.Value(28)).current;
-  const waveAnim3 = useRef(new Animated.Value(20)).current;
-  const waveAnim4 = useRef(new Animated.Value(36)).current;
+  // Animated wave bars (7 fluid bars)
+  const waveAnim1 = useRef(new Animated.Value(10)).current;
+  const waveAnim2 = useRef(new Animated.Value(14)).current;
+  const waveAnim3 = useRef(new Animated.Value(18)).current;
+  const waveAnim4 = useRef(new Animated.Value(22)).current;
   const waveAnim5 = useRef(new Animated.Value(18)).current;
+  const waveAnim6 = useRef(new Animated.Value(14)).current;
+  const waveAnim7 = useRef(new Animated.Value(10)).current;
 
   // Track agent speaking state for waveform suppression
   const agentSpeakingRef = useRef(false);
@@ -116,11 +118,13 @@ export default function SessionScreen() {
 
         const loop = () => {
           analyser.getByteFrequencyData(dataArray);
-          const v1 = Math.max(12, (dataArray[2] / 255) * 60);
-          const v2 = Math.max(16, (dataArray[4] / 255) * 70);
-          const v3 = Math.max(20, (dataArray[6] / 255) * 80);
-          const v4 = Math.max(14, (dataArray[8] / 255) * 65);
-          const v5 = Math.max(12, (dataArray[10] / 255) * 55);
+          const v1 = Math.max(10, (dataArray[2] / 255) * 50);
+          const v2 = Math.max(14, (dataArray[3] / 255) * 65);
+          const v3 = Math.max(18, (dataArray[5] / 255) * 75);
+          const v4 = Math.max(22, (dataArray[7] / 255) * 85);
+          const v5 = Math.max(18, (dataArray[9] / 255) * 75);
+          const v6 = Math.max(14, (dataArray[11] / 255) * 65);
+          const v7 = Math.max(10, (dataArray[13] / 255) * 50);
 
           // Calibrated energy threshold (45) to reject ambient noise / fan hum
           const avgEnergy = (dataArray[2] + dataArray[4] + dataArray[6] + dataArray[8]) / 4;
@@ -134,6 +138,8 @@ export default function SessionScreen() {
             waveAnim3.setValue(v3);
             waveAnim4.setValue(v4);
             waveAnim5.setValue(v5);
+            waveAnim6.setValue(v6);
+            waveAnim7.setValue(v7);
           } else {
             if (speakingDebounce > 0) {
               speakingDebounce -= 1;
@@ -141,19 +147,24 @@ export default function SessionScreen() {
               setLearnerSpeaking(false);
             }
             if (agentSpeakingRef.current) {
-              // Gentle wave for coach speaking
-              waveAnim1.setValue(18);
-              waveAnim2.setValue(32);
-              waveAnim3.setValue(24);
-              waveAnim4.setValue(38);
-              waveAnim5.setValue(20);
+              // Rhythmic breathing wave for coach speaking
+              const t = Date.now() / 180;
+              waveAnim1.setValue(16 + Math.sin(t) * 6);
+              waveAnim2.setValue(26 + Math.cos(t) * 8);
+              waveAnim3.setValue(36 + Math.sin(t + 1) * 10);
+              waveAnim4.setValue(44 + Math.cos(t + 1) * 12);
+              waveAnim5.setValue(36 + Math.sin(t + 2) * 10);
+              waveAnim6.setValue(26 + Math.cos(t + 2) * 8);
+              waveAnim7.setValue(16 + Math.sin(t + 3) * 6);
             } else {
               // Idle calm state
-              waveAnim1.setValue(12);
+              waveAnim1.setValue(10);
               waveAnim2.setValue(14);
-              waveAnim3.setValue(16);
-              waveAnim4.setValue(14);
-              waveAnim5.setValue(12);
+              waveAnim3.setValue(18);
+              waveAnim4.setValue(22);
+              waveAnim5.setValue(18);
+              waveAnim6.setValue(14);
+              waveAnim7.setValue(10);
             }
           }
 
@@ -407,12 +418,30 @@ export default function SessionScreen() {
   const handleAdvanceAndReturn = async () => {
     setSavingSummary(true);
     try {
+      const durMins = Math.max(1, Math.round(sessionSeconds / 60));
+
+      // 1. Complete session in backend API to persist stats, mistakes & vocab
+      if (sessionId) {
+        await completeSession(
+          sessionId,
+          sessionSeconds,
+          params.lesson_id,
+          params.target_skill,
+          transcript.map((t) => ({
+            role: t.speaker === "learner" ? "user" : "assistant",
+            text: t.text,
+            timestamp: t.timestamp,
+          }))
+        ).catch((err) => console.warn("completeSession notice:", err));
+      }
+
+      // 2. Mark daily activity completed in daily plan
       if (params.lesson_id) {
         await completeDailyActivity(
           params.lesson_id,
           sessionId || "sess_active",
-          Math.max(1, Math.round(sessionSeconds / 60))
-        );
+          durMins
+        ).catch((err) => console.warn("completeDailyActivity notice:", err));
       }
     } catch (err) {
       console.warn("Complete activity error:", err);
@@ -599,6 +628,8 @@ export default function SessionScreen() {
             <Animated.View style={[styles.waveBar, { height: waveAnim3, backgroundColor: getSpeakingStateColor() }]} />
             <Animated.View style={[styles.waveBar, { height: waveAnim4, backgroundColor: getSpeakingStateColor() }]} />
             <Animated.View style={[styles.waveBar, { height: waveAnim5, backgroundColor: getSpeakingStateColor() }]} />
+            <Animated.View style={[styles.waveBar, { height: waveAnim6, backgroundColor: getSpeakingStateColor() }]} />
+            <Animated.View style={[styles.waveBar, { height: waveAnim7, backgroundColor: getSpeakingStateColor() }]} />
           </View>
           <Text style={styles.visualizerHint}>
             {isMuted
@@ -1053,42 +1084,62 @@ const styles = StyleSheet.create({
   // Active Session Visualizer
   visualizerCard: {
     backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.md,
-    padding: 24,
+    borderRadius: theme.radii.lg,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    ...Platform.select({
+      web: {
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+      } as any,
+    }),
   },
   waveBarsRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    height: 90,
-    gap: 8,
+    height: 96,
+    gap: 10,
     marginBottom: 16,
   },
   waveBar: {
     width: 6,
-    borderRadius: 3,
+    borderRadius: 999,
   },
   visualizerHint: {
     color: theme.colors.ash,
     fontSize: 13,
     fontFamily: theme.fonts.mono,
+    letterSpacing: 0.5,
     textAlign: "center",
   },
 
   // In-session Correction
   correctionCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.md,
-    padding: 18,
+    backgroundColor: "rgba(25, 20, 35, 0.85)",
+    borderRadius: theme.radii.lg,
+    padding: 20,
     borderWidth: 1,
-    borderColor: theme.colors.orchidBloom,
+    borderColor: "rgba(221, 144, 216, 0.4)",
+    ...Platform.select({
+      web: {
+        backdropFilter: "blur(16px)",
+        boxShadow: "0 8px 32px rgba(221, 144, 216, 0.12)",
+      } as any,
+    }),
   },
   translationCard: {
-    borderColor: theme.colors.cyanSignal,
-    backgroundColor: "rgba(0, 229, 255, 0.04)",
+    borderColor: "rgba(0, 229, 255, 0.45)",
+    backgroundColor: "rgba(10, 25, 38, 0.85)",
+    ...Platform.select({
+      web: {
+        backdropFilter: "blur(16px)",
+        boxShadow: "0 8px 32px rgba(0, 229, 255, 0.12)",
+      } as any,
+    }),
   },
   correctionHeader: {
     flexDirection: "row",

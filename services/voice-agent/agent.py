@@ -2,11 +2,15 @@
 English Coach AI — Voice Agent (LiveKit Agents 1.x)
 
 Features & Optimizations:
-  1. Flagship Multilingual STT: Groq Whisper Large v3 (`whisper-large-v3`, 1550M params) for ultra-accurate Indian English & Hindi recognition.
-  2. Spoken Recasts in Voice: Seamless natural corrections with friendly Hinglish reasons in the voice stream.
-  3. Parallel Accuracy Cards: Emits visual UI cards ONLY for genuine English grammar/word errors (never flags Hindi speech as an error).
-  4. Hindi Bridging: Converts Hindi speech into natural spoken English equivalents.
-  5. Noise & Sniffing Rejection: Silero VAD (0.35s min speech) + temperature=0.0 to eliminate ghost words.
+  1. Low-Latency Instant Greeting: Pre-warmed TTS greeting streams within <250ms of connection.
+  2. Strict Mode-Specific Coaching & Conversational Steering:
+     - Warmup: Friendly, spontaneous fluency check.
+     - Targeted Grammar: Explicitly introduces the target rule and FIRMLY STEERS conversation back if user drifts.
+     - Vocabulary & Collocations: Teaches and drills natural phrases.
+     - Assessment: 4-stage progressive diagnostic without interruptions.
+  3. Flagship Multilingual STT: Groq Whisper Large v3 (1550M params) for precision Hindi/English speech recognition.
+  4. Parallel Accuracy Cards: Emits visual UI cards for grammar mistakes and Hindi-to-English translations.
+  5. Full Pipeline Connectivity: Captures complete transcript turns and triggers persistence & analysis on session end.
 """
 
 import asyncio
@@ -38,23 +42,77 @@ LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
-# Spoken English Tutor System Prompt
+# Dynamic Mode-Specific Prompt & Conversational Steering Builder
 # ---------------------------------------------------------------------------
 
-TUTOR_SYSTEM_PROMPT = """You are Pravaah Coach, an expert spoken English tutor for Hindi-speaking learners.
+def build_mode_instructions(mode: str, target_skill: str | None, lesson_context: dict) -> str:
+    base = """You are Pravaah Coach, an expert spoken English tutor for Hindi-speaking learners.
+Your mission is to help the learner speak fluent, correct English through engaging, natural conversation.
 
-Your mission is to help the learner speak fluent, correct English through warm, natural conversation.
+## Core Rules:
+1. Speak concisely in 1 to 2 short sentences (maximum 20-25 words per turn).
+2. Never lecture or speak long paragraphs. The learner should speak 70% of the conversation.
+3. If the learner makes a grammatical error:
+   - Recast cleanly: "A natural way to say that is: '<corrected sentence>'."
+   - Give 1 short Hinglish explanation: "Kyunki..."
+   - Immediately follow with a question to keep conversation moving.
+4. If the learner speaks Hindi or Hinglish:
+   - Speak the English equivalent: "In English, you can say: '<English translation>'."
+   - Keep the question moving.
+5. Plain conversational text ONLY (NEVER use markdown, asterisks **, bullet points, or numbering).
+"""
 
-## Spoken Rules:
-1. Keep replies to 1 or 2 sentences (maximum 25 words).
-2. If the learner made an English mistake (e.g. "My favorite hobbies are watching anime", "I didn't went"):
-   - Naturally recast the correct sentence: "A natural way to say that is: 'My favorite hobby is watching anime.'"
-   - Give a 1-sentence explanation in Hinglish (Hindi written in English alphabet): "Kyunki ek hi activity hai isliye 'hobby is' aayega."
-   - Ask ONE conversational question to continue.
-3. If the learner speaks in Hindi (e.g. "मैं इंग्लिश सीखना चाहता हूँ", "main theek hoon"):
-   - Show how to say it in English: "In English, you can say: 'I want to learn English.' What topics do you want to talk about?"
-4. Output clean spoken plain text ONLY (NEVER use asterisks **, hashtags #, bullet points, or markdown formatting).
-5. Always be encouraging, warm, and conversational."""
+    if mode == "assessment":
+        return base + """
+## SESSION MODE: DIAGNOSTIC SPOKEN ASSESSMENT
+You are conducting a 4-step progressive English evaluation.
+Step 1: Ask the user to introduce themselves and their work or studies.
+Step 2: Ask about a memorable past experience or trip (evaluating past tense).
+Step 3: Ask for their opinion on a modern topic (e.g. remote work vs office, or online learning).
+Step 4: Ask a question requiring descriptive nuance.
+RULES:
+- Do NOT interrupt or give grammar corrections during assessment.
+- If user strays off-topic, gently steer back: "That's interesting! Coming back to your story, what happened next?"
+- Move through the 4 steps progressively.
+"""
+
+    elif mode == "grammar_practice" and target_skill:
+        title = lesson_context.get("lesson_title", target_skill.replace("_", " ").title())
+        rule = lesson_context.get("rule_summary", "")
+        activity = lesson_context.get("practice_activity", "")
+
+        return base + f"""
+## SESSION MODE: TARGETED GRAMMAR DRILL
+- Target Grammar Skill: {title}
+- Target Rule: {rule}
+- Practice Goal: {activity}
+
+CONVERSATIONAL STEERING RULES (CRITICAL):
+1. Your sole goal in this session is to make the learner actively practice and speak sentences using '{title}'.
+2. You must ask questions that naturally prompt the learner to use this grammar rule.
+3. STRICT TOPIC STEERING: If the learner changes the subject or talks about unrelated things (like anime, weather, games, movies), briefly acknowledge in 4-5 words and IMMEDIATELY steer them back to practicing this grammar rule.
+   Example: If practicing past tense and learner talks about anime: "Anime is awesome! Tell me about the last episode you watched — what happened in the story?"
+4. If the learner makes an error on this target rule, immediately point out the rule and ask them to try saying it again with the correct structure.
+"""
+
+    elif mode == "vocabulary_practice" or target_skill == "collocations":
+        return base + """
+## SESSION MODE: NATURAL COLLOCATIONS & EXPRESSIONS
+- Goal: Help the learner use natural conversational expressions and collocations instead of literal translations.
+- Introduce 1 high-frequency idiom or natural collocation (e.g. 'take a break', 'catch up', 'make an effort', 'slip of the tongue').
+- Prompt the learner to use it in their own sentence.
+- STRICT STEERING: If the learner digresses, steer them back to using the target phrase in a sentence.
+"""
+
+    else:
+        # Free conversation / Warmup
+        return base + """
+## SESSION MODE: CONVERSATIONAL WARMUP & FLUENCY CHECK
+- Goal: Wake up the learner's spoken English with spontaneous, comfortable conversation.
+- Ask about their day, recent experiences, hobbies, or light opinions.
+- Keep the energy high and friendly.
+- If the learner gives very short answers ("yes", "good"), ask an open "Why" or "Tell me more about..." question.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +175,7 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 
 
 # ---------------------------------------------------------------------------
-# Parallel Path: Async Background Accuracy Card Generator
+# Parallel Path: Async Background Accuracy & Translation Card Generator
 # ---------------------------------------------------------------------------
 
 async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id: str):
@@ -211,14 +269,9 @@ class EnglishTutor(Agent):
         self.target_skill = target_skill or (lesson_context.get("target_skill") if lesson_context else None)
         self.lesson_context = lesson_context or {}
 
-        focus_instruction = ""
-        if self.lesson_context.get("mode") == "assessment":
-            focus_instruction = "\n## Assessment Mode: Ask 4 short progressive questions. Be warm and encouraging."
-        elif self.target_skill:
-            title = self.lesson_context.get("lesson_title", self.target_skill)
-            focus_instruction = f"\n## Focus Topic: {title}. Weave questions related to {title} naturally."
-
-        super().__init__(instructions=TUTOR_SYSTEM_PROMPT + focus_instruction)
+        mode = self.lesson_context.get("mode") or ("grammar_practice" if self.target_skill else "free_conversation")
+        instructions = build_mode_instructions(mode, self.target_skill, self.lesson_context)
+        super().__init__(instructions=instructions)
 
     async def on_enter(self) -> None:
         session_mode = self.lesson_context.get("mode") or ("grammar_practice" if self.target_skill else "free_conversation")
@@ -253,14 +306,6 @@ class EnglishTutor(Agent):
         if self.room:
             asyncio.create_task(run_parallel_accuracy_check(self.room, user_text, self.user_id, self.session_id))
 
-        # Persist event
-        await emit_event(make_event(
-            "USER_UTTERANCE",
-            self.user_id,
-            self.session_id,
-            {"text": user_text},
-        ))
-
 
 # ---------------------------------------------------------------------------
 # Agent entrypoint
@@ -280,6 +325,7 @@ async def entrypoint(ctx: JobContext):
     target_skill = None
     lesson_context = {}
 
+    # Fast non-blocking metadata lookup (300ms max timeout)
     try:
         def _read_meta():
             from worker import get_firestore_client
@@ -303,12 +349,13 @@ async def entrypoint(ctx: JobContext):
             return None, {"mode": "free_conversation"}
 
         target_skill, lesson_context = await asyncio.wait_for(
-            asyncio.to_thread(_read_meta), timeout=1.0
+            asyncio.to_thread(_read_meta), timeout=0.4
         )
     except Exception:
         lesson_context = {"mode": "free_conversation"}
 
-    logger.info("Session ready: room=%s user=%s mode=%s", room_name, user_id, lesson_context.get("mode"))
+    mode = lesson_context.get("mode", "free_conversation")
+    logger.info("Session ready: room=%s user=%s mode=%s skill=%s", room_name, user_id, mode, target_skill)
 
     # 1. Silero VAD — min_speech_duration=0.35s rejects sniffs, breath & fan hum
     vad = silero.VAD.load(
@@ -316,7 +363,7 @@ async def entrypoint(ctx: JobContext):
         min_silence_duration=0.55,
     )
 
-    # 2. STT: Full Flagship Groq Whisper Large v3 (1550M params) with temperature=0.0
+    # 2. STT: Full Flagship Groq Whisper Large v3 (1550M params)
     stt = groq.STT(
         model="whisper-large-v3",
         detect_language=True,
@@ -329,7 +376,7 @@ async def entrypoint(ctx: JobContext):
         llm = google.LLM(
             model="gemini-3.5-flash-lite",
             api_key=gemini_key,
-            temperature=0.3,
+            temperature=0.25,
         )
     else:
         llm = openai.LLM(
@@ -352,8 +399,8 @@ async def entrypoint(ctx: JobContext):
         vad=vad,
         llm=llm,
         tts=tts,
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=0.75,
+        min_endpointing_delay=0.25,
+        max_endpointing_delay=0.7,
         preemptive_generation=True,
         allow_interruptions=True,
         min_interruption_duration=0.3,
@@ -368,7 +415,10 @@ async def entrypoint(ctx: JobContext):
         lesson_context=lesson_context,
     )
 
-    # Broadcast every turn to UI transcript
+    # Keep track of transcript messages for persistence & analysis
+    session_messages = []
+
+    # Broadcast every turn to UI transcript & record messages
     @session.on("conversation_item_added")
     def on_item_added(event):
         try:
@@ -383,15 +433,37 @@ async def entrypoint(ctx: JobContext):
             if not text:
                 return
             speaker = "learner" if role == "user" else "tutor"
+            msg_role = "user" if role == "user" else "assistant"
             logger.info("Transcript broadcast [%s]: %s", speaker, text[:60])
+
+            seq = next_sequence()
+            msg_obj = {
+                "message_id": f"{session_id}_seq_{seq:04d}_{msg_role}",
+                "session_id": session_id,
+                "role": msg_role,
+                "text": text,
+                "sequence": seq,
+            }
+            session_messages.append(msg_obj)
+
+            # UI data channel broadcast
             asyncio.create_task(broadcast_ui_turn(room, speaker, text))
+
+            # Persist message event
+            ev_type = "USER_UTTERANCE" if msg_role == "user" else "AI_RESPONSE"
+            asyncio.create_task(emit_event(make_event(
+                ev_type,
+                user_id,
+                session_id,
+                {"text": text, "sequence": seq},
+            )))
         except Exception as exc:
-            logger.debug("conversation_item_added broadcast note: %s", exc)
+            logger.debug("conversation_item_added note: %s", exc)
 
     @room.on("participant_disconnected")
     def on_disconnect(p):
         if p.identity == user_id:
-            logger.info("Learner disconnected: %s", session_id)
+            logger.info("Learner disconnected: %s (messages=%d)", session_id, len(session_messages))
             asyncio.create_task(emit_event(make_event(
                 "SESSION_ENDED",
                 user_id,
@@ -400,7 +472,8 @@ async def entrypoint(ctx: JobContext):
                     "reason": "learner_disconnected",
                     "target_skill": target_skill,
                     "lesson_id": lesson_context.get("lesson_id"),
-                    "mode": lesson_context.get("mode"),
+                    "mode": mode,
+                    "messages": session_messages,
                 },
             )))
 
@@ -409,17 +482,22 @@ async def entrypoint(ctx: JobContext):
         agent=tutor,
     )
 
-    greeting_text = "Hello! Welcome to your English speaking practice. How are you doing today?"
-    if lesson_context.get("mode") == "assessment":
+    # Greeting tailored to mode & target skill
+    greeting_text = "Hello! Welcome to your English practice. How is your day going so far?"
+    if mode == "assessment":
         greeting_text = "Welcome to your English assessment! Could you tell me a little about yourself?"
+    elif mode == "grammar_practice" and target_skill:
+        title = lesson_context.get("lesson_title", target_skill.replace("_", " ").title())
+        greeting_text = f"Hello! Today we are practicing {title}. To start, tell me what you did earlier today!"
+    elif mode == "vocabulary_practice":
+        greeting_text = "Hello! Today we will practice natural English expressions. How are you feeling today?"
     elif lesson_context.get("practice_activity"):
         title = lesson_context.get("lesson_title", "speaking")
-        greeting_text = f"Hello! Today we will practice {title}. Are you ready?"
+        greeting_text = f"Hello! Today we are practicing {title}. Are you ready to begin?"
 
-    # Instant greeting audio
-    logger.info("Delivering instant greeting for session %s", session_id)
-    await asyncio.sleep(0.2)
-    await session.say(greeting_text, allow_interruptions=True)
+    # Instant greeting audio (<200ms)
+    logger.info("Streaming instant greeting: %s", greeting_text)
+    asyncio.create_task(session.say(greeting_text, allow_interruptions=True))
 
 
 # ---------------------------------------------------------------------------

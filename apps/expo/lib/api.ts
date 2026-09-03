@@ -362,6 +362,27 @@ export async function refreshSessionToken(sessionId: string): Promise<RefreshTok
   });
 }
 
+export async function completeSession(
+  sessionId: string,
+  durationSeconds: number,
+  lessonId?: string,
+  targetSkill?: string,
+  messages?: any[]
+): Promise<{ status: string; session_id: string; duration_minutes: number }> {
+  return apiFetch<{ status: string; session_id: string; duration_minutes: number }>(
+    `/api/sessions/${sessionId}/complete`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        duration_seconds: durationSeconds,
+        lesson_id: lessonId,
+        target_skill: targetSkill,
+        messages,
+      }),
+    }
+  );
+}
+
 export async function deleteAccount(): Promise<{ message: string; deleted: boolean }> {
   return apiFetch<{ message: string; deleted: boolean }>("/api/me/account", {
     method: "DELETE",

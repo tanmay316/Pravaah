@@ -67,6 +67,13 @@ class RefreshTokenResponse(BaseModel):
     expires_at: datetime
 
 
+class CompleteSessionRequest(BaseModel):
+    duration_seconds: int = 0
+    lesson_id: Optional[str] = None
+    target_skill: Optional[str] = None
+    messages: Optional[list[dict]] = None
+
+
 # ---------------------------------------------------------------------------
 # Personalized Lesson & Learner Profile (Phase 3D & 4)
 # ---------------------------------------------------------------------------

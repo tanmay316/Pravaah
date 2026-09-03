@@ -489,13 +489,14 @@ async def analyze_session_messages(
                         "fact_type": mistake.fact_type,
                         "severity": mistake.severity,
                         "confidence": mistake.confidence,
+                        "explanation": mistake.short_explanation,
                         "short_explanation": mistake.short_explanation,
                         "created_at": now,
                         "updated_at": firestore.SERVER_TIMESTAMP,
                     }
                     user_ref.collection("mistakes").document(mistake_id).set(doc_data, merge=True)
                 elif mistake.fact_type == "natural_alternative":
-                    # Store as positive suggestion, NOT a mistake
+                    # Store as positive suggestion
                     suggestion_id = make_deterministic_id(session_id, mistake.message_id, f"s_{idx:02d}")
                     user_ref.collection("suggestions").document(suggestion_id).set({
                         "suggestion_id": suggestion_id,
@@ -507,36 +508,30 @@ async def analyze_session_messages(
                         "created_at": now,
                     }, merge=True)
 
-            # Write vocabulary facts
+            # Write vocabulary facts (both errors & natural alternative collocations)
             for idx, vocab in enumerate(final_result.vocabulary, 1):
-                if vocab.fact_type == "vocabulary_error":
-                    vocab_id = make_deterministic_id(session_id, vocab.message_id, f"v_{idx:02d}")
-                    doc_data = {
-                        "vocabulary_id": vocab_id,
-                        "session_id": session_id,
-                        "message_id": vocab.message_id,
-                        "original_usage": vocab.original_usage,
-                        "suggested_alternative": vocab.suggested_alternative,
-                        "curriculum_skill_id": vocab.curriculum_skill_id,
-                        "fact_type": vocab.fact_type,
-                        "explanation": vocab.explanation,
-                        "confidence": vocab.confidence,
-                        "created_at": now,
-                        "updated_at": firestore.SERVER_TIMESTAMP,
-                    }
-                    user_ref.collection("vocabulary").document(vocab_id).set(doc_data, merge=True)
-                elif vocab.fact_type == "natural_alternative":
-                    # Store as positive suggestion
-                    suggestion_id = make_deterministic_id(session_id, vocab.message_id, f"v_sug_{idx:02d}")
-                    user_ref.collection("suggestions").document(suggestion_id).set({
-                        "suggestion_id": suggestion_id,
-                        "session_id": session_id,
-                        "message_id": vocab.message_id,
-                        "original": vocab.original_usage,
-                        "suggested": vocab.suggested_alternative,
-                        "explanation": vocab.explanation,
-                        "created_at": now,
-                    }, merge=True)
+                vocab_id = make_deterministic_id(session_id, vocab.message_id, f"v_{idx:02d}")
+                term = vocab.suggested_alternative or vocab.original_usage
+                doc_data = {
+                    "vocabulary_id": vocab_id,
+                    "session_id": session_id,
+                    "message_id": vocab.message_id,
+                    "term": term,
+                    "word": term,
+                    "original_usage": vocab.original_usage,
+                    "context": vocab.original_usage,
+                    "suggested_alternative": vocab.suggested_alternative,
+                    "alternative": vocab.suggested_alternative,
+                    "curriculum_skill_id": vocab.curriculum_skill_id,
+                    "fact_type": vocab.fact_type,
+                    "explanation": vocab.explanation,
+                    "meaning": vocab.explanation,
+                    "natural_usage_tip": vocab.explanation,
+                    "confidence": vocab.confidence,
+                    "created_at": now,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                }
+                user_ref.collection("vocabulary").document(vocab_id).set(doc_data, merge=True)
 
             # 5. Update skill-level mastery & learner profile (Phase 3C)
             await update_learner_mastery(user_id, session_id, final_result, messages)
@@ -1655,6 +1650,7 @@ async def process_event(event: dict):
                 duration_seconds = payload.get("duration_seconds", 0)
 
             reason = payload.get("reason", "session_complete")
+            duration_minutes = max(1, duration_seconds // 60) if duration_seconds >= 30 else 1
 
             # Finalize session document in Firestore
             session_ref.set({
@@ -1662,6 +1658,17 @@ async def process_event(event: dict):
                 "end_time": now,
                 "duration_seconds": duration_seconds,
                 "completion_reason": reason,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+
+            # Increment user profile statistics
+            user_doc_ref = db.collection("users").document(user_id)
+            user_doc_ref.set({
+                "statistics": {
+                    "total_sessions": firestore.Increment(1),
+                    "total_practice_minutes": firestore.Increment(duration_minutes),
+                    "last_practice_date": now.strftime("%Y-%m-%d"),
+                },
                 "updated_at": firestore.SERVER_TIMESTAMP,
             }, merge=True)
 
@@ -1673,19 +1680,31 @@ async def process_event(event: dict):
                         user_id=user_id,
                         activity_id=activity_id,
                         session_id=session_id,
-                        duration_minutes=duration_seconds // 60
+                        duration_minutes=duration_minutes
                     )
                 except Exception as e:
                     logger.error("Failed to complete daily plan activity: %s", e)
 
-            logger.info("Session %s marked COMPLETED (duration=%ss).", session_id, duration_seconds)
+            logger.info("Session %s marked COMPLETED (duration=%ss, mins=%d).", session_id, duration_seconds, duration_minutes)
 
-            # Trigger Phase 3B/3C asynchronous analysis & mastery update
+            # Retrieve accumulated messages (from RAM, payload, or Firestore)
             session_accumulated_msgs = _session_messages.pop(session_id, [])
+            if not session_accumulated_msgs:
+                try:
+                    msgs_stream = session_ref.collection("messages").order_by("sequence").stream()
+                    session_accumulated_msgs = [doc.to_dict() for doc in msgs_stream if doc.to_dict().get("text")]
+                except Exception as e:
+                    logger.warning("Failed to load messages from Firestore for session %s: %s", session_id, e)
+
+            if not session_accumulated_msgs and payload.get("messages"):
+                session_accumulated_msgs = payload.get("messages")
+
+            # Directly await session analysis so background loop termination does not cancel it
             if session_accumulated_msgs:
-                asyncio.create_task(
-                    analyze_session_messages(user_id, session_id, session_accumulated_msgs)
-                )
+                try:
+                    await analyze_session_messages(user_id, session_id, session_accumulated_msgs)
+                except Exception as exc:
+                    logger.error("Session analysis failed in process_event: %s", exc)
 
     except Exception as e:
         logger.error("Firestore persistence error in process_event: %s", e)

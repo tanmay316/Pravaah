@@ -44,6 +44,7 @@ from .models import (
     DailyPlanActivityModel,
     DailyLearningPlanModel,
     CompleteActivityRequest,
+    CompleteSessionRequest,
     UpdateGoalRequest,
     UpdateProfileRequest,
     ProgressSummary,
@@ -59,7 +60,13 @@ if le_path not in sys.path:
     sys.path.insert(0, le_path)
 
 try:
-    from worker import apply_proficiency_assessment, get_or_create_daily_plan, complete_daily_plan_activity
+    from worker import (
+        apply_proficiency_assessment,
+        get_or_create_daily_plan,
+        complete_daily_plan_activity,
+        process_event,
+        analyze_session_messages,
+    )
     from curriculum import evaluate_assessment_rubric, generate_daily_plan
 except ImportError:
     pass
@@ -248,14 +255,23 @@ async def get_my_mistakes(user: CurrentUser, req_id: RequestId, response: Respon
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
     db = get_firestore_client()
-    mistakes_ref = db.collection("users").document(uid).collection("mistakes").limit(50)
     results = []
-    for doc in mistakes_ref.stream():
-        data = doc.to_dict() or {}
-        data["mistake_id"] = doc.id
-        if "short_explanation" in data and "explanation" not in data:
-            data["explanation"] = data["short_explanation"]
-        results.append(data)
+    try:
+        mistakes_ref = db.collection("users").document(uid).collection("mistakes").order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
+        for doc in mistakes_ref.stream():
+            data = doc.to_dict() or {}
+            data["mistake_id"] = doc.id
+            if "short_explanation" in data and "explanation" not in data:
+                data["explanation"] = data["short_explanation"]
+            results.append(data)
+    except Exception:
+        mistakes_ref = db.collection("users").document(uid).collection("mistakes").limit(50)
+        for doc in mistakes_ref.stream():
+            data = doc.to_dict() or {}
+            data["mistake_id"] = doc.id
+            if "short_explanation" in data and "explanation" not in data:
+                data["explanation"] = data["short_explanation"]
+            results.append(data)
     return results
 
 
@@ -264,12 +280,31 @@ async def get_my_vocabulary(user: CurrentUser, req_id: RequestId, response: Resp
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
     db = get_firestore_client()
-    vocab_ref = db.collection("users").document(uid).collection("vocabulary").limit(50)
     results = []
-    for doc in vocab_ref.stream():
-        data = doc.to_dict() or {}
-        data["vocabulary_id"] = doc.id
-        results.append(data)
+    try:
+        vocab_ref = db.collection("users").document(uid).collection("vocabulary").order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
+        for doc in vocab_ref.stream():
+            data = doc.to_dict() or {}
+            data["vocabulary_id"] = doc.id
+            if "term" not in data:
+                data["term"] = data.get("suggested_alternative") or data.get("original_usage") or "Expression"
+            if "context" not in data:
+                data["context"] = data.get("original_usage") or ""
+            if "natural_usage_tip" not in data:
+                data["natural_usage_tip"] = data.get("explanation") or ""
+            results.append(data)
+    except Exception:
+        vocab_ref = db.collection("users").document(uid).collection("vocabulary").limit(50)
+        for doc in vocab_ref.stream():
+            data = doc.to_dict() or {}
+            data["vocabulary_id"] = doc.id
+            if "term" not in data:
+                data["term"] = data.get("suggested_alternative") or data.get("original_usage") or "Expression"
+            if "context" not in data:
+                data["context"] = data.get("original_usage") or ""
+            if "natural_usage_tip" not in data:
+                data["natural_usage_tip"] = data.get("explanation") or ""
+            results.append(data)
     return results
 
 
@@ -476,6 +511,88 @@ async def get_session(
     data = doc.to_dict()
     data["session_id"] = doc.id
     return SessionSummary(**data)
+
+
+@app.post("/api/sessions/{session_id}/complete", status_code=200)
+async def complete_session(
+    session_id: str,
+    body: CompleteSessionRequest,
+    user: CurrentUser,
+    req_id: RequestId,
+    response: Response,
+):
+    """
+    Explicitly finalize a voice session, record duration & stats,
+    mark daily plan activity completed, and trigger session analysis.
+    """
+    response.headers["X-Request-ID"] = req_id
+    uid = user["uid"]
+    db = get_firestore_client()
+    now = datetime.now(timezone.utc)
+    duration_seconds = max(0, body.duration_seconds)
+    duration_minutes = max(1, duration_seconds // 60) if duration_seconds >= 30 else 1
+
+    session_ref = db.collection("users").document(uid).collection("sessions").document(session_id)
+    session_ref.set({
+        "state": "COMPLETED",
+        "end_time": now,
+        "duration_seconds": duration_seconds,
+        "completion_reason": "user_ended",
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+
+    # Increment user profile statistics
+    user_doc_ref = db.collection("users").document(uid)
+    user_doc_ref.set({
+        "statistics": {
+            "total_sessions": firestore.Increment(1),
+            "total_practice_minutes": firestore.Increment(duration_minutes),
+            "last_practice_date": now.strftime("%Y-%m-%d"),
+        },
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+
+    # Complete daily plan activity if lesson_id passed
+    if body.lesson_id:
+        try:
+            complete_daily_plan_activity(
+                user_id=uid,
+                activity_id=body.lesson_id,
+                session_id=session_id,
+                duration_minutes=duration_minutes,
+            )
+        except Exception as exc:
+            pass
+
+    # Process session analysis for mistakes & vocabulary
+    event_payload = {
+        "duration_seconds": duration_seconds,
+        "lesson_id": body.lesson_id,
+        "target_skill": body.target_skill,
+        "messages": body.messages or [],
+    }
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "SESSION_ENDED",
+        "user_id": uid,
+        "session_id": session_id,
+        "sequence": 9999,
+        "timestamp": now.isoformat(),
+        "payload": event_payload,
+    }
+
+    try:
+        if "process_event" in globals():
+            await process_event(event)
+    except Exception:
+        pass
+
+    return {
+        "status": "completed",
+        "session_id": session_id,
+        "duration_seconds": duration_seconds,
+        "duration_minutes": duration_minutes,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -66,9 +66,11 @@ VALID_VOICES = {"en-IN-NeerjaNeural", "en-IN-PrabhatNeural", "hi-IN-SwaraNeural"
 DEFAULT_VOICE = "en-IN-NeerjaNeural"
 
 PREWARM_PHRASES = [
+    "Hello! Welcome to your English practice. How is your day going so far?",
+    "Welcome to your English assessment! Could you tell me a little about yourself?",
+    "Hello! Today we will practice natural English expressions. How are you feeling today?",
     "Hello! Welcome. How are you doing today?",
     "Hello! Welcome to your English speaking session. How are you doing today?",
-    "Welcome to your English assessment! Could you tell me a little about yourself?",
     "Okay.",
     "Great job!",
     "Perfect, that was very clear and natural!",

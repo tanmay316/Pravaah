@@ -178,11 +178,12 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 # Parallel Path: Async Background Accuracy & Translation Card Generator
 # ---------------------------------------------------------------------------
 
-async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id: str):
+async def run_parallel_accuracy_check(room, session, text: str, user_id: str, session_id: str):
     """
     Analyzes learner utterance in parallel:
-      - If learner spoke in Hindi / Hinglish: generates a Translation Card ("Hindi -> English").
-      - If learner made an English grammar mistake: generates a Coach Recast Card.
+      - If learner spoke in Hindi / Hinglish: generates a Translation Card & speaks English translation in voice.
+      - If learner made an English grammar mistake: generates a Coach Recast Card & speaks correction in voice.
+    Both visual card and spoken voice correction happen concurrently with the conversation reply!
     """
     if not text or len(text.strip().split()) < 2:
         return
@@ -275,16 +276,29 @@ JSON ONLY:"""
         analysis = await asyncio.to_thread(_analyze)
         if analysis and analysis.get("has_card") and analysis.get("corrected"):
             card_type = analysis.get("card_type", "correction")
-            logger.info("Card emitted (%s): '%s' -> '%s'", card_type, analysis.get("original"), analysis.get("corrected"))
+            original = analysis.get("original", text).strip()
+            corrected = analysis.get("corrected", "").strip()
+            explanation = analysis.get("explanation", "").strip()
+
+            logger.info("Card emitted (%s): '%s' -> '%s'", card_type, original, corrected)
             if room:
                 payload = json.dumps({
                     "type": "correction",
                     "card_type": card_type,
-                    "original": analysis.get("original", text),
-                    "corrected": analysis.get("corrected", ""),
-                    "explanation": analysis.get("explanation", ""),
+                    "original": original,
+                    "corrected": corrected,
+                    "explanation": explanation,
                 }).encode("utf-8")
                 await room.local_participant.publish_data(payload)
+
+            # Spoken voice correction in parallel
+            if session:
+                if card_type == "translation":
+                    recast_voice = f"In English, you can say: {corrected}."
+                else:
+                    recast_voice = f"A quick tip: you can say, {corrected}."
+                logger.info("Parallel voice correction spoken: %s", recast_voice)
+                session.say(recast_voice, allow_interruptions=True)
     except Exception as exc:
         logger.debug("Parallel analysis notice: %s", exc)
 
@@ -299,12 +313,14 @@ class EnglishTutor(Agent):
         user_id: str,
         session_id: str,
         room=None,
+        livekit_session=None,
         target_skill: str | None = None,
         lesson_context: dict | None = None,
     ) -> None:
         self.user_id = user_id
         self.session_id = session_id
         self.room = room
+        self.livekit_session = livekit_session
         self.target_skill = target_skill or (lesson_context.get("target_skill") if lesson_context else None)
         self.lesson_context = lesson_context or {}
 
@@ -341,9 +357,11 @@ class EnglishTutor(Agent):
         user_text = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
         logger.info("Learner: %s", user_text)
 
-        # Trigger visual card in parallel
+        # Trigger visual card and voice correction in parallel
         if self.room:
-            asyncio.create_task(run_parallel_accuracy_check(self.room, user_text, self.user_id, self.session_id))
+            asyncio.create_task(run_parallel_accuracy_check(
+                self.room, self.livekit_session, user_text, self.user_id, self.session_id
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +477,7 @@ async def entrypoint(ctx: JobContext):
         user_id=user_id,
         session_id=session_id,
         room=room,
+        livekit_session=session,
         target_skill=target_skill,
         lesson_context=lesson_context,
     )
@@ -543,9 +562,40 @@ async def entrypoint(ctx: JobContext):
         title = lesson_context.get("lesson_title", "speaking")
         greeting_text = f"Hello! Today we are practicing {title}. Are you ready to begin?"
 
-    # Instant greeting audio (<200ms)
-    logger.info("Streaming instant greeting: %s", greeting_text)
-    session.say(greeting_text, allow_interruptions=True)
+    # Instant greeting audio: trigger as soon as learner starts or publishes mic
+    greeting_spoken = False
+
+    def speak_greeting():
+        nonlocal greeting_spoken
+        if not greeting_spoken:
+            greeting_spoken = True
+            logger.info("Streaming instant greeting: %s", greeting_text)
+            session.say(greeting_text, allow_interruptions=True)
+
+    # 1. Trigger when client sends start_conversation data signal
+    @room.on("data_received")
+    def on_data(dp):
+        try:
+            data = json.loads(dp.data.decode("utf-8"))
+            if data.get("type") == "start_conversation":
+                logger.info("Received start_conversation signal from learner! Speaking greeting.")
+                speak_greeting()
+        except Exception:
+            pass
+
+    # 2. Trigger when learner publishes microphone audio track
+    @room.on("track_published")
+    def on_track(pub, participant):
+        if participant.identity == user_id:
+            logger.info("Learner audio track published! Speaking greeting.")
+            speak_greeting()
+
+    # 3. Fallback: if audio was already published or after 1.2s
+    async def _auto_greet():
+        await asyncio.sleep(1.2)
+        speak_greeting()
+
+    asyncio.create_task(_auto_greet())
 
 
 # ---------------------------------------------------------------------------

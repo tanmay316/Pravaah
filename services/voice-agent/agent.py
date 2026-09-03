@@ -193,13 +193,13 @@ async def run_parallel_accuracy_check(room, text: str, user_id: str, session_id:
 
     try:
         def _analyze():
-            import google.generativeai as genai
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_key:
-                return None
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
+            # 1. Primary: Groq qwen/qwen3.8-27b for high rate limits & zero Gemini quota use
+            groq_key = os.getenv("GROQ_API_KEY")
+            if groq_key:
+                try:
+                    from groq import Groq
+                    client = Groq(api_key=groq_key)
+                    prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
 Learner utterance: "{text}"
 
 Determine:
@@ -228,6 +228,45 @@ Determine:
 3. Did the learner speak natural, grammatically correct English?
    Return JSON:
    {{ "has_card": false }}
+
+JSON ONLY:"""
+                    res = client.chat.completions.create(
+                        model="qwen/qwen3.8-27b",
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                        max_tokens=250,
+                        timeout=5.0,
+                    )
+                    content = res.choices[0].message.content
+                    if content:
+                        return json.loads(content.strip())
+                except Exception as g_err:
+                    logger.debug("Groq parallel analysis notice: %s", g_err)
+
+            # 2. Fallback: Gemini 3.5 Flash Lite
+            import google.generativeai as genai
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_key:
+                return None
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-3.5-flash-lite")
+            prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
+Learner utterance: "{text}"
+
+Determine:
+1. Did the learner speak in Hindi or Hinglish?
+   -> Generate a TRANSLATION card:
+   {{
+     "has_card": true,
+     "card_type": "translation",
+     "original": "{text}",
+     "corrected": "<natural conversational English translation>",
+     "explanation": "<1 short sentence in Hinglish explaining the usage or rule>"
+   }}
+2. Did the learner speak in English with a grammatical error?
+   -> Generate a CORRECTION card.
+3. Natural English?
+   -> {{ "has_card": false }}
 
 JSON ONLY:"""
             res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
@@ -370,9 +409,18 @@ async def entrypoint(ctx: JobContext):
         prompt="Bilingual English and Hindi practice. Common phrases: Hello, how are you? I want to practice speaking. नमस्ते, मैं ठीक हूँ।",
     )
 
-    # 3. LLM: Google Gemini 3.5 Flash Lite
+    # 3. LLM: Groq for high rate-limits & lightning-fast speech, with fallback to Gemini
+    groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
+    if groq_key:
+        logger.info("Using Groq LLM (qwen/qwen3.8-27b) for zero-latency, high-quota conversation")
+        llm = groq.LLM(
+            model="qwen/qwen3.8-27b",
+            api_key=groq_key,
+            temperature=0.3,
+        )
+    elif gemini_key:
+        logger.info("Using Google Gemini 3.5 Flash Lite")
         llm = google.LLM(
             model="gemini-3.5-flash-lite",
             api_key=gemini_key,

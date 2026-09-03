@@ -324,6 +324,19 @@ export default function SessionScreen() {
         if (audioElementRef.current) {
           await audioElementRef.current.play();
         }
+        if (Platform.OS === "web") {
+          room.remoteParticipants.forEach((p) => {
+            p.trackPublications.forEach((pub) => {
+              if (pub.track && pub.track.kind === Track.Kind.Audio) {
+                const el = pub.track.attach();
+                audioElementRef.current = el;
+                el.autoplay = true;
+                document.body.appendChild(el);
+                el.play().catch((e) => console.debug("Audio play catch:", e));
+              }
+            });
+          });
+        }
       } catch (e) {
         console.debug("Audio unlock note:", e);
       }
@@ -346,7 +359,7 @@ export default function SessionScreen() {
       // 5. Send start signal to agent to trigger instant greeting audio
       try {
         const startMsg = JSON.stringify({ type: "start_conversation" });
-        await room.localParticipant.publishData(new TextEncoder().encode(startMsg));
+        await room.localParticipant.publishData(new TextEncoder().encode(startMsg), { reliable: true });
       } catch (e) {
         console.debug("Start signal broadcast note:", e);
       }

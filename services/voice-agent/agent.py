@@ -46,19 +46,14 @@ REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 # ---------------------------------------------------------------------------
 
 def build_mode_instructions(mode: str, target_skill: str | None, lesson_context: dict) -> str:
-    base = """You are Pravaah Coach, an expert spoken English tutor for Hindi-speaking learners.
-Your mission is to help the learner speak fluent, correct English through engaging, natural conversation.
+    base = """You are Coach Pravaah, a warm, charismatic, and enthusiastic English conversation partner for an Indian learner.
+Your #1 mission is to carry on a lively, fascinating, and comfortable conversation so the learner always has plenty to talk about and never feels bored!
 
 ## Core Rules:
-1. Speak concisely in 1 to 2 short sentences (maximum 20-25 words per turn).
-2. Never lecture or speak long paragraphs. The learner should speak 70% of the conversation.
-3. If the learner makes a grammatical error:
-   - Recast cleanly: "A natural way to say that is: '<corrected sentence>'."
-   - Give 1 short Hinglish explanation: "Kyunki..."
-   - Immediately follow with a question to keep conversation moving.
-4. If the learner speaks Hindi or Hinglish:
-   - Speak the English equivalent: "In English, you can say: '<English translation>'."
-   - Keep the question moving.
+1. Always react warmly with genuine interest and personality to what the learner said (e.g. validate their thoughts, share enthusiasm, or add a fun/relatable comment).
+2. Keep your responses short and natural: 1 to 2 spoken sentences (maximum 25 words).
+3. ALWAYS ask an engaging, open-ended question that gives the learner more to talk about (e.g. ask about their opinions, personal experiences, stories, or favorite details).
+4. Do NOT give grammar lectures, corrections, or Hindi translations in your voice. A separate specialized engine handles grammar recasts and translations in parallel. Your job is 100% focused on keeping the conversation exciting, friendly, and moving!
 5. Plain conversational text ONLY (NEVER use markdown, asterisks **, bullet points, or numbering).
 """
 
@@ -178,59 +173,103 @@ async def broadcast_ui_turn(room, speaker: str, text: str):
 # Parallel Path: Async Background Accuracy & Translation Card Generator
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Noise, Breath, & Hallucination Filter
+# ---------------------------------------------------------------------------
+
+NOISE_OR_HALLUCINATIONS = {
+    "sniffing", "snort", "cough", "coughing", "throat clearing", "sigh",
+    "applause", "music", "laughter", "chuckle", "gasp", "whispering",
+    "screaming", "inaudible", "silence", "you", "thank you", "thanks",
+    "bye", "goodbye", "इंग्लिवेट", "huh", "um", "uh", "hmm", "hm"
+}
+
+def is_meaningful_speech(text: str) -> bool:
+    if not text:
+        return False
+    clean = text.strip().lower().strip(".?!,;:-_ \t\n")
+    if not clean:
+        return False
+    # Reject bracketed subtitle hallucinations like [Music], (Laughter), *sniff*
+    if clean.startswith(("[", "(", "*")) and clean.endswith(("]", ")", "*")):
+        return False
+    if clean in NOISE_OR_HALLUCINATIONS:
+        return False
+    # Filter short murmurs under 3 letters
+    if len(clean) < 3 and clean not in ["hi", "no", "ok", "yo"]:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Parallel Path: Gemini Linguistic & Translation Engine (Parallel with Groq)
+# ---------------------------------------------------------------------------
+
 async def run_parallel_accuracy_check(room, session, text: str, user_id: str, session_id: str):
     """
-    Analyzes learner utterance in parallel:
-      - If learner spoke in Hindi / Hinglish: generates a Translation Card & speaks English translation in voice.
-      - If learner made an English grammar mistake: generates a Coach Recast Card & speaks correction in voice.
-    Both visual card and spoken voice correction happen concurrently with the conversation reply!
+    Runs concurrently with Gemini 3.5 Flash Lite while Groq generates conversation:
+      - Emits visual TRANSLATION or CORRECTION card immediately to UI (<200ms).
+      - Waits until Groq conversation audio completes speaking its final output.
+      - Smoothly streams the spoken tip from Gemini sequentially (never overlapping).
     """
-    if not text or len(text.strip().split()) < 2:
-        return
-
-    clean_lower = text.strip().lower()
-    if clean_lower in ["hello", "hi", "hey", "yes", "no", "okay", "thank you", "thanks"]:
+    if not is_meaningful_speech(text):
         return
 
     try:
         def _analyze():
-            # 1. Primary: Groq qwen/qwen3.8-27b for high rate limits & zero Gemini quota use
+            # 1. Primary: Gemini 3.5 Flash Lite for deep linguistic & translation accuracy
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel("gemini-3.5-flash-lite")
+                    prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
+Learner utterance: "{text}"
+
+Determine:
+1. Did the learner speak in Hindi or Hinglish (e.g. "मैं इंग्लिश सीखना चाहता हूँ", "main theek hoon", "mujhe bahar jana hai")?
+   -> "has_card": true
+   -> "card_type": "translation"
+   -> "original": "{text}"
+   -> "corrected": "<natural conversational English translation>"
+   -> "explanation": "<1 short sentence in Hinglish explaining the English expression>"
+   -> "spoken_tip": "In English, you can say: <corrected>."
+
+2. Did the learner speak in English with a grammatical error, wrong tense, or awkward phrasing (e.g. "my hobbies are watching anime", "didn't went", "he don't know")?
+   -> "has_card": true
+   -> "card_type": "correction"
+   -> "original": "{text}"
+   -> "corrected": "<corrected natural English sentence>"
+   -> "explanation": "<1 short sentence in Hinglish explaining the grammar rule>"
+   -> "spoken_tip": "A quick tip: you can say, <corrected>."
+
+3. Did the learner speak natural, grammatically correct English?
+   -> "has_card": false
+
+Return JSON ONLY:
+{{
+  "has_card": true/false,
+  "card_type": "translation" | "correction",
+  "original": "...",
+  "corrected": "...",
+  "explanation": "...",
+  "spoken_tip": "..."
+}}"""
+                    res = model.generate_content(
+                        prompt,
+                        generation_config={"response_mime_type": "application/json"},
+                    )
+                    return json.loads(res.text.strip())
+                except Exception as g_err:
+                    logger.debug("Gemini parallel analysis notice: %s", g_err)
+
+            # Fallback to Groq if Gemini key not configured
             groq_key = os.getenv("GROQ_API_KEY")
             if groq_key:
                 try:
                     from groq import Groq
                     client = Groq(api_key=groq_key)
-                    prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
-Learner utterance: "{text}"
-
-Determine:
-1. Did the learner speak in Hindi or Hinglish (e.g. "मैं इंग्लिश सीखना चाहता हूँ", "main theek hoon", "mujhe bahar jana hai", "aaj khana kya bana hai")?
-   -> Generate a TRANSLATION card showing how to say that exact Hindi sentence in natural English.
-   Return JSON:
-   {{
-     "has_card": true,
-     "card_type": "translation",
-     "original": "{text}",
-     "corrected": "<natural conversational English translation>",
-     "explanation": "<1 short sentence in Hinglish explaining the usage or rule>"
-   }}
-
-2. Did the learner speak in English with a grammatical error or awkward phrasing (e.g. "didn't went", "I am having two brothers", "he don't know", "my hobbies are watching anime")?
-   -> Generate a CORRECTION card.
-   Return JSON:
-   {{
-     "has_card": true,
-     "card_type": "correction",
-     "original": "{text}",
-     "corrected": "<corrected natural English sentence>",
-     "explanation": "<1 short sentence explanation in Hinglish (Hindi in English letters)>"
-   }}
-
-3. Did the learner speak natural, grammatically correct English?
-   Return JSON:
-   {{ "has_card": false }}
-
-JSON ONLY:"""
                     res = client.chat.completions.create(
                         model="qwen/qwen3.8-27b",
                         messages=[{"role": "user", "content": prompt}],
@@ -241,37 +280,9 @@ JSON ONLY:"""
                     content = res.choices[0].message.content
                     if content:
                         return json.loads(content.strip())
-                except Exception as g_err:
-                    logger.debug("Groq parallel analysis notice: %s", g_err)
-
-            # 2. Fallback: Gemini 3.5 Flash Lite
-            import google.generativeai as genai
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_key:
-                return None
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-3.5-flash-lite")
-            prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
-Learner utterance: "{text}"
-
-Determine:
-1. Did the learner speak in Hindi or Hinglish?
-   -> Generate a TRANSLATION card:
-   {{
-     "has_card": true,
-     "card_type": "translation",
-     "original": "{text}",
-     "corrected": "<natural conversational English translation>",
-     "explanation": "<1 short sentence in Hinglish explaining the usage or rule>"
-   }}
-2. Did the learner speak in English with a grammatical error?
-   -> Generate a CORRECTION card.
-3. Natural English?
-   -> {{ "has_card": false }}
-
-JSON ONLY:"""
-            res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-            return json.loads(res.text.strip())
+                except Exception as groq_err:
+                    logger.debug("Groq fallback notice: %s", groq_err)
+            return None
 
         analysis = await asyncio.to_thread(_analyze)
         if analysis and analysis.get("has_card") and analysis.get("corrected"):
@@ -279,8 +290,15 @@ JSON ONLY:"""
             original = analysis.get("original", text).strip()
             corrected = analysis.get("corrected", "").strip()
             explanation = analysis.get("explanation", "").strip()
+            spoken_tip = analysis.get("spoken_tip")
+            if not spoken_tip:
+                if card_type == "translation":
+                    spoken_tip = f"In English, you can say: {corrected}."
+                else:
+                    spoken_tip = f"A quick tip: you can say, {corrected}."
 
             logger.info("Card emitted (%s): '%s' -> '%s'", card_type, original, corrected)
+            # 1. Instantly display visual card on learner screen (<200ms)
             if room:
                 payload = json.dumps({
                     "type": "correction",
@@ -291,14 +309,20 @@ JSON ONLY:"""
                 }).encode("utf-8")
                 await room.local_participant.publish_data(payload)
 
-            # Spoken voice correction in parallel
+            # 2. Sequential Spoken Tip: wait for Groq's conversational speech to complete final output
             if session:
-                if card_type == "translation":
-                    recast_voice = f"In English, you can say: {corrected}."
-                else:
-                    recast_voice = f"A quick tip: you can say, {corrected}."
-                logger.info("Parallel voice correction spoken: %s", recast_voice)
-                session.say(recast_voice, allow_interruptions=True)
+                # Give Groq speech a brief moment to initiate playback
+                await asyncio.sleep(0.5)
+                max_wait = 15.0
+                elapsed = 0.0
+                while getattr(session, "agent_state", "") == "speaking" and elapsed < max_wait:
+                    await asyncio.sleep(0.2)
+                    elapsed += 0.2
+
+                # Natural polite pause after Groq's conversational reply
+                await asyncio.sleep(0.3)
+                logger.info("Sequential spoken tip delivered from Gemini: %s", spoken_tip)
+                session.say(spoken_tip, allow_interruptions=True, add_to_chat_ctx=False)
     except Exception as exc:
         logger.debug("Parallel analysis notice: %s", exc)
 
@@ -357,7 +381,11 @@ class EnglishTutor(Agent):
         user_text = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
         logger.info("Learner: %s", user_text)
 
-        # Trigger visual card and voice correction in parallel
+        if not is_meaningful_speech(user_text):
+            logger.info("Filtered background noise/non-verbal audio: %s", user_text)
+            return
+
+        # Trigger visual card and voice correction in parallel via Gemini
         if self.room:
             asyncio.create_task(run_parallel_accuracy_check(
                 self.room, self.livekit_session, user_text, self.user_id, self.session_id
@@ -414,10 +442,11 @@ async def entrypoint(ctx: JobContext):
     mode = lesson_context.get("mode", "free_conversation")
     logger.info("Session ready: room=%s user=%s mode=%s skill=%s", room_name, user_id, mode, target_skill)
 
-    # 1. Silero VAD — min_speech_duration=0.35s rejects sniffs, breath & fan hum
+    # 1. Silero VAD — activation_threshold=0.72 rejects fan hum, breathing & sniffs
     vad = silero.VAD.load(
-        min_speech_duration=0.35,
-        min_silence_duration=0.55,
+        activation_threshold=0.72,
+        min_speech_duration=0.45,
+        min_silence_duration=0.6,
     )
 
     # 2. STT: Full Flagship Groq Whisper Large v3 (1550M params)
@@ -589,13 +618,6 @@ async def entrypoint(ctx: JobContext):
         if participant.identity == user_id:
             logger.info("Learner audio track published! Speaking greeting.")
             speak_greeting()
-
-    # 3. Fallback: if audio was already published or after 1.2s
-    async def _auto_greet():
-        await asyncio.sleep(1.2)
-        speak_greeting()
-
-    asyncio.create_task(_auto_greet())
 
 
 # ---------------------------------------------------------------------------

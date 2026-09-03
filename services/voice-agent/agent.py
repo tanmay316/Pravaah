@@ -497,7 +497,7 @@ async def entrypoint(ctx: JobContext):
 
     # Instant greeting audio (<200ms)
     logger.info("Streaming instant greeting: %s", greeting_text)
-    asyncio.create_task(session.say(greeting_text, allow_interruptions=True))
+    session.say(greeting_text, allow_interruptions=True)
 
 
 # ---------------------------------------------------------------------------

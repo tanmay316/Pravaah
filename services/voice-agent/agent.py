@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
     AgentSession,
+    AutoSubscribe,
     JobContext,
     JobExecutorType,
     WorkerOptions,
@@ -101,13 +102,31 @@ CONVERSATIONAL STEERING RULES (CRITICAL):
 """
 
     else:
-        # Free conversation / Warmup
+        # Free conversation with adaptive goal & topic steering
         return base + """
-## SESSION MODE: CONVERSATIONAL WARMUP & FLUENCY CHECK
-- Goal: Wake up the learner's spoken English with spontaneous, comfortable conversation.
-- Ask about their day, recent experiences, hobbies, or light opinions.
-- Keep the energy high and friendly.
-- If the learner gives very short answers ("yes", "good"), ask an open "Why" or "Tell me more about..." question.
+## SESSION MODE: FREE CONVERSATION & ADAPTIVE GOAL STEERING
+
+### 1. Welcoming & Alignment
+At the start of this free conversation, you greeted the learner and invited them to choose:
+- Any topic they want to discuss (e.g. workplace, technology, daily life, hobbies, travel, college, movies, cricket).
+- The direction/goal for the session:
+  1. Friendly casual chat / intro (natural comfortable conversation).
+  2. Grammar-focused practice (active corrections and sentence polishing).
+  3. Roleplay simulation (job interview, workplace meeting, client call, restaurant, hotel, etc.).
+
+### 2. Dynamic Adaptive Behavior
+When the learner responds with their choice:
+- IF CASUAL CHAT / INTRO: Carry on a lively, curious conversation. Ask open-ended questions about their experiences, feelings, and perspectives. Keep the atmosphere supportive, friendly, and relaxed.
+- IF GRAMMAR IMPROVEMENT / GRAMMAR-SPECIFIC: Focus actively on spoken grammar!
+  * When the learner makes an error in verb tense, subject-verb agreement, prepositions, or articles:
+    Naturally model the correct native phrasing in 1 concise spoken sentence (e.g. "A more natural way to say that is: '...'.") and prompt them to try using that phrasing in their reply!
+  * Praise well-formed sentences.
+- IF ROLEPLAY: Immediately adopt the requested persona (e.g. hiring manager, senior colleague, client, hotel concierge). Set the scene in character and proceed with the roleplay realistically.
+- IF TOPIC SPECIFIED: Jump eagerly into their chosen topic! Ask engaging follow-up questions that prompt the learner to express their ideas clearly and speak in full sentences.
+
+### Style Guidelines:
+- Concise spoken turns: 1 to 3 sentences maximum (25-35 words).
+- Always end with an open prompt so the conversation flows seamlessly without awkward silences.
 """
 
 
@@ -406,43 +425,68 @@ class EnglishTutor(Agent):
 async def entrypoint(ctx: JobContext):
     """LiveKit Agents entrypoint."""
 
-    await ctx.connect()
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     room = ctx.room
     room_name = room.name or ""
     session_id = room_name.removeprefix("session_") if room_name.startswith("session_") else room_name
 
-    participant = await ctx.wait_for_participant()
-    user_id = participant.identity
-
+    user_id = "learner"
     target_skill = None
-    lesson_context = {}
+    lesson_context = {"mode": "free_conversation"}
 
-    # Fast non-blocking metadata lookup (300ms max timeout)
+    # Fast non-blocking metadata lookup (check top-level sessions or user sessions)
     try:
         def _read_meta():
             from worker import get_firestore_client
             from curriculum import CURRICULUM_SKILLS
-            doc = get_firestore_client().collection("users").document(user_id).collection("sessions").document(session_id).get()
-            if doc.exists:
-                d = doc.to_dict() or {}
-                m = d.get("mode", "free_conversation")
-                sk = d.get("target_skill")
+            db = get_firestore_client()
+            # 1. Top-level sessions lookup by session_id
+            sdoc = db.collection("sessions").document(session_id).get()
+            if sdoc.exists:
+                sd = sdoc.to_dict() or {}
+                uid = sd.get("user_id", "learner")
+                m = sd.get("mode", "free_conversation")
+                sk = sd.get("target_skill")
                 ctx_d = {"mode": m}
                 if sk and sk in CURRICULUM_SKILLS:
                     meta = CURRICULUM_SKILLS[sk]
                     ctx_d.update({
                         "target_skill": sk,
-                        "lesson_id": d.get("lesson_id"),
+                        "lesson_id": sd.get("lesson_id"),
                         "lesson_title": meta.get("title", sk),
                         "rule_summary": meta.get("rule_summary", ""),
                         "practice_activity": meta.get("practice_activity", ""),
                     })
-                return sk, ctx_d
-            return None, {"mode": "free_conversation"}
+                return uid, sk, ctx_d
 
-        target_skill, lesson_context = await asyncio.wait_for(
+            # 2. Check if a remote participant identity is already present
+            for p in room.remote_participants.values():
+                uid = p.identity
+                udoc = db.collection("users").document(uid).collection("sessions").document(session_id).get()
+                if udoc.exists:
+                    d = udoc.to_dict() or {}
+                    m = d.get("mode", "free_conversation")
+                    sk = d.get("target_skill")
+                    ctx_d = {"mode": m}
+                    if sk and sk in CURRICULUM_SKILLS:
+                        meta = CURRICULUM_SKILLS[sk]
+                        ctx_d.update({
+                            "target_skill": sk,
+                            "lesson_id": d.get("lesson_id"),
+                            "lesson_title": meta.get("title", sk),
+                            "rule_summary": meta.get("rule_summary", ""),
+                            "practice_activity": meta.get("practice_activity", ""),
+                        })
+                    return uid, sk, ctx_d
+                return uid, None, {"mode": "free_conversation"}
+
+            return "learner", None, {"mode": "free_conversation"}
+
+        u_id, target_skill, lesson_context = await asyncio.wait_for(
             asyncio.to_thread(_read_meta), timeout=0.4
         )
+        if u_id and u_id != "learner":
+            user_id = u_id
     except Exception:
         lesson_context = {"mode": "free_conversation"}
 
@@ -510,7 +554,7 @@ async def entrypoint(ctx: JobContext):
         model="tts-1",
         voice="en-IN-NeerjaNeural",
         api_key="not-needed",
-        base_url=os.getenv("KOKORO_BASE_URL", "http://localhost:8880/v1"),
+        base_url=os.getenv("KOKORO_BASE_URL", "http://127.0.0.1:10000/v1"),
     )
 
     # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense
@@ -604,7 +648,12 @@ async def entrypoint(ctx: JobContext):
     )
 
     # Greeting tailored to mode & target skill
-    greeting_text = "Hello! Welcome to your English practice. How is your day going so far?"
+    greeting_text = (
+        "Hello! Welcome to Pravaah. I am Coach Pravaah, your spoken English partner. "
+        "What topic would you like to talk about today, and how should we carry on our conversation? "
+        "We can do a friendly casual chat, focused grammar practice where I help polish your sentences, "
+        "or a real-world roleplay like an interview or workplace meeting!"
+    )
     if mode == "assessment":
         greeting_text = "Welcome to your English assessment! Could you tell me a little about yourself?"
     elif mode == "grammar_practice" and target_skill:
@@ -616,7 +665,7 @@ async def entrypoint(ctx: JobContext):
         title = lesson_context.get("lesson_title", "speaking")
         greeting_text = f"Hello! Today we are practicing {title}. Are you ready to begin?"
 
-    # Instant greeting audio: trigger as soon as learner starts or publishes mic
+    # Instant greeting audio & visual transcript: trigger as soon as learner is ready
     greeting_spoken = False
 
     def speak_greeting():
@@ -624,9 +673,33 @@ async def entrypoint(ctx: JobContext):
         if not greeting_spoken:
             greeting_spoken = True
             logger.info("Streaming instant greeting: %s", greeting_text)
-            session.say(greeting_text, allow_interruptions=True)
+            # 1. UI Transcript broadcast so user sees it in real time immediately
+            asyncio.create_task(broadcast_ui_turn(room, "tutor", greeting_text))
+            # 2. Audio track utterance
+            try:
+                session.say(greeting_text, allow_interruptions=True)
+            except Exception as s_err:
+                logger.warning("session.say greeting notice: %s", s_err)
 
-    # 1. Trigger when client sends start_conversation data signal
+    # Multi-event greeting triggers:
+    # 1. If learner is already in the room
+    if len(room.remote_participants) > 0:
+        logger.info("Learner already in room, speaking greeting immediately.")
+        speak_greeting()
+
+    # 2. When learner connects
+    @room.on("participant_connected")
+    def on_participant_connected(p):
+        logger.info("Learner connected (%s), speaking greeting.", p.identity)
+        speak_greeting()
+
+    # 3. When learner publishes microphone audio track
+    @room.on("track_published")
+    def on_track(pub, participant):
+        logger.info("Learner audio track published by %s, speaking greeting.", participant.identity)
+        speak_greeting()
+
+    # 4. When client sends start_conversation signal
     @room.on("data_received")
     def on_data(dp):
         try:
@@ -637,12 +710,14 @@ async def entrypoint(ctx: JobContext):
         except Exception:
             pass
 
-    # 2. Trigger when learner publishes microphone audio track
-    @room.on("track_published")
-    def on_track(pub, participant):
-        if participant.identity == user_id:
-            logger.info("Learner audio track published! Speaking greeting.")
+    # 5. Safety fallback timer: speak greeting after 1.5s if participant is connected
+    async def _greeting_timer():
+        await asyncio.sleep(1.5)
+        if not greeting_spoken and len(room.remote_participants) > 0:
+            logger.info("Greeting timer fired, speaking greeting.")
             speak_greeting()
+
+    asyncio.create_task(_greeting_timer())
 
 
 # ---------------------------------------------------------------------------
@@ -667,10 +742,14 @@ if __name__ == "__main__":
     # Prevent telemetry loop monitor from performing expensive disk I/O stack inspections on Render shared CPU
     logging.getLogger("livekit.agents.telemetry").setLevel(logging.ERROR)
 
+    # Use JobExecutorType.PROCESS on Linux to isolate WebRTC FFI and avoid GIL event loop freezes
+    # Worker starts with 0 idle processes to keep memory minimal
+    executor_type = JobExecutorType.THREAD if sys.platform.startswith("win") else JobExecutorType.PROCESS
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
-            job_executor_type=JobExecutorType.THREAD,
+            job_executor_type=executor_type,
             num_idle_processes=0,
             host="127.0.0.1",
             port=0,

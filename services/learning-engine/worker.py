@@ -1134,7 +1134,7 @@ Evaluate the spoken evidence from the learner across the 4 tasks with uncompromi
 
 Linguistic Evaluation Principles:
 1. Verbatim Speech Analysis: Scrutinize exact grammatical syntax, verb tenses, subject-verb agreement (e.g. 'it help me' -> 'it helps me'), prepositions, articles ('in interview' -> 'in an interview'), and word formation.
-2. Filler Words & Stop Words: Identify all verbal crutches, repetitive filler words ('like', 'so basically', 'you know', 'obviously', 'okay okay') that disturb natural English cadence and flow.
+2. Filler Words & Hesitation Sounds (CRITICAL): Meticulously detect and report ALL vocalized hesitation sounds ("ah", "umm", "uh", "aaa..", "ehh", "hmm", "er") as well as verbal crutch phrases ("like", "so basically", "you know", "obviously", "actually", "okay okay", "I mean") that disturb natural English cadence and flow. Every single detected filler sound or word MUST be included in "filler_words_detected".
 3. Restarts & False Starts: Extract sentence restarts, hesitations, and self-repair stumbles (e.g. 'I am I bought', 'I want to I prefer').
 4. Pragmatic & Communicative Competence: Assess ability to form cohesive arguments without run-on sentences.
 
@@ -1148,7 +1148,7 @@ Return ONLY a valid JSON object with this exact structure:
   "comprehension_rating": "beginner" | "basic" | "elementary" | "intermediate" | "advanced" | "mastery",
   "conversation_ability": "beginner" | "basic" | "elementary" | "intermediate" | "advanced" | "mastery",
   "pronunciation_rating": "not_assessed",
-  "filler_words_detected": ["filler word or phrase"],
+  "filler_words_detected": ["vocalized sound or crutch word (e.g. 'umm', 'ah', 'ehh', 'like', 'you know')"],
   "restarts_and_false_starts": ["restarted phrase 1", "restarted phrase 2"],
   "grammatical_breakdowns": [
     {"error": "exact learner error or clause", "correction": "natural native correction", "explanation": "specific grammar rule violated"}
@@ -1156,7 +1156,7 @@ Return ONLY a valid JSON object with this exact structure:
   "strengths": ["specific strength 1", "specific strength 2"],
   "weaknesses": ["specific weakness 1", "specific weakness 2"],
   "criteria": "A 1-sentence tailored qualitative summary evaluating the speaker's true communicative ability without boilerplate text.",
-  "analysis_notes": "A rigorous 3-4 sentence PhD-level linguistic diagnostic diagnosing sentence architecture, fluency rhythm, filler interference, and syntax stability."
+  "analysis_notes": "A rigorous 3-4 sentence PhD-level linguistic diagnostic diagnosing sentence architecture, fluency rhythm, vocalized hesitation sounds (ah, umm, ehh), filler interference, and syntax stability."
 }
 
 Rating Guidelines:
@@ -1167,6 +1167,56 @@ Rating Guidelines:
 - A (Advanced / CEFR B2-C1): Fluent, well-structured, complex sentences with rare grammatical slips.
 - S (Mastery / CEFR C1-C2+): Effortless native-like idiomatic mastery, impeccable rhythm and vocabulary precision."""
 
+
+def extract_vocalized_and_verbal_fillers(text: str) -> list[str]:
+    """Extract non-lexical vocalized hesitation sounds (ah, umm, aaa.., ehh, etc.) and verbal crutches."""
+    if not text:
+        return []
+    detected = []
+    seen = set()
+
+    # 1. Vocalized hesitation sounds: umm, uh, ah, aaa.., ehh, hmm, er
+    sound_matches = re.findall(r"\b(u+m+|u+h+|a+h+|e+h+|h+m+|e+r+|a{2,}|u{2,})\b\.{0,3}", text, re.IGNORECASE)
+    for s in sound_matches:
+        s_clean = s.rstrip(".")
+        s_norm = s_clean.lower()
+        if s_norm not in seen:
+            seen.add(s_norm)
+            if s_norm.startswith("um"):
+                label = f"{s} (vocalized hesitation sound)"
+            elif s_norm.startswith("ah") or s_norm.startswith("a"):
+                label = f"{s} (vocalized pause sound)"
+            elif s_norm.startswith("eh"):
+                label = f"{s} (vocalized hesitation sound)"
+            elif s_norm.startswith("hm"):
+                label = f"{s} (thinking hesitation pause)"
+            elif s_norm.startswith("er"):
+                label = f"{s} (speech stall sound)"
+            elif s_norm.startswith("uh"):
+                label = f"{s} (vocalized hesitation sound)"
+            else:
+                label = f"{s} (vocalized sound)"
+            detected.append(label)
+
+    # 2. Verbal crutches and discourse markers
+    crutch_patterns = [
+        (r"\blike\b", "like (verbal hesitation filler)"),
+        (r"\bso basically\b", "so basically (crutch discourse marker)"),
+        (r"\bbasically\b", "basically (conversational padding)"),
+        (r"\byou know\b", "you know (phatic filler)"),
+        (r"\bobviously\b", "obviously (unsubstantiated connective filler)"),
+        (r"\bactually\b", "actually (conversational crutch)"),
+        (r"\bokay okay\b", "okay okay (informal hesitation repeat)"),
+        (r"\bi mean\b", "I mean (hesitation self-repair marker)"),
+    ]
+    for pat, label in crutch_patterns:
+        if re.search(pat, text, re.IGNORECASE):
+            clean_word = label.split()[0].lower()
+            if clean_word not in seen:
+                seen.add(clean_word)
+                detected.append(label)
+
+    return detected
 
 
 async def analyze_assessment_evidence(
@@ -1240,6 +1290,14 @@ async def analyze_assessment_evidence(
 
     def build_result_from_output(validated: AssessmentObservationOutput) -> dict:
         valid_ratings = {"beginner", "basic", "elementary", "intermediate", "advanced", "mastery"}
+        model_fillers = list(getattr(validated, "filler_words_detected", []) or [])
+        regex_fillers = extract_vocalized_and_verbal_fillers(evidence_text)
+        merged_fillers = list(model_fillers)
+        for rf in regex_fillers:
+            base_kw = rf.split()[0].lower()
+            if not any(base_kw in mf.lower() for mf in model_fillers):
+                merged_fillers.append(rf)
+
         res = {
             "pravaah_level": getattr(validated, "pravaah_level", "D") if getattr(validated, "pravaah_level", "D") in {"E", "D", "C", "B", "A", "S"} else "D",
             "grammar_rating": validated.grammar_rating.lower() if validated.grammar_rating.lower() in valid_ratings else "basic",
@@ -1249,7 +1307,7 @@ async def analyze_assessment_evidence(
             "comprehension_rating": validated.comprehension_rating.lower() if validated.comprehension_rating.lower() in valid_ratings else "elementary",
             "conversation_ability": validated.conversation_ability.lower() if validated.conversation_ability.lower() in valid_ratings else "basic",
             "pronunciation_rating": "not_assessed",
-            "filler_words_detected": list(getattr(validated, "filler_words_detected", []) or []),
+            "filler_words_detected": merged_fillers,
             "restarts_and_false_starts": list(getattr(validated, "restarts_and_false_starts", []) or []),
             "grammatical_breakdowns": list(getattr(validated, "grammatical_breakdowns", []) or []),
             "strengths": list(getattr(validated, "strengths", []) or []),
@@ -1371,21 +1429,8 @@ async def analyze_assessment_evidence(
     joined_text = " ".join(all_transcripts)
     wpm = (total_words / (total_duration_sec / 60.0)) if total_duration_sec > 0 else 75.0
 
-    # Extract verbatim filler words
-    filler_patterns = [
-        (r"\blike\b", "like (verbal hesitation filler)"),
-        (r"\bso basically\b", "so basically (crutch discourse marker)"),
-        (r"\bbasically\b", "basically (conversational padding)"),
-        (r"\byou know\b", "you know (phatic filler)"),
-        (r"\bobviously\b", "obviously (unsubstantiated connective filler)"),
-        (r"\bactually\b", "actually (conversational crutch)"),
-        (r"\bokay okay\b", "okay okay (informal hesitation repeat)"),
-        (r"\bi mean\b", "I mean (hesitation self-repair marker)"),
-    ]
-    detected_fillers = []
-    for pat, label in filler_patterns:
-        if re.search(pat, joined_text, re.IGNORECASE):
-            detected_fillers.append(label)
+    # Extract verbatim filler words and vocalized hesitation sounds
+    detected_fillers = extract_vocalized_and_verbal_fillers(joined_text)
 
     # Extract sentence restarts and false starts
     detected_restarts = []

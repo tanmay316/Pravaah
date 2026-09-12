@@ -458,9 +458,11 @@ async def create_session(
     if not lesson_id and body.target_skill:
         lesson_id = f"lsn_{body.target_skill}_{uuid.uuid4().hex[:6]}"
 
-    # Create session document in Firestore
+    # Create session document in Firestore (both user subcollection and top-level for agent lookup)
     db = get_firestore_client()
     session_data = {
+        "session_id": session_id,
+        "user_id": uid,
         "mode": body.mode.value,
         "start_time": now,
         "end_time": None,
@@ -471,6 +473,17 @@ async def create_session(
         "lesson_id": lesson_id,
     }
     db.collection("users").document(uid).collection("sessions").document(session_id).set(session_data)
+    try:
+        db.collection("sessions").document(session_id).set({
+            "session_id": session_id,
+            "user_id": uid,
+            "mode": body.mode.value,
+            "target_skill": body.target_skill,
+            "lesson_id": lesson_id,
+            "created_at": now,
+        })
+    except Exception:
+        pass
 
     # If launching a targeted lesson, transition lesson to in_progress state
     if lesson_id and body.target_skill:

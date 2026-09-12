@@ -720,7 +720,7 @@ export default function AssessmentScreen() {
             <View style={styles.fillerWordsBlock}>
               <Text style={styles.sectionHeaderTitle}>SPEECH FLOW & FILLER WORD DIAGNOSIS</Text>
               <Text style={styles.fillerSubtitle}>
-                Identifies verbal crutches and stop words that disturb natural English cadence and flow:
+                Identifies vocalized hesitation sounds (ah, umm, aaa.., ehh) and verbal crutches that disturb natural English cadence and flow:
               </Text>
               {assessmentResult.filler_words_detected && assessmentResult.filler_words_detected.length > 0 ? (
                 <View style={styles.fillerChipRow}>

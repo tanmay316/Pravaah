@@ -225,6 +225,63 @@ def cefr_reference_for_pravaah_level(pravaah_level: str) -> str:
     return PRAVAAH_LEVELS.get(pravaah_level, {}).get("cefr_reference", "unassessed")
 
 
+def calculate_progressive_level(
+    current_level: str,
+    all_skill_mastery: dict[str, float],
+    skill_stats: Optional[dict[str, dict]] = None,
+) -> str:
+    """
+    Computes progressive Pravaah proficiency level based on cumulative
+    empirical mastery across curriculum skills.
+
+    Levels progression:
+    - E: Beginner (A1)
+    - D: Basic (A1–A2)
+    - C: Elementary (A2)
+    - B: Intermediate (B1)
+    - A: Advanced (B2–C1)
+    - S: Mastery (C1–C2+)
+    """
+    if not all_skill_mastery:
+        return current_level if current_level in {"E", "D", "C", "B", "A", "S"} else "C"
+
+    mastery_values = list(all_skill_mastery.values())
+    avg_mastery = sum(mastery_values) / len(mastery_values)
+    num_mastered = sum(1 for m in mastery_values if m >= 0.80)
+    num_strong = sum(1 for m in mastery_values if m >= 0.65)
+    num_weaknesses = sum(1 for m in mastery_values if m < 0.45)
+
+    # Determine candidate grade from skill evidence
+    if avg_mastery >= 0.85 and num_mastered >= 6 and num_weaknesses == 0:
+        computed_grade = "S"
+    elif avg_mastery >= 0.74 and num_mastered >= 4 and num_weaknesses <= 1:
+        computed_grade = "A"
+    elif avg_mastery >= 0.62 and num_strong >= 5 and num_weaknesses <= 2:
+        computed_grade = "B"
+    elif avg_mastery >= 0.48 and num_weaknesses <= 4:
+        computed_grade = "C"
+    elif avg_mastery >= 0.36:
+        computed_grade = "D"
+    else:
+        computed_grade = "E"
+
+    order = ["E", "D", "C", "B", "A", "S"]
+
+    if not current_level or current_level == "unassessed":
+        return computed_grade
+
+    current_idx = order.index(current_level) if current_level in order else 2  # default C
+    computed_idx = order.index(computed_grade) if computed_grade in order else current_idx
+
+    # The user advances as they improve (promoting up the ladder).
+    # Prevent abrupt drops below their assessed baseline unless average mastery collapsed drastically (<0.25).
+    if computed_idx > current_idx:
+        return computed_grade
+    elif computed_idx < current_idx and avg_mastery < 0.25 and current_idx > 0:
+        return order[current_idx - 1]
+    return current_level
+
+
 # ---------------------------------------------------------------------------
 # Adaptive Stage & Activity Selection Helpers (Phase 5)
 # ---------------------------------------------------------------------------

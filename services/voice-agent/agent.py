@@ -663,12 +663,16 @@ except Exception:
 
 
 if __name__ == "__main__":
+    # Prevent telemetry loop monitor from performing expensive disk I/O stack inspections on Render shared CPU
+    logging.getLogger("livekit.agents.telemetry").setLevel(logging.ERROR)
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             num_idle_processes=0,
             host="127.0.0.1",
             port=0,
+            load_threshold=1.5,
         ),
     )
 

@@ -342,7 +342,8 @@ export async function submitProficiencyAssessment(
     {
       method: "POST",
       body: JSON.stringify(observation),
-    }
+    },
+    60000 // 60s headroom for structured AI linguistic analysis
   );
 }
 

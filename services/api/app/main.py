@@ -18,6 +18,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+import logging
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
@@ -236,6 +237,42 @@ async def get_my_profile(user: CurrentUser, req_id: RequestId, response: Respons
         return LearnerProfile(uid=uid, created_at=profile_data["created_at"])
     data = doc.to_dict()
     data["uid"] = uid
+
+    # Self-healing: if pravaah_level is missing or unassessed, check proficiency_assessments subcollection
+    if not data.get("pravaah_level") or data.get("pravaah_level") == "unassessed":
+        try:
+            latest_assess_stream = list(
+                db.collection("users").document(uid).collection("proficiency_assessments")
+                .order_by("assessed_at", direction="DESCENDING")
+                .limit(1)
+                .stream()
+            )
+            if latest_assess_stream:
+                assess_data = latest_assess_stream[0].to_dict()
+                assessed_level = assess_data.get("pravaah_level")
+                if assessed_level and assessed_level in {"E", "D", "C", "B", "A", "S"}:
+                    cefr_ref = assess_data.get("cefr_reference") or PRAVAAH_CEFR_REFERENCE.get(assessed_level, "A2")
+                    data["pravaah_level"] = assessed_level
+                    data["cefr_reference"] = cefr_ref
+                    data["cefr_level"] = cefr_ref
+                    if assess_data.get("strengths"):
+                        data["strengths"] = assess_data.get("strengths")
+                    if assess_data.get("weaknesses"):
+                        data["weaknesses"] = assess_data.get("weaknesses")
+                    if assess_data.get("initial_focus"):
+                        data["current_focus"] = assess_data.get("initial_focus")
+
+                    db.collection("users").document(uid).set({
+                        "pravaah_level": assessed_level,
+                        "cefr_reference": cefr_ref,
+                        "cefr_level": cefr_ref,
+                        "last_assessed_at": assess_data.get("assessed_at"),
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                    }, merge=True)
+                    logging.getLogger("api").info("Self-healed profile for user %s: set level to %s (%s)", uid, assessed_level, cefr_ref)
+        except Exception as e:
+            logging.getLogger("api").warning("Profile self-healing check notice: %s", e)
+
     return LearnerProfile(**data)
 
 

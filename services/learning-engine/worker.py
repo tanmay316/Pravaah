@@ -62,6 +62,7 @@ from curriculum import (
     map_to_curriculum_skill,
     generate_personalized_lesson,
     calculate_mastery_update,
+    calculate_progressive_level,
     MASTERY_DECAY_LAMBDA,
     EVIDENCE_DELTAS,
 )
@@ -963,25 +964,52 @@ async def update_learner_mastery(
         "updated_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
 
-    # 8. Preserve Pravaah Level & CEFR Reference (Unassessed default for new learners)
+    # 8. Calculate Dynamic Progressive Pravaah Level as learner improves
     existing_user_doc = user_ref.get()
     existing_user_data = existing_user_doc.to_dict() if existing_user_doc.exists else {}
 
-    # Explicit initial state: "unassessed" if no dedicated onboarding/assessment occurred
     pravaah_level = existing_user_data.get("pravaah_level")
     cefr_reference = existing_user_data.get("cefr_reference")
     legacy_cefr = existing_user_data.get("cefr_level") or existing_user_data.get("level")
 
-    if not pravaah_level:
+    if not pravaah_level or pravaah_level == "unassessed":
         if legacy_cefr in ["A1", "A2", "B1", "B2", "C1", "C2"]:
             cefr_to_pravaah = {"A1": "E", "A2": "C", "B1": "B", "B2": "A", "C1": "S", "C2": "S"}
             pravaah_level = cefr_to_pravaah.get(legacy_cefr, "C")
             cefr_reference = legacy_cefr
         else:
+            # Check if user had a previous assessment in proficiency_assessments subcollection
+            try:
+                latest_assess_stream = list(
+                    user_ref.collection("proficiency_assessments")
+                    .order_by("assessed_at", direction="DESCENDING")
+                    .limit(1)
+                    .stream()
+                )
+                if latest_assess_stream:
+                    latest_assess = latest_assess_stream[0].to_dict()
+                    pravaah_level = latest_assess.get("pravaah_level")
+                    cefr_reference = latest_assess.get("cefr_reference")
+            except Exception as assess_lookup_err:
+                logger.warning("Assessment subcollection lookup notice: %s", assess_lookup_err)
+
+    # If still unassessed but has practiced sessions, compute from evidence
+    if not pravaah_level or pravaah_level == "unassessed":
+        if len(learner_turns) > 0 or len(active_skills) > 0:
+            pravaah_level = calculate_progressive_level("unassessed", all_skill_mastery, updated_skill_stats)
+            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
+        else:
             pravaah_level = "unassessed"
             cefr_reference = "unassessed"
-    elif not cefr_reference or cefr_reference == "unassessed":
-        cefr_reference = cefr_reference_for_pravaah_level(pravaah_level) if pravaah_level != "unassessed" else "unassessed"
+    else:
+        # User has an established level; calculate progressive advancement (e.g. C -> B -> A -> S)
+        progressive_level = calculate_progressive_level(pravaah_level, all_skill_mastery, updated_skill_stats)
+        if progressive_level != pravaah_level:
+            logger.info("Learner %s advanced from %s to %s through practice!", user_id, pravaah_level, progressive_level)
+            pravaah_level = progressive_level
+            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
+        elif not cefr_reference or cefr_reference == "unassessed":
+            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
 
     # 9. Update top-level profile in Firestore
     user_ref.set({
@@ -1231,13 +1259,15 @@ async def analyze_assessment_evidence(
             "criteria": getattr(validated, "criteria", None),
             "analysis_notes": validated.analysis_notes,
         }
-        retu    # 1. Primary: Groq Cloud (Ultra-fast PhD evaluation using openai/gpt-oss-120b, openai/gpt-oss-20b, or llama-3.3-70b-versatile)
+        return res
+
+    # 1. Primary: Groq Cloud (Ultra-fast PhD evaluation using openai/gpt-oss-120b, openai/gpt-oss-20b, or qwen/qwen3.8-27b)
     groq_key = os.getenv("GROQ_API_KEY") or "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"
     if groq_key:
         groq_candidates = [
             os.getenv("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b"),
             "openai/gpt-oss-20b",
-            "llama-3.3-70b-versatile",
+            "qwen/qwen3.8-27b",
         ]
         for model_name in groq_candidates:
             try:
@@ -1255,7 +1285,7 @@ async def analyze_assessment_evidence(
                         max_tokens=2800,
                         temperature=0.2,
                     ),
-                    timeout=15.0
+                    timeout=7.0
                 )
                 raw_text = g_resp.choices[0].message.content or "{}"
                 parsed = json.loads(raw_text.strip())

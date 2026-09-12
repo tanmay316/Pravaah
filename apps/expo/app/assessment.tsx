@@ -140,6 +140,7 @@ export default function AssessmentScreen() {
   const lastSpeechTimeRef = useRef<number>(0);
   const committedTextRef = useRef<string>("");
   const isRecordingRef = useRef<boolean>(false);
+  const lastTasksRef = useRef<AssessmentTaskEvidence[]>([]);
 
   // Result state — entirely from backend, no fallbacks
   const [assessmentResult, setAssessmentResult] = useState<ProficiencyAssessmentRecord | null>(null);
@@ -498,6 +499,7 @@ export default function AssessmentScreen() {
   };
 
   const handleFinalizeAssessment = async (finalTasks: AssessmentTaskEvidence[]) => {
+    lastTasksRef.current = finalTasks;
     setIsAnalyzing(true);
     setError(null);
 
@@ -556,13 +558,30 @@ export default function AssessmentScreen() {
               <Pressable
                 style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
                 onPress={() => {
+                  if (lastTasksRef.current && lastTasksRef.current.length > 0) {
+                    setError(null);
+                    setCompleted(false);
+                    handleFinalizeAssessment(lastTasksRef.current);
+                  } else {
+                    setCompleted(false);
+                    setCurrentStep(0);
+                    setTaskEvidences([]);
+                    setError(null);
+                  }
+                }}
+              >
+                <Text style={styles.primaryButtonText}>Retry Spoken Diagnostic Analysis →</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.secondaryButton, { marginTop: 12 }, pressed && styles.buttonPressed]}
+                onPress={() => {
                   setCompleted(false);
                   setCurrentStep(0);
                   setTaskEvidences([]);
                   setError(null);
                 }}
               >
-                <Text style={styles.primaryButtonText}>Retry Spoken Diagnostic →</Text>
+                <Text style={styles.secondaryButtonText}>Start Over from Question 1</Text>
               </Pressable>
             </View>
           </ScrollView>
@@ -1476,4 +1495,15 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { cursor: "pointer" as any } }),
   },
   primaryButtonText: { color: theme.colors.void, fontSize: 15, fontWeight: "500", letterSpacing: 0.2 },
+  secondaryButton: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    borderRadius: theme.radii.sm,
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    ...Platform.select({ web: { cursor: "pointer" as any } }),
+  },
+  secondaryButtonText: { color: theme.colors.ash, fontSize: 14, fontWeight: "500" },
 });

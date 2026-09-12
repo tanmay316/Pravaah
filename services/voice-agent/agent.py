@@ -274,8 +274,9 @@ Return JSON ONLY:
                 try:
                     from groq import Groq
                     client = Groq(api_key=groq_key)
+                    fast_model = os.getenv("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
                     res = client.chat.completions.create(
-                        model="qwen/qwen3.8-27b",
+                        model=fast_model,
                         messages=[{"role": "user", "content": prompt}],
                         response_format={"type": "json_object"},
                         max_tokens=150,
@@ -482,9 +483,10 @@ async def entrypoint(ctx: JobContext):
     groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
     if groq_key:
-        logger.info("Using Groq LLM (qwen/qwen3.8-27b) for zero-latency, high-quota conversation")
+        groq_model = os.getenv("GROQ_VOICE_MODEL", "openai/gpt-oss-20b")
+        logger.info("Using Groq LLM (%s) for ultra-fast, zero-latency conversation", groq_model)
         llm = groq.LLM(
-            model="qwen/qwen3.8-27b",
+            model=groq_model,
             api_key=groq_key,
             temperature=0.3,
         )
@@ -507,7 +509,7 @@ async def entrypoint(ctx: JobContext):
         model="tts-1",
         voice="en-IN-NeerjaNeural",
         api_key="not-needed",
-        base_url="http://localhost:8880/v1",
+        base_url=os.getenv("KOKORO_BASE_URL", "http://localhost:8880/v1"),
     )
 
     # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense

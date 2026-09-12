@@ -147,10 +147,10 @@ async def auth_error_handler(request, exc: AuthError):
 
 
 # ---------------------------------------------------------------------------
-# Health & Root Status
+# Health & Root Status (supports GET & HEAD for Render health checker)
 # ---------------------------------------------------------------------------
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "status": "healthy",
@@ -160,10 +160,61 @@ async def root():
     }
 
 
-@app.get("/health")
-@app.get("/api/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok", "service": "api"}
+
+
+# ---------------------------------------------------------------------------
+# Embedded Neural TTS Endpoint (/v1/audio/speech)
+# ---------------------------------------------------------------------------
+
+class SpeechRequest(BaseModel):
+    model: str = "tts-1"
+    input: str
+    voice: str = "en-IN-NeerjaNeural"
+    response_format: str = "mp3"
+    speed: float = 1.0
+
+
+_tts_cache: dict[str, bytes] = {}
+
+
+@app.post("/v1/audio/speech")
+async def generate_speech(req: SpeechRequest):
+    clean_text = req.input.strip().replace("**", "").replace("*", "").replace("#", "").replace('"', "").replace("`", "") or "Okay."
+    voice = req.voice if req.voice in {"en-IN-NeerjaNeural", "en-IN-PrabhatNeural", "hi-IN-SwaraNeural"} else "en-IN-NeerjaNeural"
+    key = f"{voice}|{clean_text}"
+
+    if key in _tts_cache:
+        return Response(
+            content=_tts_cache[key],
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
+        )
+
+    try:
+        import edge_tts
+        communicate = edge_tts.Communicate(clean_text, voice=voice)
+        audio_buf = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_buf.extend(chunk["data"])
+
+        result_bytes = bytes(audio_buf)
+        if result_bytes:
+            if len(_tts_cache) < 200:
+                _tts_cache[key] = result_bytes
+            return Response(
+                content=result_bytes,
+                media_type="audio/mpeg",
+                headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS synthesis error: {exc}")
+
+    raise HTTPException(status_code=500, detail="TTS generation failed")
 
 
 # ---------------------------------------------------------------------------

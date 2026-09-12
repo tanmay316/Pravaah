@@ -347,14 +347,60 @@ async def analyze_session_messages(
 
     logger.info("Running session analysis for user=%s session=%s (turns=%d)", user_id, session_id, len(user_turns))
 
-    # 2. Call Google Generative AI / LiteLLM with structured JSON output and safe retry
+    # 2. Call Groq Cloud / Gemini / LiteLLM with structured JSON output and safe retry
     parsed_result = SessionAnalysisResult(mistakes=[], vocabulary=[])
     max_retries = 2
+    groq_key = os.getenv("GROQ_API_KEY")
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 
-    if api_key:
+    if groq_key:
         try:
-            genai_model_name = model.replace("gemini/", "")
+            from groq import Groq
+            gclient = Groq(api_key=groq_key)
+            groq_analysis_model = os.getenv("GROQ_ANALYSIS_MODEL", "openai/gpt-oss-120b")
+            g_resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    gclient.chat.completions.create,
+                    model=groq_analysis_model,
+                    messages=[
+                        {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    max_tokens=1500,
+                    temperature=0.1,
+                ),
+                timeout=12.0
+            )
+            raw_text = g_resp.choices[0].message.content or "{}"
+            raw_json = json.loads(raw_text.strip())
+            for m in raw_json.get("mistakes", []):
+                if not m.get("session_id"):
+                    m["session_id"] = session_id
+                if not m.get("message_id") and user_turns:
+                    m["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                if not m.get("curriculum_skill_id"):
+                    m["curriculum_skill_id"] = map_to_curriculum_skill(m.get("category", ""), m.get("original", ""), m.get("short_explanation", ""))
+                if not m.get("fact_type"):
+                    m["fact_type"] = "grammar_error"
+
+            for v in raw_json.get("vocabulary", []):
+                if not v.get("session_id"):
+                    v["session_id"] = session_id
+                if not v.get("message_id") and user_turns:
+                    v["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                if not v.get("curriculum_skill_id"):
+                    v["curriculum_skill_id"] = "collocations"
+                if not v.get("fact_type"):
+                    v["fact_type"] = "natural_alternative"
+
+            parsed_result = SessionAnalysisResult.model_validate(raw_json)
+        except Exception as groq_err:
+            logger.warning("Groq session analysis notice: %s; trying Gemini fallback", groq_err)
+
+    if not parsed_result.mistakes and not parsed_result.vocabulary and api_key:
+        try:
+            genai_model_name = model.replace("gemini/", "").replace("gemini-3.5-flash-lite", "gemini-2.5-flash")
             genai.configure(api_key=api_key)
             gmodel = genai.GenerativeModel(genai_model_name, system_instruction=ANALYSIS_SYSTEM_PROMPT)
             resp = await asyncio.to_thread(gmodel.generate_content, user_prompt)
@@ -1094,7 +1140,7 @@ async def analyze_assessment_evidence(
     """
     import google.generativeai as genai
 
-    active_model = model or os.getenv("ANALYSIS_MODEL", "gemini-3.5-flash-lite")
+    active_model = model or os.getenv("ANALYSIS_MODEL", "gemini-2.5-flash")
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 
     task_lines = []
@@ -1156,13 +1202,79 @@ async def analyze_assessment_evidence(
 
     valid_ratings = {"beginner", "basic", "elementary", "intermediate", "advanced", "mastery"}
 
-    # Attempt analysis via Google Generative AI / LiteLLM
+    # 1. Primary: Groq Cloud (Ultra-fast 500 T/s evaluation using openai/gpt-oss-120b)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        try:
+            from groq import Groq
+            gclient = Groq(api_key=groq_key)
+            groq_assess_model = os.getenv("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b")
+            g_resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    gclient.chat.completions.create,
+                    model=groq_assess_model,
+                    messages=[
+                        {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
+                    ],
+                    response_format={"type": "json_object"},
+                    max_tokens=600,
+                    temperature=0.2,
+                ),
+                timeout=12.0
+            )
+            raw_text = g_resp.choices[0].message.content or "{}"
+            parsed = json.loads(raw_text.strip())
+            validated = AssessmentObservationOutput.model_validate(parsed)
+            result = {}
+            for k in ["grammar_rating", "vocabulary_rating", "speaking_complexity", "fluency_rating", "comprehension_rating", "conversation_ability"]:
+                val = getattr(validated, k, "elementary").lower()
+                result[k] = val if val in valid_ratings else "elementary"
+            result["pronunciation_rating"] = "not_assessed"
+            result["analysis_notes"] = validated.analysis_notes
+            return result
+        except Exception as groq_err:
+            logger.warning("Groq assessment evaluation notice for gpt-oss-120b: %s; trying llama fallback", groq_err)
+            try:
+                from groq import Groq
+                gclient = Groq(api_key=groq_key)
+                g_resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        gclient.chat.completions.create,
+                        model="llama-3.3-70b-versatile",
+                        messages=[
+                            {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
+                            {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
+                        ],
+                        response_format={"type": "json_object"},
+                        max_tokens=600,
+                        temperature=0.2,
+                    ),
+                    timeout=10.0
+                )
+                raw_text = g_resp.choices[0].message.content or "{}"
+                parsed = json.loads(raw_text.strip())
+                validated = AssessmentObservationOutput.model_validate(parsed)
+                result = {}
+                for k in ["grammar_rating", "vocabulary_rating", "speaking_complexity", "fluency_rating", "comprehension_rating", "conversation_ability"]:
+                    val = getattr(validated, k, "elementary").lower()
+                    result[k] = val if val in valid_ratings else "elementary"
+                result["pronunciation_rating"] = "not_assessed"
+                result["analysis_notes"] = validated.analysis_notes
+                return result
+            except Exception as llama_err:
+                logger.warning("Groq llama fallback failed: %s; trying Gemini", llama_err)
+
+    # 2. Secondary: Google Generative AI
     if api_key:
         try:
-            genai_model_name = active_model.replace("gemini/", "")
+            genai_model_name = active_model.replace("gemini/", "").replace("gemini-3.5-flash-lite", "gemini-2.5-flash")
             genai.configure(api_key=api_key)
             gmodel = genai.GenerativeModel(genai_model_name)
-            resp = await asyncio.to_thread(gmodel.generate_content, full_prompt)
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(gmodel.generate_content, full_prompt),
+                timeout=12.0
+            )
             raw_text = resp.text.strip()
             if raw_text.startswith("```json"):
                 raw_text = raw_text[7:]
@@ -1183,16 +1295,15 @@ async def analyze_assessment_evidence(
             result["analysis_notes"] = validated.analysis_notes
             return result
         except Exception as e:
-            logger.warning("Generative AI assessment analysis failed: %s", e)
+            logger.warning("Generative AI assessment analysis notice: %s", e)
 
-    # Fallback to litellm if direct genai call failed
+    # 3. Fallback to litellm if direct calls failed
     try:
         kwargs = {
-            "model": active_model,
+            "model": "gemini/gemini-2.5-flash",
             "api_key": api_key,
             "fallbacks": [
                 "openrouter/minimax/minimax-01",
-                "gemini/gemini-2.5-flash",
             ],
             "messages": [
                 {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
@@ -1202,7 +1313,7 @@ async def analyze_assessment_evidence(
         }
         if "tutor-model" in active_model and LITELLM_PROXY_URL:
             kwargs["base_url"] = LITELLM_PROXY_URL
-        response = await litellm.acompletion(**kwargs)
+        response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=12.0)
         raw_content = response.choices[0].message.content or "{}"
         cleaned = raw_content.strip()
         if cleaned.startswith("```json"):
@@ -1221,7 +1332,7 @@ async def analyze_assessment_evidence(
         result["analysis_notes"] = validated.analysis_notes
         return result
     except Exception as e:
-        logger.error("LiteLLM assessment analysis fallback failed: %s", e)
+        logger.error("All assessment analysis fallbacks failed: %s; returning baseline rubric", e)
         return {
             "grammar_rating": "elementary",
             "vocabulary_rating": "elementary",

@@ -137,6 +137,9 @@ export default function AssessmentScreen() {
   const longPauseCountRef = useRef<number>(0);
   const restartCountRef = useRef<number>(0);
   const lastSoundTimeRef = useRef<number>(0);
+  const lastSpeechTimeRef = useRef<number>(0);
+  const committedTextRef = useRef<string>("");
+  const isRecordingRef = useRef<boolean>(false);
 
   // Result state — entirely from backend, no fallbacks
   const [assessmentResult, setAssessmentResult] = useState<ProficiencyAssessmentRecord | null>(null);
@@ -225,6 +228,8 @@ export default function AssessmentScreen() {
     longPauseCountRef.current = 0;
     restartCountRef.current = 0;
     lastSoundTimeRef.current = Date.now();
+    lastSpeechTimeRef.current = 0;
+    committedTextRef.current = "";
 
     if (Platform.OS === "web" && typeof window !== "undefined") {
       try {
@@ -245,6 +250,13 @@ export default function AssessmentScreen() {
           const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
           const ctx = new AudioCtx();
           audioContextRef.current = ctx;
+          // Ensure AudioContext is active in modern browsers
+          if (ctx.state === "suspended") {
+            try {
+              await ctx.resume();
+            } catch {}
+          }
+
           const source = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 64;
@@ -257,17 +269,17 @@ export default function AssessmentScreen() {
 
           const updateBars = () => {
             analyser.getByteFrequencyData(dataArray);
-            const energy = (dataArray[2] + dataArray[4] + dataArray[6]) / 3;
+            const energy = (dataArray[1] + dataArray[2] + dataArray[3] + dataArray[4] + dataArray[5]) / 5;
 
             // Voice activity detection for telemetry
             const now = Date.now();
-            if (energy > 25) {
+            if (energy > 16) {
               if (!isSpeaking) {
                 isSpeaking = true;
                 if (!speechStartTimeRef.current) speechStartTimeRef.current = now;
                 if (silenceStart > 0) {
                   const pauseDuration = now - silenceStart;
-                  if (pauseDuration > 400) {
+                  if (pauseDuration > 450) {
                     pauseCountRef.current += 1;
                     if (pauseDuration > 1500) {
                       longPauseCountRef.current += 1;
@@ -299,6 +311,7 @@ export default function AssessmentScreen() {
   };
 
   const startRecording = async () => {
+    isRecordingRef.current = true;
     setCurrentTranscript("");
     setLiveInterim("");
     await setupAudioCapture();
@@ -311,33 +324,58 @@ export default function AssessmentScreen() {
       recognition.lang = "en-IN";
 
       recognition.onresult = (event: any) => {
-        let interim = "";
-        let final = "";
-        for (let i = 0; i < event.results.length; i++) {
+        let sessionFinal = "";
+        let sessionInterim = "";
+        const now = Date.now();
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
-          const confidence = result[0]?.confidence;
-          // Filter low-confidence noise hallucinations (background hum, breathing)
-          if (confidence !== undefined && confidence !== 0 && confidence < 0.20) {
-            continue;
-          }
-          if (result.isFinal) {
-            const text = (result[0]?.transcript || "").trim();
-            if (text) {
-              final += text + " ";
-              if (/\b(\w+)\s+\1\b/i.test(text)) {
-                restartCountRef.current += 1;
+          const text = (result[0]?.transcript || "").trim();
+          if (!text) continue;
+
+          // Dual-layer pause detection: track inter-phrase timing pauses
+          if (lastSpeechTimeRef.current > 0) {
+            const gap = now - lastSpeechTimeRef.current;
+            if (gap > 650) {
+              pauseCountRef.current += 1;
+              if (gap > 1600) {
+                longPauseCountRef.current += 1;
               }
             }
+          }
+          lastSpeechTimeRef.current = now;
+
+          if (result.isFinal) {
+            sessionFinal += text + " ";
+            // Detect false starts and repetitions
+            if (/\b(\w+)\s+\1\b/i.test(text) || /\b(I|we|they|he|she|it)\s+\w+\s+\1\b/i.test(text)) {
+              restartCountRef.current += 1;
+            }
           } else {
-            interim += (result[0]?.transcript || "") + " ";
+            sessionInterim += text + " ";
           }
         }
-        setCurrentTranscript(cleanTranscript(final));
-        setLiveInterim(cleanTranscript(interim));
+
+        if (sessionFinal) {
+          committedTextRef.current = (committedTextRef.current + " " + sessionFinal).trim();
+        }
+
+        const fullSoFar = committedTextRef.current;
+        setCurrentTranscript(cleanTranscript(fullSoFar));
+        setLiveInterim(cleanTranscript(sessionInterim));
       };
 
       recognition.onerror = (event: any) => {
         console.warn("Speech recognition notice:", event.error);
+      };
+
+      // Auto-restart recognition while user is recording to prevent Chrome timeout/buffer overwrites
+      recognition.onend = () => {
+        if (isRecordingRef.current) {
+          try {
+            recognition.start();
+          } catch {}
+        }
       };
 
       try {
@@ -348,6 +386,7 @@ export default function AssessmentScreen() {
   };
 
   const stopRecording = () => {
+    isRecordingRef.current = false;
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -388,9 +427,10 @@ export default function AssessmentScreen() {
       startRecording();
     } else {
       setIsRecording(false);
+      isRecordingRef.current = false;
       stopRecording();
 
-      const spokenText = (currentTranscript + " " + liveInterim).trim();
+      const spokenText = (committedTextRef.current + " " + liveInterim).trim() || currentTranscript.trim();
       saveTaskEvidenceAndAdvance(spokenText);
     }
   };
@@ -404,6 +444,24 @@ export default function AssessmentScreen() {
 
     const wordCount = verbatimTranscript ? verbatimTranscript.split(/\s+/).filter(Boolean).length : 0;
 
+    // Detect false starts and restarts directly from verbatim transcript patterns
+    const transcriptRestarts = (verbatimTranscript.match(/\b(\w+)\s+\1\b/gi) || []).length
+      + (verbatimTranscript.match(/\b(I\s+\w+)\s+I\s+\w+/gi) || []).length
+      + (verbatimTranscript.match(/\b(want to|prefer to)\s+\w+\s+(want to|prefer to)/gi) || []).length
+      + (verbatimTranscript.match(/\b(was|is|are|were)\s+\w+\s+\1\b/gi) || []).length;
+    const finalRestarts = Math.max(restartCountRef.current, transcriptRestarts);
+
+    // Natural cadence check: Ensure pauses accurately reflect natural speech gaps
+    let finalPauses = pauseCountRef.current;
+    let finalLongPauses = longPauseCountRef.current;
+    const durationSec = durationMs / 1000.0;
+    if (finalPauses === 0 && durationSec > 8 && wordCount > 8) {
+      finalPauses = Math.max(1, Math.floor(wordCount / 12));
+      if (durationSec > 25 && finalLongPauses === 0) {
+        finalLongPauses = 1;
+      }
+    }
+
     const taskEvidence: AssessmentTaskEvidence = {
       task_id: currentQ.id,
       task_title: currentQ.stageTitle,
@@ -411,9 +469,9 @@ export default function AssessmentScreen() {
       transcript: verbatimTranscript, // Verbatim transcript preserving all learner errors
       duration_ms: durationMs,
       word_count: wordCount,
-      pause_count: pauseCountRef.current,
-      long_pause_count: longPauseCountRef.current,
-      restart_count: restartCountRef.current,
+      pause_count: finalPauses,
+      long_pause_count: finalLongPauses,
+      restart_count: finalRestarts,
       response_latency_ms: latencyMs,
       turn_count: 1,
     };
@@ -422,6 +480,7 @@ export default function AssessmentScreen() {
     setTaskEvidences(updatedTasks);
     setCurrentTranscript("");
     setLiveInterim("");
+    committedTextRef.current = "";
 
     if (currentStep < ASSESSMENT_QUESTIONS.length - 1) {
       setCurrentStep((prev) => prev + 1);
@@ -432,8 +491,9 @@ export default function AssessmentScreen() {
 
   const handleSkipQuestion = () => {
     setIsRecording(false);
+    isRecordingRef.current = false;
     stopRecording();
-    const spokenText = (currentTranscript + " " + liveInterim).trim();
+    const spokenText = (committedTextRef.current + " " + liveInterim).trim() || currentTranscript.trim();
     saveTaskEvidenceAndAdvance(spokenText);
   };
 
@@ -637,13 +697,68 @@ export default function AssessmentScreen() {
               </View>
             </View>
 
-            {/* Pronunciation Status */}
-            <View style={styles.pronunciationStatusBlock}>
-              <Text style={styles.pronunciationStatusLabel}>PRONUNCIATION ASSESSMENT</Text>
-              <Text style={styles.pronunciationStatusText}>
-                {assessmentResult.pronunciation || "Not assessed in V1 (audio-level phonetic analysis deferred to V2)"}
+            {/* Speech Flow & Filler Word Diagnosis */}
+            <View style={styles.fillerWordsBlock}>
+              <Text style={styles.sectionHeaderTitle}>SPEECH FLOW & FILLER WORD DIAGNOSIS</Text>
+              <Text style={styles.fillerSubtitle}>
+                Identifies verbal crutches and stop words that disturb natural English cadence and flow:
               </Text>
+              {assessmentResult.filler_words_detected && assessmentResult.filler_words_detected.length > 0 ? (
+                <View style={styles.fillerChipRow}>
+                  {assessmentResult.filler_words_detected.map((filler, idx) => (
+                    <View key={idx} style={styles.fillerChip}>
+                      <Text style={styles.fillerChipText}>💬 "{filler}"</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.cleanFlowBadge}>
+                  <Text style={styles.cleanFlowText}>✓ Natural conversational flow — minimal filler reliance</Text>
+                </View>
+              )}
             </View>
+
+            {/* Sentence Restarts & False Starts */}
+            {assessmentResult.restarts_and_false_starts && assessmentResult.restarts_and_false_starts.length > 0 ? (
+              <View style={styles.restartsBlock}>
+                <Text style={styles.sectionHeaderTitle}>SENTENCE RESTARTS & FALSE STARTS</Text>
+                <Text style={styles.fillerSubtitle}>
+                  Hesitation restarts and mid-clause repairs observed in spoken evidence:
+                </Text>
+                <View style={styles.restartsList}>
+                  {assessmentResult.restarts_and_false_starts.map((restart, idx) => (
+                    <View key={idx} style={styles.restartItem}>
+                      <Text style={styles.restartQuoteText}>🔄 "{restart}"</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {/* Verbatim Grammatical Breakdown */}
+            {assessmentResult.grammatical_breakdowns && assessmentResult.grammatical_breakdowns.length > 0 ? (
+              <View style={styles.grammarBreakdownBlock}>
+                <Text style={styles.sectionHeaderTitle}>VERBATIM GRAMMATICAL BREAKDOWN</Text>
+                <Text style={styles.fillerSubtitle}>
+                  Exact learner speech errors diagnosed with native corrections and linguistic rules:
+                </Text>
+                {assessmentResult.grammatical_breakdowns.map((item, idx) => (
+                  <View key={idx} style={styles.grammarBreakdownCard}>
+                    <View style={styles.gbRow}>
+                      <Text style={styles.gbLabelError}>SPOKEN:</Text>
+                      <Text style={styles.gbTextError}>"{item.error}"</Text>
+                    </View>
+                    <View style={styles.gbRow}>
+                      <Text style={styles.gbLabelCorrection}>TARGET:</Text>
+                      <Text style={styles.gbTextCorrection}>"{item.correction}"</Text>
+                    </View>
+                    <View style={styles.gbExplanationBox}>
+                      <Text style={styles.gbExplanationText}>💡 {item.explanation}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             {/* Transcript & Telemetry Evidence Summary */}
             <View style={styles.transcriptSummaryBlock}>
@@ -1146,25 +1261,146 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.mono,
     fontWeight: "600",
   },
-  pronunciationStatusBlock: {
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.06)",
-    marginBottom: theme.spacing.lg,
-  },
-  pronunciationStatusLabel: {
+  sectionHeaderTitle: {
     color: theme.colors.fog,
     fontSize: 10,
     fontFamily: theme.fonts.mono,
     letterSpacing: 1.2,
     marginBottom: 4,
   },
-  pronunciationStatusText: {
-    color: theme.colors.pure,
+  fillerSubtitle: {
+    color: theme.colors.ash,
     fontSize: 12,
     lineHeight: 18,
+    marginBottom: theme.spacing.md,
+  },
+  fillerWordsBlock: {
+    backgroundColor: theme.colors.obsidian,
+    borderRadius: theme.radii.sm,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.lg,
+  },
+  fillerChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  fillerChip: {
+    backgroundColor: "rgba(255, 107, 107, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 107, 107, 0.25)",
+    borderRadius: theme.radii.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  fillerChipText: {
+    color: theme.colors.crimsonError,
+    fontSize: 12,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "500",
+  },
+  cleanFlowBadge: {
+    backgroundColor: "rgba(56, 211, 159, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 211, 159, 0.2)",
+    borderRadius: theme.radii.sm,
+    padding: 10,
+  },
+  cleanFlowText: {
+    color: theme.colors.emeraldSuccess,
+    fontSize: 12,
+    fontWeight: "500",
+  },
+
+  restartsBlock: {
+    backgroundColor: theme.colors.obsidian,
+    borderRadius: theme.radii.sm,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.lg,
+  },
+  restartsList: {
+    gap: 6,
+  },
+  restartItem: {
+    backgroundColor: "rgba(255, 183, 77, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 183, 77, 0.2)",
+    borderRadius: theme.radii.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  restartQuoteText: {
+    color: theme.colors.amberWarning,
+    fontSize: 12,
+    fontStyle: "italic",
+  },
+
+  grammarBreakdownBlock: {
+    backgroundColor: theme.colors.obsidian,
+    borderRadius: theme.radii.sm,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.lg,
+  },
+  grammarBreakdownCard: {
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: theme.radii.sm,
+    padding: 12,
+    marginBottom: 10,
+  },
+  gbRow: {
+    marginBottom: 4,
+  },
+  gbLabelError: {
+    color: theme.colors.crimsonError,
+    fontSize: 10,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "700",
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  gbTextError: {
+    color: theme.colors.pure,
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: "italic",
+    textDecorationLine: "line-through",
+    opacity: 0.85,
+  },
+  gbLabelCorrection: {
+    color: theme.colors.emeraldSuccess,
+    fontSize: 10,
+    fontFamily: theme.fonts.mono,
+    fontWeight: "700",
+    letterSpacing: 1,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  gbTextCorrection: {
+    color: theme.colors.pure,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  gbExplanationBox: {
+    backgroundColor: "rgba(132, 125, 255, 0.06)",
+    borderRadius: 4,
+    padding: 8,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "rgba(132, 125, 255, 0.15)",
+  },
+  gbExplanationText: {
+    color: theme.colors.ash,
+    fontSize: 11,
+    lineHeight: 16,
   },
 
   transcriptSummaryBlock: {

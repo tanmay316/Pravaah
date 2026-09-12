@@ -667,6 +667,8 @@ if __name__ == "__main__":
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             num_idle_processes=0,
+            host="127.0.0.1",
+            port=0,
         ),
     )
 

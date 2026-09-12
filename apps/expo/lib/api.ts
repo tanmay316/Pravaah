@@ -137,6 +137,12 @@ export interface AssessmentObservations {
   pronunciation?: string;
 }
 
+export interface GrammaticalBreakdown {
+  error: string;
+  correction: string;
+  explanation: string;
+}
+
 export interface ProficiencyAssessmentRecord {
   assessment_id: string;
   user_id: string;
@@ -155,6 +161,9 @@ export interface ProficiencyAssessmentRecord {
   assessment_observations?: AssessmentObservations;
   strengths: string[];
   weaknesses: string[];
+  filler_words_detected?: string[];
+  restarts_and_false_starts?: string[];
+  grammatical_breakdowns?: GrammaticalBreakdown[];
   initial_focus: string;
   current_focus?: string;
   assessed_at: string;

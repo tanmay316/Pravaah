@@ -193,10 +193,13 @@ class ProficiencyAssessmentRecord(BaseModel):
     speaking_complexity: str = "elementary"
     conversation_ability: str = "elementary"
     pronunciation_rating: str = "not_assessed"
-    pronunciation: Optional[str] = "Not assessed in V1 (audio-level phonetic analysis deferred)"
+    pronunciation: Optional[str] = None
     assessment_observations: Optional[dict[str, str]] = None
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
+    filler_words_detected: list[str] = Field(default_factory=list)
+    restarts_and_false_starts: list[str] = Field(default_factory=list)
+    grammatical_breakdowns: list[dict[str, str]] = Field(default_factory=list)
     initial_focus: str
     current_focus: Optional[str] = None
     assessed_at: str

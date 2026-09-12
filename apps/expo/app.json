@@ -4,7 +4,11 @@
     "slug": "pravaah",
     "version": "0.1.0",
     "scheme": "pravaah",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "icon": "./assets/icon.png",
     "newArchEnabled": true,
     "web": {
@@ -18,14 +22,19 @@
       [
         "@livekit/react-native-expo-plugin",
         {
-          "android": { "audioType": "communication" },
-          "ios": { "enableMultitaskingCameraAccess": false }
+          "android": {
+            "audioType": "communication"
+          },
+          "ios": {
+            "enableMultitaskingCameraAccess": false
+          }
         }
       ],
       "@config-plugins/react-native-webrtc"
     ],
     "android": {
       "package": "com.pravaah.app",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f1011"
@@ -33,13 +42,31 @@
       "permissions": [
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
-        "INTERNET"
+        "INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
       ]
     },
     "ios": {
       "bundleIdentifier": "com.pravaah.app",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Pravaah needs your microphone for English conversation practice."
+        "NSMicrophoneUsageDescription": "Pravaah needs your microphone for English conversation practice.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bitcode": false
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "b4b00905-3541-4006-b553-8c8b62e8f298"
       }
     }
   }

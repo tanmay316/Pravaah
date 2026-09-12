@@ -258,7 +258,11 @@ Return JSON ONLY:
 }}"""
                     res = model.generate_content(
                         prompt,
-                        generation_config={"response_mime_type": "application/json"},
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "max_output_tokens": 150,
+                            "temperature": 0.2,
+                        },
                     )
                     return json.loads(res.text.strip())
                 except Exception as g_err:
@@ -274,8 +278,9 @@ Return JSON ONLY:
                         model="qwen/qwen3.8-27b",
                         messages=[{"role": "user", "content": prompt}],
                         response_format={"type": "json_object"},
-                        max_tokens=250,
-                        timeout=5.0,
+                        max_tokens=150,
+                        temperature=0.2,
+                        timeout=3.0,
                     )
                     content = res.choices[0].message.content
                     if content:
@@ -442,19 +447,36 @@ async def entrypoint(ctx: JobContext):
     mode = lesson_context.get("mode", "free_conversation")
     logger.info("Session ready: room=%s user=%s mode=%s skill=%s", room_name, user_id, mode, target_skill)
 
-    # 1. Silero VAD — activation_threshold=0.72 rejects fan hum, breathing & sniffs
+    # 1. Silero VAD — Tuned with OpenWhispr principles & outdoor noise rejection (walking/running)
+    # - activation_threshold=0.60: Rejects wind buffeting, footstep thuds, traffic & breathing
+    # - min_speech_duration=0.25 (250ms): Catches natural short affirmative answers ('yes', 'theek', 'haan')
+    # - min_silence_duration=0.35 (350ms): Provides snappy turn turnaround without cutting off mid-sentence breath pauses
+    # - prefix_padding_duration=0.1 (100ms): Preserves initial consonant attacks (OpenWhispr speechPadMs)
     vad = silero.VAD.load(
-        activation_threshold=0.72,
-        min_speech_duration=0.45,
-        min_silence_duration=0.6,
+        activation_threshold=0.60,
+        min_speech_duration=0.25,
+        min_silence_duration=0.35,
+        prefix_padding_duration=0.1,
     )
 
-    # 2. STT: Full Flagship Groq Whisper Large v3 (1550M params)
-    stt = groq.STT(
-        model="whisper-large-v3",
-        detect_language=True,
-        prompt="Bilingual English and Hindi practice. Common phrases: Hello, how are you? I want to practice speaking. नमस्ते, मैं ठीक हूँ।",
-    )
+    # 2. STT: Flagship Groq Whisper Large v3 Turbo (4x faster decode, full bilingual Hindi & English transcription)
+    stt_provider = os.getenv("STT_PROVIDER", "groq_turbo").lower()
+    if stt_provider == "sherpa_streaming":
+        try:
+            from sherpa_stt import SherpaStreamingSTT
+            sherpa_url = os.getenv("SHERPA_WS_URL", "ws://localhost:6006")
+            logger.info("Using Sherpa-ONNX streaming ASR server at %s", sherpa_url)
+            stt = SherpaStreamingSTT(server_url=sherpa_url)
+        except Exception as s_err:
+            logger.warning("Failed to initialize SherpaStreamingSTT (%s), falling back to Groq Turbo", s_err)
+            stt_provider = "groq_turbo"
+
+    if stt_provider != "sherpa_streaming":
+        stt = groq.STT(
+            model="whisper-large-v3-turbo",
+            detect_language=True,
+            prompt="Bilingual English and Hindi practice. Supports Hindi Devanagari and Romanized Hinglish. नमस्ते, मैं ठीक हूँ। Hello, how are you? I want to practice speaking.",
+        )
 
     # 3. LLM: Groq for high rate-limits & lightning-fast speech, with fallback to Gemini
     groq_key = os.getenv("GROQ_API_KEY")
@@ -488,17 +510,17 @@ async def entrypoint(ctx: JobContext):
         base_url="http://localhost:8880/v1",
     )
 
-    # 5. AgentSession
+    # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense
     session = AgentSession(
         stt=stt,
         vad=vad,
         llm=llm,
         tts=tts,
-        min_endpointing_delay=0.25,
-        max_endpointing_delay=0.7,
+        min_endpointing_delay=0.18,
+        max_endpointing_delay=0.50,
         preemptive_generation=True,
         allow_interruptions=True,
-        min_interruption_duration=0.3,
+        min_interruption_duration=0.35,  # Protects against wind puffs or breath bursts during walking/running
         aec_warmup_duration=0.0,
     )
 

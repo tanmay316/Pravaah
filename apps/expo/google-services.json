@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "190737957549",
+    "project_id": "pravaah-cabaa",
+    "storage_bucket": "pravaah-cabaa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:190737957549:android:644750a62cd69c203f3c24",
+        "android_client_info": {
+          "package_name": "com.pravaah.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzic6wOIx8ypkQijHIe3UB72MEoqXUy8c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

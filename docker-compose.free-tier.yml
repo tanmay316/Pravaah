@@ -1,0 +1,61 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    container_name: pravaah-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - FIREBASE_SERVICE_ACCOUNT_JSON=${FIREBASE_SERVICE_ACCOUNT_JSON}
+    volumes:
+      - ./secrets:/app/secrets:ro
+
+  tts-server:
+    build:
+      context: .
+      dockerfile: services/voice-agent/Dockerfile.tts
+    container_name: pravaah-tts
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    environment:
+      - TTS_HOST=0.0.0.0
+      - TTS_PORT=8880
+
+  voice-agent:
+    build:
+      context: .
+      dockerfile: services/voice-agent/Dockerfile
+    container_name: pravaah-voice-agent
+    restart: unless-stopped
+    depends_on:
+      - tts-server
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - STT_PROVIDER=${STT_PROVIDER:-groq_turbo}
+      - LITELLM_PROXY_URL=http://api:8000
+    volumes:
+      - ./secrets:/app/secrets:ro
+
+  learning-engine:
+    build:
+      context: .
+      dockerfile: services/learning-engine/Dockerfile
+    container_name: pravaah-learning-engine
+    restart: unless-stopped
+    environment:
+      - FIREBASE_SERVICE_ACCOUNT_JSON=${FIREBASE_SERVICE_ACCOUNT_JSON}
+    volumes:
+      - ./secrets:/app/secrets:ro

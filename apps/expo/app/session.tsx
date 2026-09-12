@@ -26,7 +26,7 @@ import { Room, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } fro
 import { completeDailyActivity, completeSession, createSession } from "../lib/api";
 import { theme } from "../lib/theme";
 
-const LIVEKIT_URL = "wss://pravaah-qj6q5gxo.livekit.cloud";
+const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
 
 interface TranscriptTurn {
   id: string;
@@ -200,6 +200,7 @@ export default function SessionScreen() {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
+            channelCount: 1,
           },
         });
         roomRef.current = room;
@@ -341,11 +342,12 @@ export default function SessionScreen() {
         console.debug("Audio unlock note:", e);
       }
 
-      // 3. Enable learner microphone with active noise suppression & echo cancellation
+      // 3. Enable learner microphone with active noise suppression, echo cancellation, & mono voice
       await room.localParticipant.setMicrophoneEnabled(true, {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        channelCount: 1,
       });
 
       // 4. Connect audio visualizer

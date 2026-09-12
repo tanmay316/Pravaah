@@ -10,11 +10,14 @@ import { getIdToken } from "./firebase";
 
 // Dynamic API base resolution
 const getApiBase = (): string => {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
   if (Platform.OS === "web" && typeof window !== "undefined" && window.location) {
     const host = window.location.hostname || "localhost";
     return `http://${host}:8000`;
   }
-  return process.env.EXPO_PUBLIC_API_URL || "http://localhost:8000";
+  return "http://localhost:8000";
 };
 
 const API_BASE = getApiBase();

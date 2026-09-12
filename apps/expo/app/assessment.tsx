@@ -42,7 +42,7 @@ import {
 } from "../lib/api";
 import { theme } from "../lib/theme";
 
-const LIVEKIT_URL = "wss://pravaah-qj6q5gxo.livekit.cloud";
+const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
 
 interface AssessmentQuestion {
   id: string;

@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from livekit.api import AccessToken, VideoGrants
+from pydantic import BaseModel
 
 import sys
 

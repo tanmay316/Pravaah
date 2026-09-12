@@ -82,6 +82,8 @@ def main():
     import uvicorn
     try:
         uvicorn.run("app.main:app", host="0.0.0.0", port=port, app_dir=api_dir)
+    except Exception as exc:
+        logger.error("Uvicorn runtime error: %s", exc, exc_info=True)
     finally:
         cleanup()
 

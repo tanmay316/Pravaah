@@ -147,9 +147,20 @@ async def auth_error_handler(request, exc: AuthError):
 
 
 # ---------------------------------------------------------------------------
-# Health
+# Health & Root Status
 # ---------------------------------------------------------------------------
 
+@app.get("/")
+async def root():
+    return {
+        "status": "healthy",
+        "service": "Pravaah Backend API",
+        "version": "0.1.0",
+        "docs": "/docs",
+    }
+
+
+@app.get("/health")
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "api"}

@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r /app/req-api.txt \
 # Copy source repository
 COPY . /app/
 
-ENV PORT=8000
-EXPOSE 8000 7860 10000 8880
+ENV PORT=10000
+EXPOSE 10000
 
 CMD ["python", "scripts/start_cloud_backend.py"]

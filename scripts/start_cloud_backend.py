@@ -30,7 +30,9 @@ if existing_pp:
     python_paths.append(existing_pp)
 os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 
-# Configure internal TTS endpoint for Voice Agent
+# Configure internal TTS endpoint for Voice Agent (strictly loopback to avoid Render port hijacking)
+os.environ["TTS_HOST"] = "127.0.0.1"
+os.environ["TTS_PORT"] = "8880"
 os.environ["KOKORO_BASE_URL"] = os.environ.get("KOKORO_BASE_URL", "http://127.0.0.1:8880/v1")
 
 # Handle Firebase Service Account JSON env var if present

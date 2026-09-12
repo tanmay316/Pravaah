@@ -193,6 +193,6 @@ async def prewarm_cache():
 
 
 if __name__ == "__main__":
-    host = os.getenv("TTS_HOST", "0.0.0.0")
+    host = os.getenv("TTS_HOST", "127.0.0.1")
     port = int(os.getenv("TTS_PORT", "8880"))
     uvicorn.run(app, host=host, port=port)

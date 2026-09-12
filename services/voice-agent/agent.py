@@ -27,6 +27,7 @@ from livekit.agents import (
     Agent,
     AgentSession,
     JobContext,
+    JobExecutorType,
     WorkerOptions,
     cli,
 )
@@ -669,10 +670,11 @@ if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            job_executor_type=JobExecutorType.THREAD,
             num_idle_processes=0,
             host="127.0.0.1",
             port=0,
-            load_threshold=1.5,
+            load_threshold=float("inf"),
         ),
     )
 

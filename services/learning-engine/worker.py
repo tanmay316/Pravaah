@@ -1174,10 +1174,8 @@ async def analyze_assessment_evidence(
     model: Optional[str] = None,
 ) -> dict:
     """
-    Evaluates structured task-aware diagnostic spoken evidence using the configured Gemini model.
+    Evaluates structured task-aware diagnostic spoken evidence using the configured Groq model.
     """
-    import google.generativeai as genai
-
     active_model = model or os.getenv("ANALYSIS_MODEL", "gemini-2.5-flash")
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 

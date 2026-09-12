@@ -596,12 +596,7 @@ export default function DashboardScreen() {
                 )}
               </View>
 
-              {/* Social Proof / Award Laurels */}
-              <View style={styles.laurelContainer}>
-                <Text style={styles.laurelText}>
-                  🏆 REALTIME SPOKEN AI COACH  •  ⚡ POWERED BY LIVEKIT WEBRTC
-                </Text>
-              </View>
+
             </View>
 
             {/* DAILY GOAL & PROGRESS SUMMARY MODULE */}

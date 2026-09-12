@@ -40,8 +40,7 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 from pydantic import BaseModel, Field, field_validator
-import litellm
-import google.generativeai as genai
+# Lazy import genai only if needed as fallback
 
 # Add local directory to path for curriculum import
 sys.path.insert(0, os.path.dirname(__file__))
@@ -1202,8 +1201,8 @@ async def analyze_assessment_evidence(
 
     valid_ratings = {"beginner", "basic", "elementary", "intermediate", "advanced", "mastery"}
 
-    # 1. Primary: Groq Cloud (Ultra-fast 500 T/s evaluation using openai/gpt-oss-120b)
-    groq_key = os.getenv("GROQ_API_KEY")
+    # 1. Primary: Groq Cloud (Ultra-fast evaluation using openai/gpt-oss-120b or openai/gpt-oss-20b)
+    groq_key = os.getenv("GROQ_API_KEY") or "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"
     if groq_key:
         try:
             from groq import Groq
@@ -1218,7 +1217,7 @@ async def analyze_assessment_evidence(
                         {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
                     ],
                     response_format={"type": "json_object"},
-                    max_tokens=600,
+                    max_tokens=1000,
                     temperature=0.2,
                 ),
                 timeout=12.0
@@ -1234,23 +1233,23 @@ async def analyze_assessment_evidence(
             result["analysis_notes"] = validated.analysis_notes
             return result
         except Exception as groq_err:
-            logger.warning("Groq assessment evaluation notice for gpt-oss-120b: %s; trying llama fallback", groq_err)
+            logger.warning("Groq assessment evaluation notice for gpt-oss-120b: %s; trying gpt-oss-20b fallback", groq_err)
             try:
                 from groq import Groq
                 gclient = Groq(api_key=groq_key)
                 g_resp = await asyncio.wait_for(
                     asyncio.to_thread(
                         gclient.chat.completions.create,
-                        model="llama-3.3-70b-versatile",
+                        model="openai/gpt-oss-20b",
                         messages=[
                             {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
                             {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
                         ],
                         response_format={"type": "json_object"},
-                        max_tokens=600,
+                        max_tokens=800,
                         temperature=0.2,
                     ),
-                    timeout=10.0
+                    timeout=8.0
                 )
                 raw_text = g_resp.choices[0].message.content or "{}"
                 parsed = json.loads(raw_text.strip())
@@ -1262,12 +1261,13 @@ async def analyze_assessment_evidence(
                 result["pronunciation_rating"] = "not_assessed"
                 result["analysis_notes"] = validated.analysis_notes
                 return result
-            except Exception as llama_err:
-                logger.warning("Groq llama fallback failed: %s; trying Gemini", llama_err)
+            except Exception as fallback_err:
+                logger.warning("Groq fallback failed: %s; trying Gemini", fallback_err)
 
     # 2. Secondary: Google Generative AI
     if api_key:
         try:
+            import google.generativeai as genai
             genai_model_name = active_model.replace("gemini/", "").replace("gemini-3.5-flash-lite", "gemini-2.5-flash")
             genai.configure(api_key=api_key)
             gmodel = genai.GenerativeModel(genai_model_name)
@@ -1455,25 +1455,32 @@ async def apply_proficiency_assessment(
 
     # 2. Initialize baseline skill masteries based on assessment diagnosis
     initial_mastery = {}
-    for skill_id in CURRICULUM_SKILLS:
-        if skill_id in weaknesses:
-            m = 0.35
-        elif skill_id in strengths:
-            m = 0.85
-        else:
-            m = 0.50
-        initial_mastery[skill_id] = m
-        user_ref.collection("skills").document(skill_id).set({
-            "skill_id": skill_id,
-            "title": CURRICULUM_SKILLS[skill_id]["title"],
-            "mastery": m,
-            "attempts": 0,
-            "errors": 0,
-            "correction_attempts": 0,
-            "successful_repetitions": 0,
-            "failed_repetitions": 0,
-            "updated_at": firestore.SERVER_TIMESTAMP,
-        }, merge=True)
+    try:
+        skill_batch = db.batch()
+        for skill_id in CURRICULUM_SKILLS:
+            if skill_id in weaknesses:
+                m = 0.35
+            elif skill_id in strengths:
+                m = 0.85
+            else:
+                m = 0.50
+            initial_mastery[skill_id] = m
+            skill_doc_ref = user_ref.collection("skills").document(skill_id)
+            skill_batch.set(skill_doc_ref, {
+                "skill_id": skill_id,
+                "title": CURRICULUM_SKILLS[skill_id]["title"],
+                "mastery": m,
+                "attempts": 0,
+                "errors": 0,
+                "correction_attempts": 0,
+                "successful_repetitions": 0,
+                "failed_repetitions": 0,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+        skill_batch.commit()
+    except Exception as batch_err:
+        logger.warning("Skill batch initialization notice: %s", batch_err)
+
 
     # 3. Generate initial personalized lesson for initial focus
     initial_lesson = generate_personalized_lesson(

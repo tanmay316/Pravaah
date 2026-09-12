@@ -251,20 +251,33 @@ async function authHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: number = 28000): Promise<T> {
   const headers = await authHeaders();
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: { ...headers, ...(options.headers as Record<string, string>) },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const errorBody = await response.json().catch(() => null);
-    const message = errorBody?.error?.message || `API Error (${response.status}): ${response.statusText}`;
-    throw new Error(message);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: { ...headers, ...(options.headers as Record<string, string>) },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null);
+      const message = errorBody?.error?.message || `API Error (${response.status}): ${response.statusText}`;
+      throw new Error(message);
+    }
+
+    return response.json();
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      throw new Error("Cloud server response timed out. The server may be waking up. Please retry.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-
-  return response.json();
 }
 
 // ---------------------------------------------------------------------------

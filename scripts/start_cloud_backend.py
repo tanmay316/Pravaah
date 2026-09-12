@@ -33,6 +33,17 @@ port = int(os.environ.get("PORT", "10000"))
 
 # Configure internal TTS endpoint for Voice Agent (points directly to embedded FastAPI TTS route)
 os.environ["KOKORO_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
+os.environ["PYTHONUNBUFFERED"] = "1"
+
+# Production API keys & LiveKit configuration fallbacks
+os.environ.setdefault("GROQ_API_KEY", "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")
+os.environ.setdefault("GEMINI_API_KEY", "AQ.Ab8RN6KQ_abjwuBUgtrk66wCoorKZEG9FQ3bNchtgRpjPBofJA")
+os.environ.setdefault("LIVEKIT_URL", "wss://pravaah-qj6q5gxo.livekit.cloud")
+os.environ.setdefault("LIVEKIT_API_KEY", "API2fUzNgAFpRVd")
+os.environ.setdefault("LIVEKIT_API_SECRET", "GPPwPf99lIfY125aEcxJLK9amIEffgbVmEKuh71g55lD")
+os.environ.setdefault("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b")
+os.environ.setdefault("GROQ_VOICE_MODEL", "openai/gpt-oss-20b")
+
 
 # Handle Firebase Service Account JSON env var if present
 sa_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")

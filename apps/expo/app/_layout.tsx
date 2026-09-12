@@ -106,8 +106,17 @@ export default function RootLayout() {
         `;
         document.head.appendChild(style);
       }
+
+      // Automatically clean internal Expo Router key from the browser address bar for crisp URLs
+      if (window.location.search && window.location.search.includes("__EXPO_ROUTER_key")) {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("__EXPO_ROUTER_key");
+          window.history.replaceState({}, "", url.pathname + (url.search ? url.search : "") + url.hash);
+        } catch {}
+      }
     }
-  }, []);
+  }, [segments]);
 
   useEffect(() => {
     if (loading) return;

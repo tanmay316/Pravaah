@@ -93,6 +93,18 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   },
 ];
 
+// Filter ambient noise, repetition loops, and speech recognition hallucinations
+function cleanTranscript(raw: string): string {
+  if (!raw) return "";
+  let text = raw.trim();
+  // 1. Remove continuous repetitive phrase loops (caused by ambient microphone feedback)
+  text = text.replace(/(\b.+?\b)(?:\s+\1){2,}/gi, "$1");
+  // 2. Remove 3+ identical consecutive words
+  text = text.replace(/\b(\w+)(?:\s+\1){2,}\b/gi, "$1 $1");
+  // 3. Normalize whitespace
+  return text.replace(/\s+/g, " ").trim();
+}
+
 // Optional browser SpeechRecognition helper (used as realtime transcription assist on web)
 function getSpeechRecognition(): any | null {
   if (Platform.OS !== "web" || typeof window === "undefined") return null;
@@ -180,7 +192,11 @@ export default function AssessmentScreen() {
         });
 
         await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
-        await room.localParticipant.setMicrophoneEnabled(true);
+        await room.localParticipant.setMicrophoneEnabled(true, {
+          noiseSuppression: true,
+          echoCancellation: true,
+          autoGainControl: true,
+        });
 
         const audioTracks = room.localParticipant.audioTrackPublications;
         audioTracks.forEach((pub) => {
@@ -214,7 +230,14 @@ export default function AssessmentScreen() {
       try {
         let stream = mediaStreamRef.current;
         if (!stream && navigator.mediaDevices) {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              noiseSuppression: true,
+              echoCancellation: true,
+              autoGainControl: true,
+              channelCount: 1,
+            },
+          });
           mediaStreamRef.current = stream;
         }
 
@@ -292,19 +315,25 @@ export default function AssessmentScreen() {
         let final = "";
         for (let i = 0; i < event.results.length; i++) {
           const result = event.results[i];
+          const confidence = result[0]?.confidence;
+          // Filter low-confidence noise hallucinations (background hum, breathing)
+          if (confidence !== undefined && confidence !== 0 && confidence < 0.20) {
+            continue;
+          }
           if (result.isFinal) {
-            const text = result[0].transcript;
-            final += text + " ";
-            // Detect restarts (e.g. repeated word beginnings)
-            if (/\b(\w+)\s+\1\b/i.test(text)) {
-              restartCountRef.current += 1;
+            const text = (result[0]?.transcript || "").trim();
+            if (text) {
+              final += text + " ";
+              if (/\b(\w+)\s+\1\b/i.test(text)) {
+                restartCountRef.current += 1;
+              }
             }
           } else {
-            interim += result[0].transcript;
+            interim += (result[0]?.transcript || "") + " ";
           }
         }
-        setCurrentTranscript(final.trim());
-        setLiveInterim(interim.trim());
+        setCurrentTranscript(cleanTranscript(final));
+        setLiveInterim(cleanTranscript(interim));
       };
 
       recognition.onerror = (event: any) => {

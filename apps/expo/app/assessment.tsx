@@ -303,10 +303,8 @@ export default function AssessmentScreen() {
             interim += result[0].transcript;
           }
         }
-        if (final) {
-          setCurrentTranscript((prev) => prev + final);
-        }
-        setLiveInterim(interim);
+        setCurrentTranscript(final.trim());
+        setLiveInterim(interim.trim());
       };
 
       recognition.onerror = (event: any) => {

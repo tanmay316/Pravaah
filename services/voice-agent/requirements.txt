@@ -1,12 +1,11 @@
-livekit-agents[google,groq,openai,silero,turn-detector]~=1.5
+# Realtime voice agent only. Keep this list minimal: everything here is loaded into the
+# process that has to keep audio flowing.
+#
+# Deliberately excluded:
+#   turn-detector  - pulls transformers + an ONNX model; VAD-based endpointing is used instead
+#   litellm        - ~200MB RSS on import, and the agent talks to Groq/Gemini directly
+#   kokoro-onnx    - only needed by the standalone kokoro_server.py TTS container
+livekit-agents[google,groq,openai,silero]~=1.5
 python-dotenv>=1.0
-litellm>=1.40
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic>=2.0
-edge-tts>=7.0.0
-soundfile>=0.12.0
-firebase-admin>=6.0
-kokoro-onnx>=0.3.0
 google-generativeai>=0.8.0
 websockets>=12.0

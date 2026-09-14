@@ -1,0 +1,8 @@
+# Standalone neural TTS server (services/voice-agent/kokoro_server.py).
+# Only needed when running TTS as its own container (docker-compose.free-tier.yml).
+# The Render API image serves the same OpenAI-compatible route from services/api/app/main.py.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+edge-tts>=7.0.0
+soundfile>=0.12.0
+kokoro-onnx>=0.3.0

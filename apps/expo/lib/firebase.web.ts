@@ -1,122 +1,133 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
+/**
+ * Pravaah — Firebase Auth (Web)
+ *
+ * Web counterpart of lib/firebase.ts. Metro resolves this file for Platform.OS === "web",
+ * so the exported surface MUST stay in sync with lib/firebase.ts.
+ *
+ * There is deliberately no "demo/mock user" fallback: it made getIdToken() resolve before
+ * Firebase had restored the persisted session, so the first dashboard fetch of every page
+ * load was attributed to a throwaway demo uid (hence "diagnostic pending" / empty plan).
+ */
+
+import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
 import {
   getAuth,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  updateProfile,
   signOut as firebaseSignOut,
-  User
+  Auth,
+  User,
 } from "firebase/auth";
 import { useEffect, useState } from "react";
 
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "AIzaSyMockKeyForDev123456789",
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "pravaah-cabaa.firebaseapp.com",
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "pravaah-cabaa",
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || "1:190737957549:web:644750a62cd69c203f3c24",
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "pravaah-cabaa.firebasestorage.app",
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "190737957549",
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
 };
 
-let app: any = null;
-let auth: any = null;
+let app: FirebaseApp | null = null;
+let auth: Auth | null = null;
 
-try {
-  app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+  app = getApps().length ? getApp() : initializeApp(firebaseConfig);
   auth = getAuth(app);
-} catch (e) {
-  console.warn("Firebase web initialization notice:", e);
+} else {
+  console.error(
+    "Firebase web config missing. Set EXPO_PUBLIC_FIREBASE_API_KEY / _PROJECT_ID / _AUTH_DOMAIN / _APP_ID."
+  );
 }
 
-// Local mock user state for demo / offline
-let mockUser: any = {
-  uid: "demo_learner_2026",
-  email: "demo.learner@pravaah.ai",
-  displayName: "Demo Learner",
-  getIdToken: async () => "demo_mock_token_2026",
-};
+/**
+ * Resolves once Firebase has finished restoring any persisted session.
+ * Anything that needs a uid or an ID token must await this first.
+ */
+let authReadyPromise: Promise<User | null> | null = null;
 
-const listeners = new Set<(user: any) => void>();
+export function authReady(): Promise<User | null> {
+  if (!auth) return Promise.resolve(null);
+  if (!authReadyPromise) {
+    authReadyPromise = new Promise<User | null>((resolve) => {
+      const unsubscribe = onAuthStateChanged(
+        auth!,
+        (user) => {
+          unsubscribe();
+          resolve(user);
+        },
+        () => {
+          unsubscribe();
+          resolve(null);
+        }
+      );
+    });
+  }
+  return authReadyPromise;
+}
+
+function requireAuth(): Auth {
+  if (!auth) {
+    throw new Error("Sign-in is unavailable because Firebase is not configured.");
+  }
+  return auth;
+}
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(mockUser);
-  const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (auth) {
-      try {
-        const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-          if (firebaseUser) {
-            setUser(firebaseUser);
-          } else {
-            setUser(mockUser);
-          }
-          setLoading(false);
-        });
-        return unsubscribe;
-      } catch (err) {
-        setUser(mockUser);
-        setLoading(false);
-      }
-    } else {
-      setUser(mockUser);
+    if (!auth) {
       setLoading(false);
+      return;
     }
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setLoading(false);
+    });
+    return unsubscribe;
   }, []);
 
   return { user, loading };
 }
 
 export async function signInWithEmail(email: string, password: string) {
-  if (auth) {
-    try {
-      return await signInWithEmailAndPassword(auth, email, password);
-    } catch (err: any) {
-      // Fallback for demo credentials
-      if (email.includes("demo")) {
-        mockUser = { uid: "demo_learner_2026", email, getIdToken: async () => "demo_token" };
-        listeners.forEach((cb) => cb(mockUser));
-        return { user: mockUser };
-      }
-      throw err;
-    }
-  }
-  mockUser = { uid: "demo_learner_2026", email, getIdToken: async () => "demo_token" };
-  listeners.forEach((cb) => cb(mockUser));
-  return { user: mockUser };
+  return signInWithEmailAndPassword(requireAuth(), email, password);
 }
 
-export async function signUpWithEmail(email: string, password: string) {
-  if (auth) {
-    try {
-      return await createUserWithEmailAndPassword(auth, email, password);
-    } catch (err: any) {
-      if (email.includes("demo")) {
-        mockUser = { uid: "demo_learner_2026", email, getIdToken: async () => "demo_token" };
-        return { user: mockUser };
-      }
-      throw err;
-    }
+export async function signUpWithEmail(email: string, password: string, displayName?: string) {
+  const credential = await createUserWithEmailAndPassword(requireAuth(), email, password);
+  if (displayName?.trim() && credential.user) {
+    await updateProfile(credential.user, { displayName: displayName.trim() });
   }
-  mockUser = { uid: "demo_learner_2026", email, getIdToken: async () => "demo_token" };
-  return { user: mockUser };
+  return credential;
+}
+
+export async function signInWithGoogle() {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  return signInWithPopup(requireAuth(), provider);
 }
 
 export async function signOut() {
-  if (auth) {
-    try {
-      await firebaseSignOut(auth);
-    } catch {}
-  }
-  mockUser = null;
-  listeners.forEach((cb) => cb(null));
+  if (!auth) return;
+  authReadyPromise = null;
+  await firebaseSignOut(auth);
 }
 
 export async function getIdToken(): Promise<string | null> {
-  if (auth?.currentUser) {
-    try {
-      return await auth.currentUser.getIdToken();
-    } catch {}
-  }
-  return mockUser?.getIdToken ? await mockUser.getIdToken() : "demo_token";
+  if (!auth) return null;
+  const user = auth.currentUser ?? (await authReady());
+  if (!user) return null;
+  return user.getIdToken();
+}
+
+export function getCurrentUser(): User | null {
+  return auth?.currentUser ?? null;
 }

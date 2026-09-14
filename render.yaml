@@ -1,10 +1,13 @@
 services:
+  # REST API + embedded neural TTS. This fits the 512MB free plan only because the realtime
+  # voice agent is NOT co-hosted here - a 0.1-vCPU instance cannot run one. Deploy the agent
+  # separately (see docs/DEPLOYMENT.md).
   - type: web
     name: pravaah-backend
     env: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /docs
+    healthCheckPath: /health
     envVars:
       - key: LIVEKIT_URL
         sync: false
@@ -16,11 +19,9 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: NVIDIA_API_KEY
-        sync: false
-      - key: STT_PROVIDER
-        value: groq_turbo
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
+      - key: RUN_VOICE_AGENT
+        value: "false"
+      - key: ALLOW_DEMO_AUTH
+        value: "false"

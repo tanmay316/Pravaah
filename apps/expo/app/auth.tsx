@@ -26,6 +26,7 @@ import { theme } from "../lib/theme";
 
 export default function AuthScreen() {
   const insets = useSafeAreaInsets();
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -39,11 +40,15 @@ export default function AuthScreen() {
       setError("Please enter both email and password.");
       return;
     }
+    if (isSignUp && !fullName.trim()) {
+      setError("Please enter your name so your coach can address you.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       if (isSignUp) {
-        await signUpWithEmail(email.trim(), password);
+        await signUpWithEmail(email.trim(), password, fullName.trim());
       } else {
         await signInWithEmail(email.trim(), password);
       }
@@ -166,6 +171,26 @@ export default function AuthScreen() {
               <Text style={styles.dividerText}>or continue with email</Text>
               <View style={styles.dividerLine} />
             </View>
+
+            {/* Name Field (sign-up only) */}
+            {isSignUp ? (
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>YOUR NAME</Text>
+                <View style={styles.inputWrapper}>
+                  <Ionicons name="person-outline" size={18} color={theme.colors.fog} style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="How should your coach address you?"
+                    placeholderTextColor={theme.colors.steel}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    textContentType="name"
+                    value={fullName}
+                    onChangeText={setFullName}
+                  />
+                </View>
+              </View>
+            ) : null}
 
             {/* Email Field */}
             <View style={styles.inputGroup}>

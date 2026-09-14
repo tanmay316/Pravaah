@@ -13,6 +13,7 @@ Endpoints:
   GET  /api/sessions/{session_id}
 """
 
+import json
 import os
 import time
 import uuid
@@ -70,8 +71,15 @@ try:
         analyze_session_messages,
     )
     from curriculum import evaluate_assessment_rubric, generate_daily_plan
-except ImportError:
-    pass
+except ImportError as _le_import_error:
+    # Swallowing this silently used to turn every learning-engine endpoint into an
+    # opaque 500 (NameError) at request time, so make the cause obvious at boot.
+    logging.getLogger("api").error(
+        "Learning engine import failed (%s). Daily plans, assessment and session analysis "
+        "endpoints will be unavailable. Expected package at %s",
+        _le_import_error,
+        le_path,
+    )
 
 PRAVAAH_CEFR_REFERENCE = {
     "E": "A1", "D": "A1–A2", "C": "A2", "B": "B1", "A": "B2–C1", "S": "C1–C2+",
@@ -88,21 +96,44 @@ LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
 LIVEKIT_TOKEN_TTL_SECONDS = 15 * 60  # 15 minutes, renewable
 
 
-def _mint_livekit_token(room_name: str, participant_identity: str) -> tuple[str, datetime]:
-    """Mint a short-lived, room-scoped LiveKit access token."""
-    grant = VideoGrants(room_join=True, room=room_name)
+def _mint_livekit_token(
+    room_name: str,
+    participant_identity: str,
+    participant_name: str | None = None,
+    metadata: dict | None = None,
+) -> tuple[str, datetime]:
+    """
+    Mint a short-lived, room-scoped LiveKit access token.
+
+    Session context (mode, topic, goal, skill) is embedded as participant metadata so the
+    voice agent can read it straight off the participant instead of doing a blocking
+    Firestore lookup on its realtime event loop.
+    """
+    grant = VideoGrants(room_join=True, room=room_name, can_publish=True, can_subscribe=True)
     token = (
         AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         .with_identity(participant_identity)
         .with_grants(grant)
         .with_ttl(timedelta(seconds=LIVEKIT_TOKEN_TTL_SECONDS))
     )
-    expires_at = datetime.now(timezone.utc).replace(
-        second=0, microsecond=0
-    )
-    # Approximate expiry for the client to monitor
+    if participant_name:
+        token = token.with_name(participant_name)
+    if metadata:
+        token = token.with_metadata(json.dumps(metadata))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=LIVEKIT_TOKEN_TTL_SECONDS)
     return token.to_jwt(), expires_at
+
+
+def _compute_streak_days(last_practice_date: str | None, current_streak: int) -> int:
+    """A streak only survives if the last practice was today or yesterday."""
+    if not last_practice_date or not current_streak:
+        return 0
+    try:
+        last = datetime.strptime(last_practice_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return 0
+    delta = (datetime.now(timezone.utc).date() - last).days
+    return int(current_streak) if delta <= 1 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -228,22 +259,59 @@ async def get_my_profile(user: CurrentUser, req_id: RequestId, response: Respons
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
     db = get_firestore_client()
-    doc = db.collection("users").document(uid).get()
+    user_ref = db.collection("users").document(uid)
+    doc = user_ref.get()
+
+    # Identity claims from the verified Firebase token are the source of truth for
+    # the learner's name, so the UI never has to guess or show a placeholder.
+    claim_name = user.get("name") or user.get("display_name")
+    claim_email = user.get("email")
+    claim_photo = user.get("picture") or user.get("photo_url")
+
     if not doc.exists:
         # Auto-create default profile on first access
-        profile_data = LearnerProfile(uid=uid).model_dump()
+        profile = LearnerProfile(
+            uid=uid,
+            display_name=claim_name or (claim_email.split("@")[0] if claim_email else None),
+            email=claim_email,
+            photo_url=claim_photo,
+        )
+        profile_data = profile.model_dump()
         profile_data["created_at"] = datetime.now(timezone.utc)
-        db.collection("users").document(uid).set(profile_data)
-        return LearnerProfile(uid=uid, created_at=profile_data["created_at"])
-    data = doc.to_dict()
+        user_ref.set(profile_data)
+        return profile.model_copy(update={"created_at": profile_data["created_at"]})
+
+    data = doc.to_dict() or {}
     data["uid"] = uid
+
+    identity_updates = {}
+    if claim_email and data.get("email") != claim_email:
+        identity_updates["email"] = claim_email
+    if claim_photo and data.get("photo_url") != claim_photo:
+        identity_updates["photo_url"] = claim_photo
+    # Never overwrite a name the learner set themselves via PATCH.
+    if claim_name and not data.get("display_name"):
+        identity_updates["display_name"] = claim_name
+    if identity_updates:
+        data.update(identity_updates)
+        user_ref.set(identity_updates, merge=True)
+
+    if not data.get("display_name") and claim_email:
+        data["display_name"] = claim_email.split("@")[0]
+
+    # Flatten the nested statistics map so the client gets a flat, typed profile.
+    stats = data.get("statistics") or {}
+    data["total_sessions"] = int(stats.get("total_sessions", 0) or 0)
+    data["total_practice_minutes"] = int(stats.get("total_practice_minutes", stats.get("practice_minutes", 0)) or 0)
+    data["last_practice_date"] = stats.get("last_practice_date")
+    data["streak_days"] = _compute_streak_days(stats.get("last_practice_date"), stats.get("streak_days", 0))
 
     # Self-healing: if pravaah_level is missing or unassessed, check proficiency_assessments subcollection
     if not data.get("pravaah_level") or data.get("pravaah_level") == "unassessed":
         try:
             latest_assess_stream = list(
-                db.collection("users").document(uid).collection("proficiency_assessments")
-                .order_by("assessed_at", direction="DESCENDING")
+                user_ref.collection("proficiency_assessments")
+                .order_by("assessed_at", direction=firestore.Query.DESCENDING)
                 .limit(1)
                 .stream()
             )
@@ -262,7 +330,7 @@ async def get_my_profile(user: CurrentUser, req_id: RequestId, response: Respons
                     if assess_data.get("initial_focus"):
                         data["current_focus"] = assess_data.get("initial_focus")
 
-                    db.collection("users").document(uid).set({
+                    user_ref.set({
                         "pravaah_level": assessed_level,
                         "cefr_reference": cefr_ref,
                         "cefr_level": cefr_ref,
@@ -280,7 +348,7 @@ async def get_my_profile(user: CurrentUser, req_id: RequestId, response: Respons
 async def update_my_profile(
     body: UpdateProfileRequest, user: CurrentUser, req_id: RequestId, response: Response
 ):
-    """Update learner settings (e.g. daily goal minutes, Hindi support, language preferences)."""
+    """Update learner settings (e.g. display name, daily goal minutes, Hindi support)."""
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
     db = get_firestore_client()
@@ -295,13 +363,10 @@ async def update_my_profile(
         if "daily_goal_minutes" in update_data:
             try:
                 get_or_create_daily_plan(user_id=uid, goal_minutes=update_data["daily_goal_minutes"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger("api").warning("Daily plan sync after goal update failed: %s", exc)
 
-    doc = user_ref.get()
-    data = doc.to_dict() if doc.exists else {}
-    data["uid"] = uid
-    return LearnerProfile(**data)
+    return await get_my_profile(user=user, req_id=req_id, response=response)
 
 
 
@@ -458,8 +523,27 @@ async def create_session(
     if not lesson_id and body.target_skill:
         lesson_id = f"lsn_{body.target_skill}_{uuid.uuid4().hex[:6]}"
 
-    # Create session document in Firestore (both user subcollection and top-level for agent lookup)
     db = get_firestore_client()
+
+    # Resolve the learner's display name so the coach can greet them personally.
+    learner_name = user.get("name") or user.get("display_name")
+    profile_snapshot = db.collection("users").document(uid).get()
+    profile_data = profile_snapshot.to_dict() or {} if profile_snapshot.exists else {}
+    learner_name = profile_data.get("display_name") or learner_name
+    if not learner_name and user.get("email"):
+        learner_name = user["email"].split("@")[0]
+
+    conversation_goal = body.conversation_goal.value if body.conversation_goal else None
+    if conversation_goal is None:
+        conversation_goal = {
+            "grammar_practice": "grammar",
+            "vocabulary_practice": "vocabulary",
+            "roleplay": "roleplay",
+        }.get(body.mode.value, "intro")
+
+    topic = (body.topic or "").strip() or None
+    roleplay_scenario = (body.roleplay_scenario or "").strip() or None
+
     session_data = {
         "session_id": session_id,
         "user_id": uid,
@@ -471,6 +555,9 @@ async def create_session(
         "state": "CREATED",
         "target_skill": body.target_skill,
         "lesson_id": lesson_id,
+        "topic": topic,
+        "conversation_goal": conversation_goal,
+        "roleplay_scenario": roleplay_scenario,
     }
     db.collection("users").document(uid).collection("sessions").document(session_id).set(session_data)
     try:
@@ -480,10 +567,13 @@ async def create_session(
             "mode": body.mode.value,
             "target_skill": body.target_skill,
             "lesson_id": lesson_id,
+            "topic": topic,
+            "conversation_goal": conversation_goal,
+            "roleplay_scenario": roleplay_scenario,
             "created_at": now,
         })
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger("api").warning("Top-level session mirror failed for %s: %s", session_id, exc)
 
     # If launching a targeted lesson, transition lesson to in_progress state
     if lesson_id and body.target_skill:
@@ -497,8 +587,25 @@ async def create_session(
             "updated_at": firestore.SERVER_TIMESTAMP,
         }, merge=True)
 
-    # Mint LiveKit token
-    token, _ = _mint_livekit_token(room_name, participant_identity=uid)
+    # Mint LiveKit token carrying the full session context as participant metadata.
+    token, _ = _mint_livekit_token(
+        room_name,
+        participant_identity=uid,
+        participant_name=learner_name,
+        metadata={
+            "session_id": session_id,
+            "user_id": uid,
+            "learner_name": learner_name,
+            "mode": body.mode.value,
+            "target_skill": body.target_skill,
+            "lesson_id": lesson_id,
+            "topic": topic,
+            "conversation_goal": conversation_goal,
+            "roleplay_scenario": roleplay_scenario,
+            "pravaah_level": profile_data.get("pravaah_level", "unassessed"),
+            "hindi_support": profile_data.get("hindi_support", "high"),
+        },
+    )
 
     return CreateSessionResponse(
         session_id=session_id,
@@ -654,13 +761,28 @@ async def complete_session(
         "updated_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
 
-    # Increment user profile statistics
+    # Increment user profile statistics and roll the practice streak forward
     user_doc_ref = db.collection("users").document(uid)
+    today_str = now.strftime("%Y-%m-%d")
+    existing_stats = {}
+    snapshot = user_doc_ref.get()
+    if snapshot.exists:
+        existing_stats = (snapshot.to_dict() or {}).get("statistics") or {}
+
+    last_practice_date = existing_stats.get("last_practice_date")
+    prior_streak = int(existing_stats.get("streak_days", 0) or 0)
+    if last_practice_date == today_str:
+        streak_days = max(prior_streak, 1)
+    else:
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        streak_days = prior_streak + 1 if last_practice_date == yesterday else 1
+
     user_doc_ref.set({
         "statistics": {
             "total_sessions": firestore.Increment(1),
             "total_practice_minutes": firestore.Increment(duration_minutes),
-            "last_practice_date": now.strftime("%Y-%m-%d"),
+            "last_practice_date": today_str,
+            "streak_days": streak_days,
         },
         "updated_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
@@ -675,7 +797,7 @@ async def complete_session(
                 duration_minutes=duration_minutes,
             )
         except Exception as exc:
-            pass
+            logging.getLogger("api").warning("Daily plan activity completion failed for %s: %s", body.lesson_id, exc)
 
     # Process session analysis for mistakes & vocabulary
     event_payload = {
@@ -697,8 +819,8 @@ async def complete_session(
     try:
         if "process_event" in globals():
             await process_event(event)
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger("api").warning("Session analysis failed for %s: %s", session_id, exc)
 
     return {
         "status": "completed",

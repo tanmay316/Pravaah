@@ -1,5 +1,70 @@
 # English Coach AI — Deployment and Operations
 
+## Topology: why the voice agent is deployed separately
+
+The realtime voice agent and the REST API must not share a CPU.
+
+A LiveKit agent has a hard realtime budget: it decodes Opus, runs Silero VAD over every ~32 ms
+frame, and has to turn a transcript into audio inside a couple of hundred milliseconds. On a
+0.1-vCPU shared instance it simply does not get scheduled often enough. The symptom in the logs
+is unmistakable:
+
+```text
+WARNING:livekit.agents:job executor is unresponsive   delay=5692  job_id=... room=session_...
+WARNING:livekit.agents:event loop blocked for 4180ms  cpu_time=0.03  gc_time=0.51
+WARNING:livekit:livekit_api::signal_client - dropping pass-through signal — no stream available
+```
+
+`cpu_time` being near zero while `duration` is seconds means the process was *descheduled*, not
+busy: the host took the CPU away. The learner hears silence and sees no transcript.
+
+So:
+
+| Component | Where | Why |
+|---|---|---|
+| REST API + embedded TTS (`Dockerfile`) | Render free web service | Request/response, tolerates a slow CPU |
+| Voice agent (`services/voice-agent/Dockerfile`) | LiveKit Cloud Agents, or an Oracle Cloud Always-Free VM | Needs a dedicated core |
+
+`RUN_VOICE_AGENT=false` is the default and should stay false on Render.
+
+### Deploy the API to Render
+
+Render reads `render.yaml`. Set these in the dashboard (all `sync: false`):
+`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GROQ_API_KEY`, `GEMINI_API_KEY`,
+`FIREBASE_SERVICE_ACCOUNT_JSON`.
+
+Note the free plan also sleeps after 15 minutes of inactivity; the first request after that takes
+~30 s to wake. The client already surfaces this as a "server may be waking up" message.
+
+### Deploy the agent to LiveKit Cloud Agents (free tier, recommended)
+
+```bash
+npm install -g livekit-cli
+lk cloud auth
+lk agent create --subdomain <your-livekit-subdomain>   # writes/updates livekit.toml
+lk agent secrets set \
+  GROQ_API_KEY=... \
+  GEMINI_API_KEY=... \
+  TTS_BASE_URL=https://<your-render-app>.onrender.com/v1
+lk agent deploy
+```
+
+`LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` are injected by LiveKit Cloud.
+
+### Alternative: Oracle Cloud Always-Free VM
+
+4 Ampere cores and 24 GB RAM, free indefinitely. `scripts/oracle_setup.sh` brings up
+`docker-compose.free-tier.yml`, which runs the API, a standalone TTS container and the agent with
+`TTS_BASE_URL=http://tts-server:8880/v1`.
+
+### Memory budget
+
+The API image installs only `services/api` + `services/learning-engine` requirements. `litellm`
+(~200 MB resident on import) is now an optional, lazily imported last-resort fallback, and the
+unused `langgraph` dependency is gone. Expect the API container to sit well under the 512 MB free
+tier limit. The agent image drops the `turn-detector` extra (which pulls `transformers` and an
+ONNX model) and keeps only VAD-based endpointing.
+
 ## Deployment philosophy
 
 Start locally and use legitimate free tiers or self-hosted open-source components. Measure costs and latency with early users before purchasing infrastructure. Do not use fake identities, multiple-account schemes, automated key generation, or quota bypasses.
@@ -17,6 +82,17 @@ EXPO_PUBLIC_FIREBASE_PROJECT_ID
 EXPO_PUBLIC_FIREBASE_APP_ID
 EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET
 EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+EXPO_PUBLIC_API_URL
+EXPO_PUBLIC_LIVEKIT_URL
+```
+
+These are inlined at build time. For the web build they must be present in `apps/expo/.env`
+*before* `npm run build:web`, otherwise the bundle ships with no auth and no API base URL.
+
+```bash
+cd apps/expo
+npm run build:web          # writes apps/expo/dist
+cd ../.. && firebase deploy --only hosting
 ```
 
 Server-only configuration includes:

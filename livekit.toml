@@ -1,0 +1,22 @@
+## LiveKit Cloud Agents deployment
+##
+## Runs services/voice-agent on LiveKit's own infrastructure, next to the SFU. This is the
+## fix for the "job executor is unresponsive" / no-audio failure: a realtime agent needs a
+## CPU it does not share with an HTTP server, which a 0.1-vCPU free web dyno cannot give it.
+##
+##   npm install -g livekit-cli
+##   lk cloud auth
+##   lk agent create --subdomain <your-livekit-subdomain>
+##   lk agent deploy
+##
+## Secrets are set with `lk agent secrets set KEY=value` (or from .env.local), never here.
+
+[project]
+  subdomain = "pravaah-qj6q5gxo"
+
+[agent]
+  id = "pravaah-voice-agent"
+
+[agent.build]
+  dockerfile = "services/voice-agent/Dockerfile"
+  dockerfile_context = "."

@@ -1,28 +1,33 @@
 """
-English Coach AI — Voice Agent (LiveKit Agents 1.x)
+Pravaah — Voice Agent (LiveKit Agents 1.x)
 
-Features & Optimizations:
-  1. Low-Latency Instant Greeting: Pre-warmed TTS greeting streams within <250ms of connection.
-  2. Strict Mode-Specific Coaching & Conversational Steering:
-     - Warmup: Friendly, spontaneous fluency check.
-     - Targeted Grammar: Explicitly introduces the target rule and FIRMLY STEERS conversation back if user drifts.
-     - Vocabulary & Collocations: Teaches and drills natural phrases.
-     - Assessment: 4-stage progressive diagnostic without interruptions.
-  3. Flagship Multilingual STT: Groq Whisper Large v3 (1550M params) for precision Hindi/English speech recognition.
-  4. Parallel Accuracy Cards: Emits visual UI cards for grammar mistakes and Hindi-to-English translations.
-  5. Full Pipeline Connectivity: Captures complete transcript turns and triggers persistence & analysis on session end.
+Design constraints this file is written against:
+  * The realtime loop must never do synchronous work. Session context arrives as participant
+    metadata on the join token, so there is no Firestore read (and no heavyweight import)
+    anywhere on the hot path.
+  * Transcript persistence and learning analysis are the API's job (POST
+    /api/sessions/{id}/complete). Importing the learning engine here would drag litellm into
+    the realtime process; it is opt-in via PRAVAAH_AGENT_PERSISTENCE.
+  * The coach greets the learner by name, opens on the topic they picked, and steers the
+    conversation back to that topic and goal.
 """
 
 import asyncio
 import json
 import logging
 import os
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+
+# Must be set before livekit.agents reads it. The loop monitor samples stack traces by
+# re-reading source files from disk on every stall; on a CPU-starved host that turns one
+# stall into a feedback loop of stalls. Opt back in by exporting a non-zero value.
+os.environ.setdefault("LIVEKIT_AGENTS_LOOP_BLOCK_WARN_MS", "0")
+
+from livekit import rtc
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -42,13 +47,67 @@ logger = logging.getLogger("pravaah-voice-agent")
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
+GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash-lite")
+
+# Persisting transcripts from inside the realtime process pulls in the learning engine
+# (and litellm). The API already persists and analyses the full transcript on session end.
+AGENT_PERSISTENCE_ENABLED = os.getenv("PRAVAAH_AGENT_PERSISTENCE", "false").lower() in {"1", "true", "yes"}
+
+
+# ---------------------------------------------------------------------------
+# Session context
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONTEXT = {
+    "mode": "free_conversation",
+    "conversation_goal": "intro",
+    "topic": None,
+    "roleplay_scenario": None,
+    "learner_name": None,
+    "target_skill": None,
+    "lesson_id": None,
+}
+
+
+def parse_session_context(raw_metadata: str | None) -> dict:
+    """Read the session context the API embedded in the participant's join token."""
+    ctx = dict(DEFAULT_CONTEXT)
+    if not raw_metadata:
+        return ctx
+    try:
+        parsed = json.loads(raw_metadata)
+    except (ValueError, TypeError):
+        logger.warning("Participant metadata was not valid JSON; using defaults.")
+        return ctx
+    if not isinstance(parsed, dict):
+        return ctx
+    for key in (
+        "mode", "conversation_goal", "topic", "roleplay_scenario", "learner_name",
+        "target_skill", "lesson_id", "user_id", "session_id", "pravaah_level", "hindi_support",
+    ):
+        if parsed.get(key):
+            ctx[key] = parsed[key]
+    return ctx
+
+
+def first_name(full_name: str | None) -> str | None:
+    if not full_name:
+        return None
+    cleaned = str(full_name).strip().split("@")[0].replace(".", " ").replace("_", " ").strip()
+    return cleaned.split()[0].title() if cleaned else None
+
 
 # ---------------------------------------------------------------------------
 # Dynamic Mode-Specific Prompt & Conversational Steering Builder
 # ---------------------------------------------------------------------------
 
 def build_mode_instructions(mode: str, target_skill: str | None, lesson_context: dict) -> str:
-    base = """You are Coach Pravaah, a warm, charismatic, and enthusiastic English conversation partner for an Indian learner.
+    name = first_name(lesson_context.get("learner_name"))
+    topic = (lesson_context.get("topic") or "").strip()
+    goal = (lesson_context.get("conversation_goal") or "intro").strip()
+    scenario = (lesson_context.get("roleplay_scenario") or "").strip()
+
+    base = f"""You are Coach Pravaah, a warm, charismatic, and enthusiastic English conversation partner for an Indian learner{f" named {name}" if name else ""}.
 Your #1 mission is to carry on a lively, fascinating, and comfortable conversation so the learner always has plenty to talk about and never feels bored!
 
 ## Core Rules:
@@ -59,7 +118,17 @@ Your #1 mission is to carry on a lively, fascinating, and comfortable conversati
 5. Plain conversational text ONLY (NEVER use markdown, asterisks **, bullet points, or numbering).
 """
 
-    if mode == "assessment":
+    if topic:
+        base += f"""
+## LOCKED SESSION TOPIC: {topic}
+The learner explicitly chose to talk about "{topic}". This is the spine of the whole session.
+- Open on it, stay on it, and keep finding fresh angles on it.
+- If the learner drifts to something unrelated, acknowledge it in at most 5 words, then bridge
+  straight back to "{topic}" with a specific question. Never announce that you are steering.
+- Only leave the topic if the learner explicitly asks to change it.
+"""
+
+    if mode == "assessment" or goal == "assessment":
         return base + """
 ## SESSION MODE: DIAGNOSTIC SPOKEN ASSESSMENT
 You are conducting a 4-step progressive English evaluation.
@@ -73,8 +142,22 @@ RULES:
 - Move through the 4 steps progressively.
 """
 
-    elif mode == "grammar_practice" and target_skill:
-        title = lesson_context.get("lesson_title", target_skill.replace("_", " ").title())
+    if goal == "roleplay" or mode == "roleplay":
+        scene = scenario or topic or "a realistic everyday situation"
+        return base + f"""
+## SESSION MODE: ROLEPLAY SIMULATION — {scene}
+- Immediately adopt and hold the appropriate persona for "{scene}" (e.g. hiring manager, client,
+  senior colleague, hotel concierge, shopkeeper, customer support agent).
+- Open by setting the scene in one short line, in character, then ask your first in-character question.
+- Stay in character for the entire session. Never break character to explain grammar.
+- Drive the scenario forward with realistic complications so the learner has to react and improvise.
+- If the learner stalls, offer an in-character prompt rather than a meta instruction.
+"""
+
+    if goal == "grammar" or (mode == "grammar_practice" and target_skill):
+        title = lesson_context.get("lesson_title") or (
+            target_skill.replace("_", " ").title() if target_skill else "spoken accuracy"
+        )
         rule = lesson_context.get("rule_summary", "")
         activity = lesson_context.get("practice_activity", "")
 
@@ -83,51 +166,96 @@ RULES:
 - Target Grammar Skill: {title}
 - Target Rule: {rule}
 - Practice Goal: {activity}
+{f'- Practise this strictly through the topic "{topic}".' if topic else ""}
 
 CONVERSATIONAL STEERING RULES (CRITICAL):
 1. Your sole goal in this session is to make the learner actively practice and speak sentences using '{title}'.
 2. You must ask questions that naturally prompt the learner to use this grammar rule.
-3. STRICT TOPIC STEERING: If the learner changes the subject or talks about unrelated things (like anime, weather, games, movies), briefly acknowledge in 4-5 words and IMMEDIATELY steer them back to practicing this grammar rule.
-   Example: If practicing past tense and learner talks about anime: "Anime is awesome! Tell me about the last episode you watched — what happened in the story?"
-4. If the learner makes an error on this target rule, immediately point out the rule and ask them to try saying it again with the correct structure.
+3. STRICT TOPIC STEERING: If the learner changes the subject, briefly acknowledge in 4-5 words and IMMEDIATELY steer them back to practicing this grammar rule.
+4. If the learner makes an error on this target rule, model the correct phrasing in one short sentence and ask them to say it again correctly.
 """
 
-    elif mode == "vocabulary_practice" or target_skill == "collocations":
-        return base + """
+    if goal == "vocabulary" or mode == "vocabulary_practice" or target_skill == "collocations":
+        return base + f"""
 ## SESSION MODE: NATURAL COLLOCATIONS & EXPRESSIONS
 - Goal: Help the learner use natural conversational expressions and collocations instead of literal translations.
-- Introduce 1 high-frequency idiom or natural collocation (e.g. 'take a break', 'catch up', 'make an effort', 'slip of the tongue').
+- Introduce 1 high-frequency idiom or natural collocation (e.g. 'take a break', 'catch up', 'make an effort').
+{f'- Choose expressions that fit the topic "{topic}" so they are immediately useful.' if topic else ""}
 - Prompt the learner to use it in their own sentence.
 - STRICT STEERING: If the learner digresses, steer them back to using the target phrase in a sentence.
 """
 
-    else:
-        # Free conversation with adaptive goal & topic steering
-        return base + """
-## SESSION MODE: FREE CONVERSATION & ADAPTIVE GOAL STEERING
+    if goal == "fluency":
+        return base + f"""
+## SESSION MODE: FLUENCY & SPEAKING TIME
+- Maximise the learner's talking time. You speak little; they speak a lot.
+- Ask questions that require stories, comparisons, opinions and explanations rather than yes/no answers.
+- Never interrupt. When they pause, wait, then offer a short nudge.
+{f'- Every question must come from the topic "{topic}".' if topic else ""}
+"""
 
-### 1. Welcoming & Alignment
-At the start of this free conversation, you greeted the learner and invited them to choose:
-- Any topic they want to discuss (e.g. workplace, technology, daily life, hobbies, travel, college, movies, cricket).
-- The direction/goal for the session:
-  1. Friendly casual chat / intro (natural comfortable conversation).
-  2. Grammar-focused practice (active corrections and sentence polishing).
-  3. Roleplay simulation (job interview, workplace meeting, client call, restaurant, hotel, etc.).
-
-### 2. Dynamic Adaptive Behavior
-When the learner responds with their choice:
-- IF CASUAL CHAT / INTRO: Carry on a lively, curious conversation. Ask open-ended questions about their experiences, feelings, and perspectives. Keep the atmosphere supportive, friendly, and relaxed.
-- IF GRAMMAR IMPROVEMENT / GRAMMAR-SPECIFIC: Focus actively on spoken grammar!
-  * When the learner makes an error in verb tense, subject-verb agreement, prepositions, or articles:
-    Naturally model the correct native phrasing in 1 concise spoken sentence (e.g. "A more natural way to say that is: '...'.") and prompt them to try using that phrasing in their reply!
-  * Praise well-formed sentences.
-- IF ROLEPLAY: Immediately adopt the requested persona (e.g. hiring manager, senior colleague, client, hotel concierge). Set the scene in character and proceed with the roleplay realistically.
-- IF TOPIC SPECIFIED: Jump eagerly into their chosen topic! Ask engaging follow-up questions that prompt the learner to express their ideas clearly and speak in full sentences.
+    # Friendly intro / casual chat
+    return base + f"""
+## SESSION MODE: FRIENDLY CONVERSATION & INTRODUCTION
+- Carry on a lively, curious, supportive conversation.
+- Ask open-ended questions about their experiences, feelings, and perspectives.
+- Praise well-formed sentences briefly and sincerely.
+{f'- Every question must grow out of the topic "{topic}".' if topic else "- Early on, find out what they enjoy talking about and build the session around it."}
 
 ### Style Guidelines:
 - Concise spoken turns: 1 to 3 sentences maximum (25-35 words).
 - Always end with an open prompt so the conversation flows seamlessly without awkward silences.
 """
+
+
+def build_greeting(lesson_context: dict, target_skill: str | None) -> str:
+    """
+    First thing the learner hears. It names them, names the topic they chose, and asks a
+    question that already belongs to that topic, so the session starts on-subject.
+    """
+    name = first_name(lesson_context.get("learner_name"))
+    hello = f"Hi {name}!" if name else "Hello!"
+    topic = (lesson_context.get("topic") or "").strip()
+    goal = (lesson_context.get("conversation_goal") or "intro").strip()
+    mode = lesson_context.get("mode") or "free_conversation"
+    scenario = (lesson_context.get("roleplay_scenario") or "").strip()
+
+    if mode == "assessment" or goal == "assessment":
+        return f"{hello} Welcome to your English assessment. To start, could you tell me a little about yourself?"
+
+    if goal == "roleplay" or mode == "roleplay":
+        scene = scenario or topic or "a real-world situation"
+        return (
+            f"{hello} Let's role-play {scene}. I'll stay in character the whole time, so just "
+            "respond naturally. Ready? Let's begin."
+        )
+
+    if goal == "grammar" or (mode == "grammar_practice" and target_skill):
+        title = lesson_context.get("lesson_title") or (
+            target_skill.replace("_", " ").title() if target_skill else "your spoken accuracy"
+        )
+        if topic:
+            return f"{hello} Today we're polishing {title} while we talk about {topic}. So tell me, what got you interested in {topic}?"
+        return f"{hello} Today we're practising {title}. To start, tell me what you did earlier today."
+
+    if goal == "vocabulary" or mode == "vocabulary_practice":
+        if topic:
+            return f"{hello} Today we'll pick up natural English expressions around {topic}. To begin, tell me what {topic} means to you."
+        return f"{hello} Today we'll practise natural English expressions. How are you feeling today?"
+
+    if goal == "fluency":
+        if topic:
+            return f"{hello} I want to hear you talk as much as possible today, all about {topic}. Take your time and tell me everything you know about it."
+        return f"{hello} Today is all about speaking time. Tell me about something that happened to you this week."
+
+    if topic:
+        return f"{hello} I'm Coach Pravaah. You picked {topic}, and I'd love to hear about it. What's your experience with {topic}?"
+
+    return (
+        f"{hello} I'm Coach Pravaah, your spoken English partner. "
+        "What would you like to talk about today?"
+    )
+
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +298,8 @@ def _run_sync_event(event: dict):
 
 async def emit_event(event: dict):
     logger.info("Event: %s seq=%d session=%s", event["event_type"], event["sequence"], event["session_id"])
+    if not AGENT_PERSISTENCE_ENABLED:
+        return
     asyncio.create_task(asyncio.to_thread(_run_sync_event, event))
 
 
@@ -235,16 +365,7 @@ async def run_parallel_accuracy_check(room, session, text: str, user_id: str, se
     if not is_meaningful_speech(text):
         return
 
-    try:
-        def _analyze():
-            # 1. Primary: Gemini 3.5 Flash Lite for deep linguistic & translation accuracy
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if gemini_key:
-                try:
-                    import google.generativeai as genai
-                    genai.configure(api_key=gemini_key)
-                    model = genai.GenerativeModel("gemini-3.5-flash-lite")
-                    prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
+    analysis_prompt = f"""You are an English language accuracy and translation analyzer for an Indian learner.
 Learner utterance: "{text}"
 
 Determine:
@@ -276,19 +397,10 @@ Return JSON ONLY:
   "explanation": "...",
   "spoken_tip": "..."
 }}"""
-                    res = model.generate_content(
-                        prompt,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "max_output_tokens": 150,
-                            "temperature": 0.2,
-                        },
-                    )
-                    return json.loads(res.text.strip())
-                except Exception as g_err:
-                    logger.debug("Gemini parallel analysis notice: %s", g_err)
 
-            # Fallback to Groq if Gemini key not configured
+    try:
+        def _analyze():
+            # 1. Primary: Groq — same provider as the conversation LLM, so no extra cold start.
             groq_key = os.getenv("GROQ_API_KEY")
             if groq_key:
                 try:
@@ -297,17 +409,36 @@ Return JSON ONLY:
                     fast_model = os.getenv("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
                     res = client.chat.completions.create(
                         model=fast_model,
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=[{"role": "user", "content": analysis_prompt}],
                         response_format={"type": "json_object"},
-                        max_tokens=150,
+                        max_tokens=200,
                         temperature=0.2,
-                        timeout=3.0,
+                        timeout=4.0,
                     )
                     content = res.choices[0].message.content
                     if content:
                         return json.loads(content.strip())
                 except Exception as groq_err:
-                    logger.debug("Groq fallback notice: %s", groq_err)
+                    logger.debug("Groq parallel analysis notice: %s", groq_err)
+
+            # 2. Fallback: Gemini
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel(GEMINI_FAST_MODEL)
+                    res = model.generate_content(
+                        analysis_prompt,
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "max_output_tokens": 200,
+                            "temperature": 0.2,
+                        },
+                    )
+                    return json.loads(res.text.strip())
+                except Exception as g_err:
+                    logger.debug("Gemini parallel analysis notice: %s", g_err)
             return None
 
         analysis = await asyncio.to_thread(_analyze)
@@ -430,68 +561,29 @@ async def entrypoint(ctx: JobContext):
     room_name = room.name or ""
     session_id = room_name.removeprefix("session_") if room_name.startswith("session_") else room_name
 
-    user_id = "learner"
-    target_skill = None
-    lesson_context = {"mode": "free_conversation"}
-
-    # Fast non-blocking metadata lookup (check top-level sessions or user sessions)
+    # Wait briefly for the learner, then read the session context straight off their join
+    # token. This replaces a Firestore round trip that used to run on the realtime loop.
+    participant = None
     try:
-        def _read_meta():
-            from worker import get_firestore_client
-            from curriculum import CURRICULUM_SKILLS
-            db = get_firestore_client()
-            # 1. Top-level sessions lookup by session_id
-            sdoc = db.collection("sessions").document(session_id).get()
-            if sdoc.exists:
-                sd = sdoc.to_dict() or {}
-                uid = sd.get("user_id", "learner")
-                m = sd.get("mode", "free_conversation")
-                sk = sd.get("target_skill")
-                ctx_d = {"mode": m}
-                if sk and sk in CURRICULUM_SKILLS:
-                    meta = CURRICULUM_SKILLS[sk]
-                    ctx_d.update({
-                        "target_skill": sk,
-                        "lesson_id": sd.get("lesson_id"),
-                        "lesson_title": meta.get("title", sk),
-                        "rule_summary": meta.get("rule_summary", ""),
-                        "practice_activity": meta.get("practice_activity", ""),
-                    })
-                return uid, sk, ctx_d
+        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("No participant joined room %s within 10s.", room_name)
+    except Exception as exc:
+        logger.warning("wait_for_participant notice: %s", exc)
 
-            # 2. Check if a remote participant identity is already present
-            for p in room.remote_participants.values():
-                uid = p.identity
-                udoc = db.collection("users").document(uid).collection("sessions").document(session_id).get()
-                if udoc.exists:
-                    d = udoc.to_dict() or {}
-                    m = d.get("mode", "free_conversation")
-                    sk = d.get("target_skill")
-                    ctx_d = {"mode": m}
-                    if sk and sk in CURRICULUM_SKILLS:
-                        meta = CURRICULUM_SKILLS[sk]
-                        ctx_d.update({
-                            "target_skill": sk,
-                            "lesson_id": d.get("lesson_id"),
-                            "lesson_title": meta.get("title", sk),
-                            "rule_summary": meta.get("rule_summary", ""),
-                            "practice_activity": meta.get("practice_activity", ""),
-                        })
-                    return uid, sk, ctx_d
-                return uid, None, {"mode": "free_conversation"}
-
-            return "learner", None, {"mode": "free_conversation"}
-
-        u_id, target_skill, lesson_context = await asyncio.wait_for(
-            asyncio.to_thread(_read_meta), timeout=0.4
-        )
-        if u_id and u_id != "learner":
-            user_id = u_id
-    except Exception:
-        lesson_context = {"mode": "free_conversation"}
+    lesson_context = parse_session_context(getattr(participant, "metadata", None))
+    user_id = lesson_context.get("user_id") or (participant.identity if participant else "learner")
+    if not lesson_context.get("learner_name") and participant is not None:
+        lesson_context["learner_name"] = getattr(participant, "name", None)
+    lesson_context["session_id"] = lesson_context.get("session_id") or session_id
+    target_skill = lesson_context.get("target_skill")
 
     mode = lesson_context.get("mode", "free_conversation")
-    logger.info("Session ready: room=%s user=%s mode=%s skill=%s", room_name, user_id, mode, target_skill)
+    logger.info(
+        "Session ready: room=%s user=%s mode=%s goal=%s topic=%r skill=%s",
+        room_name, user_id, mode, lesson_context.get("conversation_goal"),
+        lesson_context.get("topic"), target_skill,
+    )
 
     # 1. Silero VAD — Tuned with OpenWhispr principles & outdoor noise rejection (walking/running)
     # - activation_threshold=0.60: Rejects wind buffeting, footstep thuds, traffic & breathing
@@ -536,9 +628,9 @@ async def entrypoint(ctx: JobContext):
             temperature=0.3,
         )
     elif gemini_key:
-        logger.info("Using Google Gemini 3.5 Flash Lite")
+        logger.info("Using Google Gemini (%s)", GEMINI_FAST_MODEL)
         llm = google.LLM(
-            model="gemini-3.5-flash-lite",
+            model=GEMINI_FAST_MODEL,
             api_key=gemini_key,
             temperature=0.25,
         )
@@ -549,12 +641,15 @@ async def entrypoint(ctx: JobContext):
             api_key=LITELLM_PROXY_KEY,
         )
 
-    # 4. TTS: Neural Indian English Voice (Edge-TTS via local proxy)
+    # 4. TTS: Neural Indian English voice over an OpenAI-compatible /v1/audio/speech endpoint.
+    # TTS_BASE_URL must point at a host that is not competing with the agent for CPU.
+    tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL") or "http://127.0.0.1:10000/v1"
+    logger.info("TTS endpoint: %s", tts_base_url)
     tts = openai.TTS(
         model="tts-1",
-        voice="en-IN-NeerjaNeural",
+        voice=os.getenv("TTS_VOICE", "en-IN-NeerjaNeural"),
         api_key="not-needed",
-        base_url=os.getenv("KOKORO_BASE_URL", "http://127.0.0.1:10000/v1"),
+        base_url=tts_base_url,
     )
 
     # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense
@@ -647,111 +742,94 @@ async def entrypoint(ctx: JobContext):
         agent=tutor,
     )
 
-    # Greeting tailored to mode & target skill
-    greeting_text = (
-        "Hello! Welcome to Pravaah. I am Coach Pravaah, your spoken English partner. "
-        "What topic would you like to talk about today, and how should we carry on our conversation? "
-        "We can do a friendly casual chat, focused grammar practice where I help polish your sentences, "
-        "or a real-world roleplay like an interview or workplace meeting!"
-    )
-    if mode == "assessment":
-        greeting_text = "Welcome to your English assessment! Could you tell me a little about yourself?"
-    elif mode == "grammar_practice" and target_skill:
-        title = lesson_context.get("lesson_title", target_skill.replace("_", " ").title())
-        greeting_text = f"Hello! Today we are practicing {title}. To start, tell me what you did earlier today!"
-    elif mode == "vocabulary_practice":
-        greeting_text = "Hello! Today we will practice natural English expressions. How are you feeling today?"
-    elif lesson_context.get("practice_activity"):
-        title = lesson_context.get("lesson_title", "speaking")
-        greeting_text = f"Hello! Today we are practicing {title}. Are you ready to begin?"
+    # Greeting tailored to the learner, their chosen topic and their session goal.
+    greeting_text = build_greeting(lesson_context, target_skill)
 
-    # Instant greeting audio & visual transcript: trigger as soon as learner is ready
     greeting_spoken = False
 
-    def speak_greeting(force: bool = False):
+    def speak_greeting(trigger: str):
+        """Idempotent: whichever signal arrives first wins, the rest are no-ops."""
         nonlocal greeting_spoken
-        if not greeting_spoken or force:
-            greeting_spoken = True
-            logger.info("Streaming instant greeting (force=%s): %s", force, greeting_text)
-            # 1. UI Transcript broadcast so user sees it in real time immediately
-            asyncio.create_task(broadcast_ui_turn(room, "tutor", greeting_text))
-            # 2. Audio track utterance
-            try:
-                session.say(greeting_text, allow_interruptions=True)
-            except Exception as s_err:
-                logger.warning("session.say greeting notice: %s", s_err)
+        if greeting_spoken:
+            return
+        greeting_spoken = True
+        logger.info("Greeting (trigger=%s): %s", trigger, greeting_text)
+        # Show it in the transcript immediately, then speak it.
+        asyncio.create_task(broadcast_ui_turn(room, "tutor", greeting_text))
+        try:
+            session.say(greeting_text, allow_interruptions=True)
+        except Exception as s_err:
+            logger.warning("session.say greeting notice: %s", s_err)
 
-    # Multi-event greeting triggers:
-    # 1. If learner is already in the room
-    if len(room.remote_participants) > 0:
-        logger.info("Learner already in room, speaking greeting immediately.")
-        speak_greeting()
-
-    # 2. When learner connects
-    @room.on("participant_connected")
-    def on_participant_connected(p):
-        logger.info("Learner connected (%s), speaking greeting.", p.identity)
-        speak_greeting()
-
-    # 3. When learner publishes microphone audio track (explicit user speaking start)
+    # The client publishes its microphone and then sends start_conversation; either is a
+    # reliable "the learner can hear us now" signal, and a timer covers the rest.
     @room.on("track_published")
     def on_track(pub, participant):
-        logger.info("Learner audio track published by %s, speaking greeting.", participant.identity)
-        speak_greeting(force=True)
+        logger.info("Audio track published by %s", participant.identity)
+        speak_greeting("track_published")
 
-    # 4. When client sends start_conversation signal
     @room.on("data_received")
     def on_data(dp):
         try:
             data = json.loads(dp.data.decode("utf-8"))
-            if data.get("type") == "start_conversation":
-                logger.info("Received start_conversation signal from learner! Speaking greeting.")
-                speak_greeting(force=True)
-        except Exception:
-            pass
+        except (ValueError, UnicodeDecodeError):
+            return
+        if data.get("type") == "start_conversation":
+            speak_greeting("start_conversation")
 
-    # 5. Safety fallback timer: speak greeting after 1.5s if participant is connected
     async def _greeting_timer():
-        await asyncio.sleep(1.5)
-        if not greeting_spoken and len(room.remote_participants) > 0:
-            logger.info("Greeting timer fired, speaking greeting.")
-            speak_greeting()
+        await asyncio.sleep(2.0)
+        if len(room.remote_participants) > 0:
+            speak_greeting("timer")
 
     asyncio.create_task(_greeting_timer())
 
+    # The learner may have published their mic before these handlers existed, in which case
+    # no event is coming; greet on what is already in the room.
+    for remote in room.remote_participants.values():
+        if any(pub.kind == rtc.TrackKind.KIND_AUDIO for pub in remote.track_publications.values()):
+            speak_greeting("existing_track")
+            break
+
 
 # ---------------------------------------------------------------------------
-# Background imports
+# Optional background persistence (off by default; see AGENT_PERSISTENCE_ENABLED)
 # ---------------------------------------------------------------------------
 
-_learning_engine_dir = os.path.join(os.path.dirname(__file__), "..", "learning-engine")
-if _learning_engine_dir not in sys.path:
-    sys.path.insert(0, os.path.abspath(_learning_engine_dir))
+process_event = None
+enqueue_outbox_event = None
 
-try:
-    from worker import (
-        process_event,
-        enqueue_outbox_event,
-    )
-except Exception:
-    process_event = None
-    enqueue_outbox_event = None
+if AGENT_PERSISTENCE_ENABLED:
+    import sys
+
+    _learning_engine_dir = os.path.join(os.path.dirname(__file__), "..", "learning-engine")
+    if _learning_engine_dir not in sys.path:
+        sys.path.insert(0, os.path.abspath(_learning_engine_dir))
+    try:
+        from worker import (  # noqa: E402
+            process_event,
+            enqueue_outbox_event,
+        )
+    except Exception as exc:
+        logger.warning("Agent persistence requested but the learning engine failed to import: %s", exc)
 
 
 if __name__ == "__main__":
-    # Prevent telemetry loop monitor from performing expensive disk I/O stack inspections on Render shared CPU
-    logging.getLogger("livekit.agents.telemetry").setLevel(logging.ERROR)
-
-    # Use JobExecutorType.THREAD unconditionally across all platforms.
-    # On Render (Linux 512MB RAM), JobExecutorType.PROCESS spawns a subprocess
-    # that duplicates PyTorch/LiveKit memory and triggers immediate OOM container termination.
-    executor_type = JobExecutorType.THREAD
+    # PROCESS isolates the job from the worker's event loop, which is what keeps audio
+    # smooth. THREAD shares one GIL with the worker and every stall becomes everyone's
+    # stall; only use it where memory is too tight for a second interpreter.
+    executor_type = (
+        JobExecutorType.THREAD
+        if os.getenv("JOB_EXECUTOR", "process").lower() == "thread"
+        else JobExecutorType.PROCESS
+    )
+    logger.info("Starting worker with %s job executor", executor_type)
 
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             job_executor_type=executor_type,
-            num_idle_processes=0,
+            num_idle_processes=int(os.getenv("NUM_IDLE_PROCESSES", "0")),
             host="127.0.0.1",
             port=0,
             load_threshold=float("inf"),

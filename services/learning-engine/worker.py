@@ -40,7 +40,20 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 from pydantic import BaseModel, Field, field_validator
-import litellm
+
+
+def _get_litellm():
+    """
+    Import litellm only when the last-resort provider fallback is actually reached.
+    Importing it at module scope costs ~200MB RSS and several seconds in every process
+    that touches this module, including the realtime voice agent.
+    Returns None when litellm is not installed.
+    """
+    try:
+        import litellm
+        return litellm
+    except ImportError:
+        return None
 
 # Add local directory to path for curriculum import
 sys.path.insert(0, os.path.dirname(__file__))
@@ -76,8 +89,8 @@ logger = logging.getLogger("learning-engine")
 # Configuration
 # ---------------------------------------------------------------------------
 
-ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-3.5-flash-lite")
-ASSESSMENT_MODEL = os.getenv("ASSESSMENT_MODEL", "gemini-3.5-flash-lite")
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-2.5-flash-lite")
+ASSESSMENT_MODEL = os.getenv("ASSESSMENT_MODEL", "gemini-2.5-flash")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "")
@@ -439,6 +452,10 @@ async def analyze_session_messages(
             logger.warning("Direct genai session analysis failed: %s; falling back to litellm", e)
 
     if not parsed_result.mistakes and not parsed_result.vocabulary:
+        litellm = _get_litellm()
+        if litellm is None:
+            logger.warning("litellm is not installed; skipping the provider-fallback analysis path.")
+            max_retries = 0
         for attempt in range(1, max_retries + 1):
             try:
                 litellm_model = f"gemini/{model}" if not model.startswith("gemini/") and "tutor-model" not in model else model
@@ -1318,7 +1335,7 @@ async def analyze_assessment_evidence(
         return res
 
     # 1. Primary: Groq Cloud (Ultra-fast PhD evaluation using openai/gpt-oss-120b, openai/gpt-oss-20b, or qwen/qwen3.8-27b)
-    groq_key = os.getenv("GROQ_API_KEY") or "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"
+    groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
         groq_candidates = [
             os.getenv("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b"),
@@ -1378,9 +1395,11 @@ async def analyze_assessment_evidence(
         except Exception as e:
             logger.warning("Generative AI assessment analysis notice: %s", e)
 
-    # 3. Tertiary: LiteLLM proxy fallback
+    # 3. Tertiary: LiteLLM provider fallback (optional dependency)
     try:
-        import litellm
+        litellm = _get_litellm()
+        if litellm is None:
+            raise RuntimeError("litellm is not installed")
         kwargs = {
             "model": "gemini/gemini-2.5-flash",
             "api_key": api_key,

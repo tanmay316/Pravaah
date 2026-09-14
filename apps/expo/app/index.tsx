@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Platform,
   Pressable,
@@ -19,6 +20,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,12 +31,14 @@ import {
   getMistakes,
   getVocabulary,
   getProgress,
+  getLessons,
   setDailyGoal,
   updateProfile,
   deleteAccount,
   LearnerProfile,
   DailyLearningPlan,
   DailyPlanActivity,
+  LessonRecord,
   Mistake,
   VocabularyEntry,
   ProgressSummary,
@@ -219,6 +223,8 @@ function buildOptimisticActivities(
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 720;
   const [activeTab, setActiveTab] = useState<NavTab>("plan");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -226,6 +232,7 @@ export default function DashboardScreen() {
   const [dailyPlan, setDailyPlan] = useState<DailyLearningPlan | null>(null);
   const [mistakes, setMistakes] = useState<Mistake[]>([]);
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
+  const [lessons, setLessons] = useState<LessonRecord[]>([]);
   const [progress, setProgress] = useState<ProgressSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -237,7 +244,7 @@ export default function DashboardScreen() {
   const loadData = useCallback(async () => {
     setErrorMessage(null);
     try {
-      const fetchPromise = Promise.all([
+      const [profData, planData, mstkData, vocData, lessonData, progData] = await Promise.all([
         getProfile().catch((e) => {
           console.warn("Profile fetch error:", e);
           return null;
@@ -246,18 +253,22 @@ export default function DashboardScreen() {
           console.warn("Daily plan fetch error:", e);
           return null;
         }),
-        getMistakes().catch(() => []),
-        getVocabulary().catch(() => []),
+        getMistakes().catch(() => [] as Mistake[]),
+        getVocabulary().catch(() => [] as VocabularyEntry[]),
+        getLessons().catch(() => [] as LessonRecord[]),
         getProgress().catch(() => ({ total_sessions: 0, total_practice_minutes: 0 })),
       ]);
-
-      const [profData, planData, mstkData, vocData, progData] = await fetchPromise;
 
       if (profData) setProfile(profData);
       if (planData) setDailyPlan(planData);
       setMistakes(mstkData);
       setVocabulary(vocData);
+      setLessons(lessonData);
       setProgress(progData);
+
+      if (!profData && !planData) {
+        setErrorMessage("Could not reach the coaching service. Pull down to retry.");
+      }
     } catch (err: any) {
       setErrorMessage(err.message || "Failed to load dashboard data.");
     } finally {
@@ -268,8 +279,6 @@ export default function DashboardScreen() {
 
   useEffect(() => {
     loadData();
-    const timer = setTimeout(() => setLoading(false), 1200);
-    return () => clearTimeout(timer);
   }, [loadData]);
 
   useFocusEffect(
@@ -388,14 +397,32 @@ export default function DashboardScreen() {
     setTimeout(() => setNotificationFeedback(null), 3500);
   };
 
-  const handleDeleteAccount = async () => {
-    try {
-      await deleteAccount();
-      await signOut();
-      router.replace("/auth");
-    } catch (err) {
-      console.warn("Delete account error:", err);
+  const handleDeleteAccount = () => {
+    const doDelete = async () => {
+      try {
+        await deleteAccount();
+        await signOut();
+        router.replace("/auth");
+      } catch (err: any) {
+        console.warn("Delete account error:", err);
+        setErrorMessage(err?.message || "Could not delete the account. Please try again.");
+      }
+    };
+
+    const message =
+      "This permanently deletes your account, sessions, mistakes and vocabulary. It cannot be undone.";
+
+    if (Platform.OS === "web") {
+      if (typeof window !== "undefined" && window.confirm(`Delete account?\n\n${message}`)) {
+        doDelete();
+      }
+      return;
     }
+
+    Alert.alert("Delete account?", message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: doDelete },
+    ]);
   };
 
   const handleStartNextActivity = () => {
@@ -442,6 +469,18 @@ export default function DashboardScreen() {
   const progressPercent = currentGoal > 0 ? Math.min(100, Math.round((completedMins / currentGoal) * 100)) : 0;
   const nextUnfinishedActivity = dailyPlan?.activities?.find((a) => !a.is_completed);
 
+  // Identity comes from the signed-in account, resolved server-side from the Firebase token.
+  const displayName = profile?.display_name || profile?.email?.split("@")[0] || "";
+  const firstName = displayName ? displayName.split(/[\s._-]+/)[0] : "";
+  const initials = (displayName || "?")
+    .split(/[\s._-]+/)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+  const streakDays = profile?.streak_days ?? 0;
+  const totalSessions = progress?.total_sessions ?? profile?.total_sessions ?? 0;
+  const totalMinutes = Math.round(progress?.total_practice_minutes ?? profile?.total_practice_minutes ?? 0);
+
   return (
     <View style={styles.screen}>
       {/* ------------------------------------------------------------------- */}
@@ -457,16 +496,21 @@ export default function DashboardScreen() {
               accessibilityLabel="Pravaah"
             />
           </Pressable>
+          {isWide && firstName ? (
+            <Text style={styles.appBarGreeting} numberOfLines={1}>
+              Hi, {firstName}
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.appBarRight}>
           {/* Streak Badge */}
-          <View style={styles.streakBadge}>
-            <Text style={styles.streakEmoji}>🔥</Text>
-            <Text style={styles.streakCount}>
-              {profile?.streak_days ? `${profile.streak_days}d` : "1d"}
-            </Text>
-          </View>
+          {streakDays > 0 ? (
+            <View style={styles.streakBadge}>
+              <Text style={styles.streakEmoji}>🔥</Text>
+              <Text style={styles.streakCount}>{streakDays}d</Text>
+            </View>
+          ) : null}
 
           {/* Level Pill */}
           <Pressable
@@ -482,12 +526,17 @@ export default function DashboardScreen() {
           <Pressable
             style={[styles.avatarBtn, activeTab === "profile" && styles.avatarBtnActive]}
             onPress={() => setActiveTab("profile")}
+            accessibilityLabel={displayName ? `Profile: ${displayName}` : "Profile"}
           >
-            <Ionicons
-              name={activeTab === "profile" ? "person" : "person-outline"}
-              size={18}
-              color={activeTab === "profile" ? theme.colors.pure : theme.colors.ash}
-            />
+            {initials && initials !== "?" ? (
+              <Text style={styles.avatarInitials}>{initials}</Text>
+            ) : (
+              <Ionicons
+                name={activeTab === "profile" ? "person" : "person-outline"}
+                size={18}
+                color={activeTab === "profile" ? theme.colors.pure : theme.colors.ash}
+              />
+            )}
           </Pressable>
         </View>
       </View>
@@ -500,6 +549,7 @@ export default function DashboardScreen() {
         contentContainerStyle={[
           styles.mainScroll,
           {
+            maxWidth: isWide ? 960 : theme.mobile.maxContentWidth,
             paddingBottom: theme.mobile.tabBarHeight + Math.max(insets.bottom, 12) + 24,
           },
         ]}
@@ -540,7 +590,15 @@ export default function DashboardScreen() {
               </View>
 
               <Text style={styles.heroHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Own</Text> your fluency today.
+                {firstName ? (
+                  <>
+                    <Text style={styles.heroHeadlineItalic}>{firstName}</Text>, own your fluency today.
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.heroHeadlineItalic}>Own</Text> your fluency today.
+                  </>
+                )}
               </Text>
               <Text style={styles.heroSubhead}>
                 Real-time voice coaching tailored to eliminate your recurring speech errors.
@@ -728,6 +786,7 @@ export default function DashboardScreen() {
               <Pressable
                 style={({ pressed }) => [
                   styles.categoryTile,
+                  isWide && styles.categoryTileWide,
                   { backgroundColor: theme.colors.irisGleam },
                   pressed && styles.btnPressed,
                 ]}
@@ -754,6 +813,7 @@ export default function DashboardScreen() {
               <Pressable
                 style={({ pressed }) => [
                   styles.categoryTile,
+                  isWide && styles.categoryTileWide,
                   { backgroundColor: theme.colors.orchidBloom },
                   pressed && styles.btnPressed,
                 ]}
@@ -780,6 +840,7 @@ export default function DashboardScreen() {
               <Pressable
                 style={({ pressed }) => [
                   styles.categoryTile,
+                  isWide && styles.categoryTileWide,
                   { backgroundColor: theme.colors.cyanSignal },
                   pressed && styles.btnPressed,
                 ]}
@@ -805,6 +866,7 @@ export default function DashboardScreen() {
               <Pressable
                 style={({ pressed }) => [
                   styles.categoryTile,
+                  isWide && styles.categoryTileWide,
                   { backgroundColor: theme.colors.periwinkle },
                   pressed && styles.btnPressed,
                 ]}
@@ -938,6 +1000,76 @@ export default function DashboardScreen() {
                 </Text>
               )}
             </View>
+
+            {/* Lesson history */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>LESSON HISTORY</Text>
+              <Text style={styles.sectionBadge}>{lessons.length} LESSONS</Text>
+            </View>
+
+            <View style={styles.activityList}>
+              {lessons.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Ionicons name="time-outline" size={28} color={theme.colors.fog} />
+                  <Text style={styles.emptyCardText}>
+                    Lessons you launch will be recorded here with their mastery movement.
+                  </Text>
+                </View>
+              ) : (
+                lessons.map((lesson) => {
+                  const delta = (lesson.mastery_after ?? 0) - (lesson.mastery_before ?? 0);
+                  const done = lesson.completion_status === "completed";
+                  return (
+                    <Pressable
+                      key={lesson.lesson_id}
+                      style={({ pressed }) => [styles.lessonHistoryCard, pressed && styles.btnPressed]}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/session",
+                          params: {
+                            mode: "grammar_practice",
+                            target_skill: lesson.source_skill_id,
+                            lesson_id: lesson.lesson_id,
+                            activity_title: lesson.lesson_title || lesson.source_skill_id,
+                            stage: lesson.stage || "guided_practice",
+                          },
+                        })
+                      }
+                    >
+                      <View style={styles.lessonHistoryTop}>
+                        <Text style={styles.lessonHistoryTitle} numberOfLines={1}>
+                          {lesson.lesson_title || lesson.source_skill_id.replace(/_/g, " ")}
+                        </Text>
+                        <View style={done ? styles.doneBadge : styles.upNextBadge}>
+                          <Text style={done ? styles.doneBadgeText : styles.upNextBadgeText}>
+                            {(lesson.completion_status || "recommended").toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.lessonHistoryMetaRow}>
+                        <Text style={styles.lessonHistoryMeta}>
+                          {(lesson.stage || "guided practice").replace(/_/g, " ")}
+                        </Text>
+                        <Text style={styles.lessonHistoryMeta}>
+                          {lesson.attempts ?? 0} attempts
+                        </Text>
+                        <Text
+                          style={[
+                            styles.lessonHistoryMeta,
+                            delta > 0 && { color: theme.colors.emeraldSuccess },
+                            delta < 0 && { color: theme.colors.crimsonError },
+                          ]}
+                        >
+                          mastery {Math.round((lesson.mastery_after ?? 0) * 100)}%
+                          {delta !== 0 ? ` (${delta > 0 ? "+" : ""}${Math.round(delta * 100)})` : ""}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
           </View>
         )}
 
@@ -1062,13 +1194,20 @@ export default function DashboardScreen() {
             {/* User Identity Card */}
             <View style={styles.profileHeroCard}>
               <View style={styles.avatarLargeCircle}>
-                <Ionicons name="person" size={32} color={theme.colors.pure} />
+                {initials && initials !== "?" ? (
+                  <Text style={styles.avatarLargeInitials}>{initials}</Text>
+                ) : (
+                  <Ionicons name="person" size={32} color={theme.colors.pure} />
+                )}
               </View>
-              <Text style={styles.profileTitle}>
-                {userLevel === "unassessed" ? "New Learner" : `Level ${userLevel} Learner`}
-              </Text>
+              <Text style={styles.profileTitle}>{displayName || "Your profile"}</Text>
+              {profile?.email ? (
+                <Text style={styles.profileEmail}>{profile.email}</Text>
+              ) : null}
               <Text style={styles.profileSubtitle}>
-                {levelName} • CEFR Reference: {cefrRef}
+                {userLevel === "unassessed"
+                  ? "Diagnostic not taken yet"
+                  : `Level ${userLevel} · ${levelName} · CEFR ${cefrRef}`}
               </Text>
 
               <Pressable
@@ -1076,23 +1215,27 @@ export default function DashboardScreen() {
                 onPress={() => router.push("/assessment")}
               >
                 <Ionicons name="mic-outline" size={16} color={theme.colors.paleIris} />
-                <Text style={styles.retakeAssessmentBtnText}>Retake Diagnostic Assessment →</Text>
+                <Text style={styles.retakeAssessmentBtnText}>
+                  {userLevel === "unassessed"
+                    ? "Take Diagnostic Assessment →"
+                    : "Retake Diagnostic Assessment →"}
+                </Text>
               </Pressable>
             </View>
 
             {/* Quick Stats Grid */}
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>{progress?.total_sessions || 0}</Text>
+                <Text style={styles.statNum}>{totalSessions}</Text>
                 <Text style={styles.statLbl}>SESSIONS</Text>
               </View>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>{Math.round(progress?.total_practice_minutes || 0)}m</Text>
+                <Text style={styles.statNum}>{totalMinutes}m</Text>
                 <Text style={styles.statLbl}>MINUTES</Text>
               </View>
               <View style={styles.statBox}>
-                <Text style={styles.statNum}>{mistakes.length}</Text>
-                <Text style={styles.statLbl}>CORRECTIONS</Text>
+                <Text style={styles.statNum}>{streakDays}</Text>
+                <Text style={styles.statLbl}>DAY STREAK</Text>
               </View>
             </View>
 
@@ -1325,6 +1468,14 @@ const styles = StyleSheet.create({
   appBarLeft: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 12,
+    flexShrink: 1,
+  },
+  appBarGreeting: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    flexShrink: 1,
   },
   appBarBrand: {
     flexDirection: "row",
@@ -1387,13 +1538,63 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.irisGleam,
     backgroundColor: theme.colors.graphite,
   },
+  avatarInitials: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+  },
+  avatarLargeInitials: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 24,
+    fontWeight: "700",
+    color: theme.colors.pure,
+  },
+  profileEmail: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    marginTop: 2,
+  },
+  lessonHistoryCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    padding: theme.spacing.md,
+    gap: 8,
+  },
+  lessonHistoryTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  lessonHistoryTitle: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+    textTransform: "capitalize",
+  },
+  lessonHistoryMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  lessonHistoryMeta: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.fog,
+    textTransform: "uppercase",
+  },
   mainContainer: {
     flex: 1,
   },
   mainScroll: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
-    maxWidth: theme.mobile.maxContentWidth,
     width: "100%",
     alignSelf: "center",
   },
@@ -1752,21 +1953,24 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   categoryGrid: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
+    flexDirection: "row",
     flexWrap: "wrap",
     gap: 14,
   },
   categoryTile: {
-    flex: 1,
-    minWidth: 260,
+    flexGrow: 1,
+    flexBasis: "100%",
     borderRadius: theme.radii.tile,
     padding: 24,
-    minHeight: 210,
+    minHeight: 190,
     justifyContent: "space-between",
     ...theme.shadows.card,
     ...Platform.select({
       web: { cursor: "pointer" as any },
     }),
+  },
+  categoryTileWide: {
+    flexBasis: "47%",
   },
   categoryTileMono: {
     color: theme.colors.pure,

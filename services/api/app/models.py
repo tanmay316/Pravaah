@@ -18,6 +18,7 @@ class SessionMode(str, Enum):
     grammar_practice = "grammar_practice"
     vocabulary_practice = "vocabulary_practice"
     roleplay = "roleplay"
+    assessment = "assessment"
 
 
 class ErrorCode(str, Enum):
@@ -50,10 +51,26 @@ class ErrorResponse(BaseModel):
 # Session
 # ---------------------------------------------------------------------------
 
+class ConversationGoal(str, Enum):
+    """How the learner wants the session to be steered."""
+    intro = "intro"
+    grammar = "grammar"
+    vocabulary = "vocabulary"
+    roleplay = "roleplay"
+    fluency = "fluency"
+    assessment = "assessment"
+
+
 class CreateSessionRequest(BaseModel):
     mode: SessionMode = SessionMode.free_conversation
     target_skill: Optional[str] = None
     lesson_id: Optional[str] = None
+    topic: Optional[str] = Field(
+        default=None, max_length=120,
+        description="Learner-chosen subject, e.g. 'job interview', 'cricket', 'my daily routine'.",
+    )
+    conversation_goal: Optional[ConversationGoal] = None
+    roleplay_scenario: Optional[str] = Field(default=None, max_length=160)
 
 
 class CreateSessionResponse(BaseModel):
@@ -115,6 +132,9 @@ class LessonRecord(BaseModel):
 
 class LearnerProfile(BaseModel):
     uid: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    photo_url: Optional[str] = None
     pravaah_level: str = "unassessed"
     cefr_reference: Optional[str] = "unassessed"
     # Legacy internal field accepted for existing Firestore documents; clients
@@ -133,10 +153,16 @@ class LearnerProfile(BaseModel):
     current_focus: Optional[str] = "past_simple_auxiliary"
     skill_mastery: dict[str, float] = Field(default_factory=dict)
     recommended_lesson: Optional[PersonalizedLesson] = None
+    streak_days: int = 0
+    total_sessions: int = 0
+    total_practice_minutes: int = 0
+    last_practice_date: Optional[str] = None
+    last_assessed_at: Optional[str] = None
     created_at: Optional[datetime] = None
 
 
 class UpdateProfileRequest(BaseModel):
+    display_name: Optional[str] = None
     daily_goal_minutes: Optional[int] = None
     hindi_support: Optional[str] = None  # high | occasional | minimal | off
     target_language: Optional[str] = None
@@ -272,9 +298,16 @@ class SessionSummary(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     summary: Optional[str] = None
+    state: Optional[str] = None
+    target_skill: Optional[str] = None
+    lesson_id: Optional[str] = None
+    topic: Optional[str] = None
+    conversation_goal: Optional[str] = None
+    duration_seconds: Optional[int] = None
     duration_minutes: Optional[float] = None
     learner_speaking_time_seconds: Optional[int] = None
     idle_time_seconds: Optional[int] = None
+    metrics: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

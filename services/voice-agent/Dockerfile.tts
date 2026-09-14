@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY services/voice-agent/requirements.txt requirements.txt
+COPY services/voice-agent/requirements-tts.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/voice-agent/ /app/

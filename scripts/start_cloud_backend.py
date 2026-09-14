@@ -1,17 +1,20 @@
 """
-Pravaah — Lightweight Cloud Backend Launcher (Memory-Optimized for 512MB RAM)
-Runs 2 streamlined components in a single container:
-  1. LiveKit Cloud Voice Agent Worker (Outbound WebSocket)
-  2. Unified FastAPI REST Backend + Embedded Neural TTS (Port $PORT / 10000)
+Pravaah — Cloud Backend Launcher
+
+Starts the FastAPI REST API (plus the embedded neural TTS route) on $PORT.
+
+The LiveKit voice agent is NOT started here by default. A realtime agent needs a CPU core
+it does not have to share; co-hosting it with the API on a 0.1-vCPU box starves both and
+produces the "job executor is unresponsive" / no-audio failure mode. Deploy the agent
+separately (see docs/DEPLOYMENT.md), or set RUN_VOICE_AGENT=true on a host with >=1 vCPU
+and >=1GB RAM to run both in one container.
 """
 
-import json
 import logging
 import os
 import signal
 import subprocess
 import sys
-import time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("pravaah-launcher")
@@ -30,20 +33,24 @@ if existing_pp:
 os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 
 port = int(os.environ.get("PORT", "10000"))
-
-# Configure internal TTS endpoint for Voice Agent (points directly to embedded FastAPI TTS route)
-os.environ["KOKORO_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# Production API keys & LiveKit configuration fallbacks
-os.environ.setdefault("GROQ_API_KEY", "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")
-os.environ.setdefault("GEMINI_API_KEY", "AQ.Ab8RN6KQ_abjwuBUgtrk66wCoorKZEG9FQ3bNchtgRpjPBofJA")
-os.environ.setdefault("LIVEKIT_URL", "wss://pravaah-qj6q5gxo.livekit.cloud")
-os.environ.setdefault("LIVEKIT_API_KEY", "API2fUzNgAFpRVd")
-os.environ.setdefault("LIVEKIT_API_SECRET", "GPPwPf99lIfY125aEcxJLK9amIEffgbVmEKuh71g55lD")
+RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "false").lower() in {"1", "true", "yes"}
+
+# Credentials come from the environment only. Never commit keys to the repo: anything
+# checked in is public to everyone who can read it and must be treated as compromised.
+REQUIRED_VARS = ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]
+missing = [name for name in REQUIRED_VARS if not os.environ.get(name)]
+if missing:
+    logger.warning(
+        "Missing required environment variables: %s. Voice sessions will fail until they are set.",
+        ", ".join(missing),
+    )
+if not os.environ.get("GROQ_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+    logger.warning("Neither GROQ_API_KEY nor GEMINI_API_KEY is set; language analysis will not run.")
+
 os.environ.setdefault("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b")
 os.environ.setdefault("GROQ_VOICE_MODEL", "openai/gpt-oss-20b")
-
 
 # Handle Firebase Service Account JSON env var if present
 sa_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
@@ -53,12 +60,14 @@ if sa_json:
         secret_file = os.path.join(secrets_dir, "firebase-service-account.json")
         with open(secret_file, "w", encoding="utf-8") as f:
             f.write(sa_json)
+        os.chmod(secret_file, 0o600)
         os.environ["FIREBASE_SERVICE_ACCOUNT_PATH"] = secret_file
         logger.info("Firebase service account credentials written to %s", secret_file)
     except Exception as e:
         logger.warning("Could not write service account JSON: %s", e)
 
 processes = []
+
 
 def cleanup(signum=None, frame=None):
     logger.info("Terminating background processes...")
@@ -67,29 +76,34 @@ def cleanup(signum=None, frame=None):
             p.terminate()
     sys.exit(0)
 
+
 signal.signal(signal.SIGTERM, cleanup)
 signal.signal(signal.SIGINT, cleanup)
 
+
 def main():
     logger.info("==================================================")
-    logger.info("   Starting Pravaah Unified Cloud Backend         ")
+    logger.info("   Starting Pravaah Cloud Backend                 ")
     logger.info("==================================================")
 
-    # 1. Start LiveKit Cloud Voice Agent Worker (agent.py start)
-    livekit_url = os.environ.get("LIVEKIT_URL")
-    if livekit_url:
-        logger.info("[1/2] Starting LiveKit Voice Agent Worker (%s)...", livekit_url)
-        agent_proc = subprocess.Popen(
-            [sys.executable, "agent.py", "start"],
-            cwd=voice_agent_dir,
-            env=os.environ.copy()
-        )
-        processes.append(agent_proc)
+    if RUN_VOICE_AGENT:
+        if os.environ.get("LIVEKIT_URL"):
+            logger.info("Starting co-hosted LiveKit Voice Agent Worker (%s)...", os.environ["LIVEKIT_URL"])
+            # The co-hosted agent talks to this same container's TTS route.
+            os.environ.setdefault("TTS_BASE_URL", f"http://127.0.0.1:{port}/v1")
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "agent.py", "start"],
+                    cwd=voice_agent_dir,
+                    env=os.environ.copy(),
+                )
+            )
+        else:
+            logger.error("RUN_VOICE_AGENT is set but LIVEKIT_URL is not; the agent was NOT started.")
     else:
-        logger.warning("[1/2] LIVEKIT_URL not set! Voice Agent Worker was NOT started.")
+        logger.info("Voice agent not co-hosted (RUN_VOICE_AGENT=false). Deploy it separately.")
 
-    # 2. Start Unified FastAPI REST Server (serves API + Embedded TTS)
-    logger.info("[2/2] Starting FastAPI REST API & Embedded TTS on port %d...", port)
+    logger.info("Starting FastAPI REST API & embedded TTS on port %d...", port)
     import uvicorn
     try:
         uvicorn.run("app.main:app", host="0.0.0.0", port=port, app_dir=api_dir)
@@ -97,6 +111,7 @@ def main():
         logger.error("Uvicorn runtime error: %s", exc, exc_info=True)
     finally:
         cleanup()
+
 
 if __name__ == "__main__":
     main()

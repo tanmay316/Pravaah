@@ -2,6 +2,7 @@
 English Coach AI — Authentication dependencies for FastAPI.
 """
 
+import os
 import uuid
 from typing import Annotated
 
@@ -9,6 +10,8 @@ from fastapi import Depends, Header, Request
 
 from .firebase import verify_firebase_token
 from .models import ErrorCode
+
+ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "false").lower() in {"1", "true", "yes"}
 
 
 class AuthError(Exception):
@@ -37,7 +40,9 @@ async def get_current_user(
 
     id_token = authorization.removeprefix("Bearer ").strip()
 
-    if id_token.startswith("demo_") or id_token == "test-token" or id_token == "mock_token":
+    # Unauthenticated test/demo bypass. Off by default: with it on, anyone can read or
+    # write another learner's data just by guessing a "demo_" token.
+    if ALLOW_DEMO_AUTH and (id_token.startswith("demo_") or id_token in {"test-token", "mock_token"}):
         return {"uid": id_token if id_token.startswith("demo_") else "demo_learner_2026", "email": f"{id_token}@pravaah.ai"}
 
     try:

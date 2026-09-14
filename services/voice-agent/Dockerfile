@@ -11,8 +11,12 @@ COPY services/voice-agent/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/voice-agent/ /app/
-COPY services/learning-engine/ /services/learning-engine/
 
-ENV PYTHONPATH="/app:/services/learning-engine:${PYTHONPATH}"
+# Downloads the Silero VAD weights at build time so the first job does not stall on them.
+RUN python -c "from livekit.plugins import silero; silero.VAD.load()" || true
+
+# TTS_BASE_URL must point at an OpenAI-compatible /v1/audio/speech endpoint that is not
+# competing with this process for CPU (the Pravaah API serves one at /v1).
+ENV TTS_BASE_URL=""
 
 CMD ["python", "agent.py", "start"]

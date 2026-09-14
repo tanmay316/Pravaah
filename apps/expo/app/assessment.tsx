@@ -155,7 +155,10 @@ export default function AssessmentScreen() {
 
     async function initLiveKitAssessment() {
       try {
-        const sessionRes = await createSession("assessment");
+        const sessionRes = await createSession({
+          mode: "assessment",
+          conversationGoal: "assessment",
+        });
         setSessionId(sessionRes.session_id);
 
         const room = new Room({

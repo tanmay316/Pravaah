@@ -20,16 +20,71 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Room, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } from "livekit-client";
-import { completeDailyActivity, completeSession, createSession } from "../lib/api";
+import {
+  completeDailyActivity,
+  completeSession,
+  createSession,
+  ConversationGoal,
+} from "../lib/api";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
+
+/** Session goals the coach knows how to open on and steer towards. */
+const GOAL_OPTIONS: {
+  goal: ConversationGoal;
+  label: string;
+  blurb: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}[] = [
+  { goal: "intro", label: "Friendly chat", blurb: "Relaxed conversation to warm up", icon: "cafe-outline" },
+  { goal: "grammar", label: "Grammar focus", blurb: "Polish tenses and sentence shape", icon: "construct-outline" },
+  { goal: "vocabulary", label: "Vocabulary", blurb: "Natural expressions and collocations", icon: "book-outline" },
+  { goal: "roleplay", label: "Roleplay", blurb: "Interview, meeting, client call", icon: "people-outline" },
+  { goal: "fluency", label: "Speaking time", blurb: "You talk, I mostly listen", icon: "mic-outline" },
+];
+
+const TOPIC_SUGGESTIONS = [
+  "My daily routine",
+  "My work",
+  "Travel",
+  "Movies & shows",
+  "Cricket",
+  "Technology",
+  "Food & cooking",
+  "College life",
+  "Weekend plans",
+];
+
+const ROLEPLAY_SCENARIOS = [
+  "a job interview",
+  "a client call",
+  "a team standup",
+  "ordering at a restaurant",
+  "checking into a hotel",
+  "a customer support call",
+];
+
+function defaultGoalForMode(mode?: string): ConversationGoal {
+  switch (mode) {
+    case "grammar_practice":
+      return "grammar";
+    case "vocabulary_practice":
+      return "vocabulary";
+    case "roleplay":
+      return "roleplay";
+    default:
+      return "intro";
+  }
+}
 
 interface TranscriptTurn {
   id: string;
@@ -48,6 +103,8 @@ interface InSessionCorrection {
 
 export default function SessionScreen() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isCompact = width < 480;
   const params = useLocalSearchParams<{
     mode?: string;
     target_skill?: string;
@@ -56,9 +113,14 @@ export default function SessionScreen() {
     stage?: string;
   }>();
 
+  // The learner chooses a topic and a goal before we create the session, because both are
+  // baked into the LiveKit token the coach reads to build its opening line.
   const [sessionStatus, setSessionStatus] = useState<
-    "preconnecting" | "ready" | "starting" | "active" | "ended"
-  >("preconnecting");
+    "choosing" | "starting" | "active" | "ended"
+  >("choosing");
+  const [topic, setTopic] = useState("");
+  const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(params.mode));
+  const [roleplayScenario, setRoleplayScenario] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
@@ -73,7 +135,6 @@ export default function SessionScreen() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [preconnectError, setPreconnectError] = useState(false);
 
   // LiveKit Room ref
   const roomRef = useRef<Room | null>(null);
@@ -179,138 +240,35 @@ export default function SessionScreen() {
     }
   };
 
-  // Pre-connect on screen mount
-  useEffect(() => {
+  const attachAgentAudio = (track: Track) => {
+    if (Platform.OS !== "web" || track.kind !== Track.Kind.Audio) return;
+    if (audioElementRef.current) {
+      try {
+        audioElementRef.current.remove();
+      } catch {}
+    }
+    const audioElement = track.attach() as HTMLAudioElement;
+    audioElementRef.current = audioElement;
+    audioElement.autoplay = true;
+    audioElement.style.display = "none";
+    document.body.appendChild(audioElement);
+    audioElement.play().catch((e) => console.debug("Audio play pending gesture:", e));
+  };
+
+  // Create the session and join. Driven by an explicit tap so the browser lets us play
+  // audio and so the topic/goal the learner picked is what the coach receives.
+  const handleStartConversation = async () => {
     if (preconnectedRef.current) return;
     preconnectedRef.current = true;
 
-    const preconnect = async () => {
-      try {
-        const sessionRes = await createSession(
-          params.mode || "free_conversation",
-          params.target_skill,
-          params.lesson_id
-        );
-        setSessionId(sessionRes.session_id);
+    setSessionStatus("starting");
+    setErrorMessage(null);
 
-        const room = new Room({
-          adaptiveStream: true,
-          dynacast: true,
-          audioCaptureDefaults: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            channelCount: 1,
-          },
-        });
-        roomRef.current = room;
-
-        room.on(RoomEvent.Connected, () => {
-          setSessionStatus("ready");
-          setReconnecting(false);
-        });
-
-        room.on(RoomEvent.Reconnecting, () => {
-          setReconnecting(true);
-        });
-
-        room.on(RoomEvent.Reconnected, () => {
-          setReconnecting(false);
-        });
-
-        room.on(RoomEvent.Disconnected, () => {
-          setSessionStatus((prev) => (prev !== "ended" ? "ended" : prev));
-        });
-
-        room.on(RoomEvent.TrackSubscribed, (track: Track) => {
-          if (track.kind === Track.Kind.Audio) {
-            if (Platform.OS === "web") {
-              if (audioElementRef.current) {
-                try {
-                  audioElementRef.current.remove();
-                } catch {}
-              }
-              const audioElement = track.attach();
-              audioElementRef.current = audioElement;
-              audioElement.autoplay = true;
-              audioElement.style.display = "none";
-              document.body.appendChild(audioElement);
-              audioElement.play().catch((e) => console.debug("Audio play pending click gesture:", e));
-            }
-          }
-        });
-
-        room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-          const remoteSpeaking = speakers.some((s) => !s.isLocal);
-          agentSpeakingRef.current = remoteSpeaking;
-          setAgentSpeaking(remoteSpeaking);
-          if (remoteSpeaking) {
-            setLearnerSpeaking(false);
-          }
-        });
-
-        room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
-          try {
-            const str = new TextDecoder().decode(payload);
-            const data = JSON.parse(str);
-            if (data.type === "correction") {
-              setActiveCorrection({
-                card_type: data.card_type || "correction",
-                original: data.original,
-                corrected: data.corrected,
-                explanation: data.explanation,
-                target_skill: data.target_skill,
-              });
-              setCorrectionCount((prev) => prev + 1);
-            } else if (data.type === "turn" && data.text) {
-              setTranscript((prev) => {
-                const spk: "learner" | "tutor" = data.speaker === "learner" ? "learner" : "tutor";
-                const last = prev[prev.length - 1];
-                if (last && last.speaker === spk && last.text.trim().toLowerCase() === data.text.trim().toLowerCase()) {
-                  return prev;
-                }
-                const nextList = [
-                  ...prev,
-                  {
-                    id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                    speaker: spk,
-                    text: data.text,
-                    timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                  },
-                ];
-                setTimeout(() => {
-                  transcriptScrollRef.current?.scrollToEnd({ animated: true });
-                }, 100);
-                return nextList;
-              });
-            }
-          } catch (e) {
-            console.debug("Data message parse note:", e);
-          }
-        });
-
-        await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
-      } catch (err: any) {
-        console.warn("Pre-connect error:", err);
-        setPreconnectError(true);
-        setErrorMessage(err.message || "Failed to prepare session. Please try again.");
-        setSessionStatus("ready");
-      }
-    };
-
-    preconnect();
-  }, [params.lesson_id, params.mode, params.target_skill]);
-
-  // Start Speaking
-  const handleStartConversation = async () => {
     try {
-      setSessionStatus("starting");
-      setErrorMessage(null);
-
       if (Platform.OS === "web" && typeof window !== "undefined") {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
-          const ctx = new AudioCtx();
+          const ctx = audioContextRef.current || new AudioCtx();
           audioContextRef.current = ctx;
           if (ctx.state === "suspended") {
             await ctx.resume();
@@ -318,32 +276,99 @@ export default function SessionScreen() {
         }
       }
 
-      const room = roomRef.current;
-      if (!room) {
-        throw new Error("Room not initialized. Please try again.");
-      }
+      const sessionRes = await createSession({
+        mode: params.mode || "free_conversation",
+        targetSkill: params.target_skill,
+        lessonId: params.lesson_id,
+        topic,
+        conversationGoal: goal,
+        roleplayScenario: goal === "roleplay" ? roleplayScenario : undefined,
+      });
+      setSessionId(sessionRes.session_id);
 
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+      roomRef.current = room;
+
+      room.on(RoomEvent.Reconnecting, () => setReconnecting(true));
+      room.on(RoomEvent.Reconnected, () => setReconnecting(false));
+      room.on(RoomEvent.Disconnected, () => {
+        setSessionStatus((prev) => (prev !== "ended" ? "ended" : prev));
+      });
+
+      room.on(RoomEvent.TrackSubscribed, attachAgentAudio);
+
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const remoteSpeaking = speakers.some((s) => !s.isLocal);
+        agentSpeakingRef.current = remoteSpeaking;
+        setAgentSpeaking(remoteSpeaking);
+        if (remoteSpeaking) {
+          setLearnerSpeaking(false);
+        }
+      });
+
+      room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload));
+          if (data.type === "correction") {
+            setActiveCorrection({
+              card_type: data.card_type || "correction",
+              original: data.original,
+              corrected: data.corrected,
+              explanation: data.explanation,
+              target_skill: data.target_skill,
+            });
+            setCorrectionCount((prev) => prev + 1);
+          } else if (data.type === "turn" && data.text) {
+            setTranscript((prev) => {
+              const spk: "learner" | "tutor" = data.speaker === "learner" ? "learner" : "tutor";
+              const last = prev[prev.length - 1];
+              if (
+                last &&
+                last.speaker === spk &&
+                last.text.trim().toLowerCase() === data.text.trim().toLowerCase()
+              ) {
+                return prev;
+              }
+              setTimeout(() => {
+                transcriptScrollRef.current?.scrollToEnd({ animated: true });
+              }, 100);
+              return [
+                ...prev,
+                {
+                  id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  speaker: spk,
+                  text: data.text,
+                  timestamp:
+                    data.timestamp ||
+                    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                },
+              ];
+            });
+          }
+        } catch (e) {
+          console.debug("Data message parse note:", e);
+        }
+      });
+
+      await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
+
+      // Unlock playback for any track that arrived during connect.
       try {
         await room.startAudio();
-        if (audioElementRef.current) {
-          await audioElementRef.current.play().catch(() => {});
-        }
-        if (Platform.OS === "web") {
-          room.remoteParticipants.forEach((p) => {
-            p.trackPublications.forEach((pub) => {
-              if (pub.track && pub.track.kind === Track.Kind.Audio) {
-                if (!audioElementRef.current || !document.body.contains(audioElementRef.current)) {
-                  const el = pub.track.attach();
-                  audioElementRef.current = el;
-                  el.autoplay = true;
-                  el.style.display = "none";
-                  document.body.appendChild(el);
-                }
-                audioElementRef.current?.play().catch((e) => console.debug("Audio play catch:", e));
-              }
-            });
+        room.remoteParticipants.forEach((p) => {
+          p.trackPublications.forEach((pub) => {
+            if (pub.track) attachAgentAudio(pub.track);
           });
-        }
+        });
       } catch (e) {
         console.debug("Audio unlock note:", e);
       }
@@ -355,16 +380,18 @@ export default function SessionScreen() {
         channelCount: 1,
       });
 
-      const audioTracks = room.localParticipant.audioTrackPublications;
-      audioTracks.forEach((pub) => {
+      room.localParticipant.audioTrackPublications.forEach((pub) => {
         if (pub.track?.mediaStream) {
           setupAudioVisualizer(pub.track.mediaStream);
         }
       });
 
+      // Tells the agent the learner can hear us, so it greets immediately.
       try {
-        const startMsg = JSON.stringify({ type: "start_conversation" });
-        await room.localParticipant.publishData(new TextEncoder().encode(startMsg), { reliable: true });
+        await room.localParticipant.publishData(
+          new TextEncoder().encode(JSON.stringify({ type: "start_conversation" })),
+          { reliable: true }
+        );
       } catch (e) {
         console.debug("Start signal broadcast note:", e);
       }
@@ -382,8 +409,17 @@ export default function SessionScreen() {
       }, 1000);
     } catch (err: any) {
       console.warn("Start conversation error:", err);
-      setErrorMessage(err.message || "Failed to enable microphone. Please try again.");
-      setSessionStatus("ready");
+      preconnectedRef.current = false;
+      try {
+        roomRef.current?.disconnect();
+      } catch {}
+      roomRef.current = null;
+      setErrorMessage(
+        err?.message === "NOT_AUTHENTICATED"
+          ? "Your session expired. Please sign in again."
+          : err?.message || "Could not start the conversation. Please try again."
+      );
+      setSessionStatus("choosing");
     }
   };
 
@@ -491,12 +527,11 @@ export default function SessionScreen() {
   };
 
   // =========================================================================
-  // VIEW 1: PRE-SESSION SETUP SCREEN
+  // VIEW 1: TOPIC & GOAL PICKER
   // =========================================================================
-  if (sessionStatus === "preconnecting" || sessionStatus === "ready" || sessionStatus === "starting") {
-    const isConnecting = sessionStatus === "preconnecting";
+  if (sessionStatus === "choosing" || sessionStatus === "starting") {
     const isStarting = sessionStatus === "starting";
-    const isReady = sessionStatus === "ready" && !preconnectError;
+    const readyToStart = goal !== "roleplay" || !!(roleplayScenario.trim() || topic.trim());
 
     return (
       <View style={[styles.screen, { paddingTop: Math.max(insets.top, 16) }]}>
@@ -524,22 +559,109 @@ export default function SessionScreen() {
             styles.preSessionScroll,
             { paddingBottom: Math.max(insets.bottom + 24, 40) },
           ]}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Hero Visual Sphere */}
           <View style={styles.preSessionHero}>
-            <View style={styles.ambientPulseSphere}>
-              <View style={styles.micCircleBadge}>
-                <Ionicons name="mic" size={40} color={theme.colors.irisGleam} />
-              </View>
-            </View>
-
             <Text style={styles.preSessionTitle}>
-              {params.activity_title || "English Voice Practice"}
+              {params.activity_title || "What shall we talk about?"}
             </Text>
             <Text style={styles.preSessionSubhead}>
-              Speak freely. Hindi or English — Coach Pravaah will listen and guide you naturally.
+              Pick a subject and a goal. Coach Pravaah opens on your topic and keeps the
+              conversation there.
             </Text>
+          </View>
+
+          {/* Step 1 — Topic */}
+          <View style={styles.setupCard}>
+            <Text style={styles.setupStepLabel}>1 · YOUR TOPIC</Text>
+            <TextInput
+              style={styles.topicInput}
+              placeholder="e.g. my new job, last weekend, cricket…"
+              placeholderTextColor={theme.colors.steel}
+              value={topic}
+              onChangeText={setTopic}
+              maxLength={120}
+              returnKeyType="done"
+            />
+            <View style={styles.chipWrap}>
+              {TOPIC_SUGGESTIONS.map((t) => {
+                const selected = topic.trim().toLowerCase() === t.toLowerCase();
+                return (
+                  <Pressable
+                    key={t}
+                    style={[styles.suggestChip, selected && styles.suggestChipActive]}
+                    onPress={() => setTopic(selected ? "" : t)}
+                  >
+                    <Text style={[styles.suggestChipText, selected && styles.suggestChipTextActive]}>
+                      {t}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Step 2 — Goal */}
+          <View style={styles.setupCard}>
+            <Text style={styles.setupStepLabel}>2 · HOW SHOULD WE PRACTISE?</Text>
+            <View style={styles.goalGrid}>
+              {GOAL_OPTIONS.map((opt) => {
+                const selected = goal === opt.goal;
+                return (
+                  <Pressable
+                    key={opt.goal}
+                    style={({ pressed }) => [
+                      styles.goalCard,
+                      isCompact ? styles.goalCardFull : styles.goalCardHalf,
+                      selected && styles.goalCardActive,
+                      pressed && styles.btnPressed,
+                    ]}
+                    onPress={() => setGoal(opt.goal)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                  >
+                    <Ionicons
+                      name={opt.icon}
+                      size={20}
+                      color={selected ? theme.colors.irisGleam : theme.colors.ash}
+                    />
+                    <View style={styles.goalCardTextCol}>
+                      <Text style={[styles.goalCardTitle, selected && styles.goalCardTitleActive]}>
+                        {opt.label}
+                      </Text>
+                      <Text style={styles.goalCardBlurb} numberOfLines={2}>
+                        {opt.blurb}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {goal === "roleplay" ? (
+              <View style={styles.scenarioBlock}>
+                <Text style={styles.scenarioLabel}>Which scenario?</Text>
+                <View style={styles.chipWrap}>
+                  {ROLEPLAY_SCENARIOS.map((s) => {
+                    const selected = roleplayScenario === s;
+                    return (
+                      <Pressable
+                        key={s}
+                        style={[styles.suggestChip, selected && styles.suggestChipActive]}
+                        onPress={() => setRoleplayScenario(selected ? "" : s)}
+                      >
+                        <Text
+                          style={[styles.suggestChipText, selected && styles.suggestChipTextActive]}
+                        >
+                          {s}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
           </View>
 
           {params.target_skill ? (
@@ -551,7 +673,6 @@ export default function SessionScreen() {
             </View>
           ) : null}
 
-          {/* Audio Tips */}
           <View style={styles.tipsCard}>
             <View style={styles.tipItem}>
               <Ionicons name="headset-outline" size={20} color={theme.colors.paleIris} />
@@ -572,28 +693,27 @@ export default function SessionScreen() {
             </View>
           ) : null}
 
-          {/* Primary Action */}
           <View style={styles.preSessionActionContainer}>
             <Pressable
               style={({ pressed }) => [
                 styles.startCallBtn,
-                (!isReady || isStarting) && styles.btnDisabled,
-                pressed && isReady && styles.btnPressed,
+                (isStarting || !readyToStart) && styles.btnDisabled,
+                pressed && !isStarting && styles.btnPressed,
               ]}
               onPress={handleStartConversation}
-              disabled={!isReady || isStarting}
+              disabled={isStarting || !readyToStart}
             >
-              {isStarting || isConnecting ? (
+              {isStarting ? (
                 <View style={styles.btnLoadingRow}>
                   <ActivityIndicator size="small" color={theme.colors.void} />
-                  <Text style={styles.startCallBtnText}>
-                    {isStarting ? "Connecting to Coach..." : "Preparing Live Audio..."}
-                  </Text>
+                  <Text style={styles.startCallBtnText}>Connecting to Coach…</Text>
                 </View>
               ) : (
                 <View style={styles.btnLoadingRow}>
                   <Ionicons name="call" size={20} color={theme.colors.void} />
-                  <Text style={styles.startCallBtnText}>Start Conversation 🎙️</Text>
+                  <Text style={styles.startCallBtnText}>
+                    {topic.trim() ? `Start talking about ${topic.trim()}` : "Start conversation"}
+                  </Text>
                 </View>
               )}
             </Pressable>
@@ -939,6 +1059,117 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 20,
     paddingHorizontal: theme.spacing.md,
+  },
+  setupCard: {
+    width: "100%",
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.md,
+  },
+  setupStepLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+    marginBottom: theme.spacing.md,
+  },
+  topicInput: {
+    height: theme.mobile.minTouchSize,
+    borderRadius: theme.radii.sm,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    paddingHorizontal: theme.spacing.md,
+    color: theme.colors.pure,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.body,
+    marginBottom: theme.spacing.md,
+  },
+  chipWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  suggestChip: {
+    paddingHorizontal: 12,
+    minHeight: 34,
+    justifyContent: "center",
+    borderRadius: theme.radii.full,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  suggestChipActive: {
+    backgroundColor: "rgba(132, 125, 255, 0.16)",
+    borderColor: theme.colors.borderIris,
+  },
+  suggestChipText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 13,
+    color: theme.colors.ash,
+  },
+  suggestChipTextActive: {
+    color: theme.colors.paleIris,
+    fontWeight: "600",
+  },
+  goalGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  goalCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: theme.mobile.minTouchSize + 12,
+    padding: theme.spacing.md,
+    borderRadius: theme.radii.md,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  goalCardFull: {
+    width: "100%",
+  },
+  goalCardHalf: {
+    flexGrow: 1,
+    flexBasis: "47%",
+  },
+  goalCardActive: {
+    borderColor: theme.colors.borderIris,
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+  },
+  goalCardTextCol: {
+    flex: 1,
+  },
+  goalCardTitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+  },
+  goalCardTitleActive: {
+    color: theme.colors.pure,
+  },
+  goalCardBlurb: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.fog,
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  scenarioBlock: {
+    marginTop: theme.spacing.lg,
+  },
+  scenarioLabel: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    marginBottom: theme.spacing.sm,
   },
   focusCard: {
     width: "100%",

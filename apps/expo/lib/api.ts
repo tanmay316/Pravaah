@@ -10,12 +10,22 @@ import { getIdToken } from "./firebase";
 
 // Dynamic API base resolution
 const getApiBase = (): string => {
-  if (process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL;
+  const configured = process.env.EXPO_PUBLIC_API_URL;
+  if (configured) {
+    return configured.replace(/\/+$/, "");
   }
+  // Only fall back to a dev server when we are actually on a dev origin. On a
+  // deployed HTTPS origin an http://host:8000 guess is blocked as mixed content.
   if (Platform.OS === "web" && typeof window !== "undefined" && window.location) {
-    const host = window.location.hostname || "localhost";
-    return `http://${host}:8000`;
+    const { hostname, protocol } = window.location;
+    const isLocalDev = hostname === "localhost" || hostname === "127.0.0.1" || protocol === "http:";
+    if (isLocalDev) {
+      return `http://${hostname}:8000`;
+    }
+    console.error(
+      "EXPO_PUBLIC_API_URL is not set. Set it to your backend URL (e.g. https://pravaah-backend.onrender.com) before building."
+    );
+    return "";
   }
   return "http://localhost:8000";
 };
@@ -49,6 +59,9 @@ export interface RefreshTokenResponse {
 
 export interface LearnerProfile {
   uid: string;
+  display_name?: string | null;
+  email?: string | null;
+  photo_url?: string | null;
   pravaah_level: "unassessed" | "E" | "D" | "C" | "B" | "A" | "S";
   cefr_reference?: string;
   native_language: string;
@@ -64,6 +77,10 @@ export interface LearnerProfile {
   skill_mastery?: Record<string, number>;
   recommended_lesson?: PersonalizedLesson | null;
   streak_days?: number;
+  total_sessions?: number;
+  total_practice_minutes?: number;
+  last_practice_date?: string | null;
+  last_assessed_at?: string | null;
 }
 
 export interface PersonalizedLesson {
@@ -254,9 +271,11 @@ export interface SessionSummary {
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await getIdToken();
-  const bearerToken = token || "demo_token";
+  if (!token) {
+    throw new Error("NOT_AUTHENTICATED");
+  }
   return {
-    Authorization: `Bearer ${bearerToken}`,
+    Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
 }
@@ -368,17 +387,35 @@ export async function getSessions(): Promise<SessionSummary[]> {
   return apiFetch<SessionSummary[]>("/api/me/sessions", { method: "GET" });
 }
 
+export type ConversationGoal =
+  | "intro"
+  | "grammar"
+  | "vocabulary"
+  | "roleplay"
+  | "fluency"
+  | "assessment";
+
+export interface CreateSessionOptions {
+  mode?: string;
+  targetSkill?: string;
+  lessonId?: string;
+  topic?: string;
+  conversationGoal?: ConversationGoal;
+  roleplayScenario?: string;
+}
+
 export async function createSession(
-  mode: string = "free_conversation",
-  targetSkill?: string,
-  lessonId?: string
+  options: CreateSessionOptions = {}
 ): Promise<CreateSessionResponse> {
   return apiFetch<CreateSessionResponse>("/api/sessions", {
     method: "POST",
     body: JSON.stringify({
-      mode,
-      target_skill: targetSkill,
-      lesson_id: lessonId,
+      mode: options.mode || "free_conversation",
+      target_skill: options.targetSkill || null,
+      lesson_id: options.lessonId || null,
+      topic: options.topic?.trim() || null,
+      conversation_goal: options.conversationGoal || null,
+      roleplay_scenario: options.roleplayScenario?.trim() || null,
     }),
   });
 }

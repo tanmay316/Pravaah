@@ -13,6 +13,24 @@ import { useEffect, useState } from "react";
 import { Platform } from "react-native";
 
 /**
+ * Resolves once Firebase has finished restoring any persisted session.
+ * Anything that needs a uid or an ID token must await this first.
+ */
+let authReadyPromise: Promise<FirebaseAuthTypes.User | null> | null = null;
+
+export function authReady(): Promise<FirebaseAuthTypes.User | null> {
+  if (!authReadyPromise) {
+    authReadyPromise = new Promise((resolve) => {
+      const unsubscribe = auth().onAuthStateChanged((user) => {
+        unsubscribe();
+        resolve(user);
+      });
+    });
+  }
+  return authReadyPromise;
+}
+
+/**
  * Hook that tracks Firebase Auth state.
  * Returns the current user (or null) and a loading flag.
  */
@@ -41,8 +59,12 @@ export async function signInWithEmail(email: string, password: string) {
 /**
  * Create a new account with email and password.
  */
-export async function signUpWithEmail(email: string, password: string) {
-  return auth().createUserWithEmailAndPassword(email, password);
+export async function signUpWithEmail(email: string, password: string, displayName?: string) {
+  const credential = await auth().createUserWithEmailAndPassword(email, password);
+  if (displayName?.trim() && credential.user) {
+    await credential.user.updateProfile({ displayName: displayName.trim() });
+  }
+  return credential;
 }
 
 /**
@@ -85,14 +107,20 @@ export async function signInWithGoogle() {
  * Sign out the current user.
  */
 export async function signOut() {
+  authReadyPromise = null;
   return auth().signOut();
 }
 
 /**
  * Get the current user's Firebase ID token for API requests.
+ * Waits for the persisted session to be restored before giving up.
  */
 export async function getIdToken(): Promise<string | null> {
-  const currentUser = auth().currentUser;
+  const currentUser = auth().currentUser ?? (await authReady());
   if (!currentUser) return null;
   return currentUser.getIdToken();
+}
+
+export function getCurrentUser(): FirebaseAuthTypes.User | null {
+  return auth().currentUser;
 }

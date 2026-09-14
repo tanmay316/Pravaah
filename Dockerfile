@@ -1,8 +1,9 @@
-# Pravaah REST API + embedded neural TTS.
+# Pravaah REST API + embedded neural TTS, and optionally the realtime voice agent.
 #
-# This image deliberately does NOT install livekit-agents: the realtime voice agent is a
-# separate deployment (services/voice-agent/Dockerfile) because it needs a CPU core it does
-# not have to share with HTTP traffic. Set RUN_VOICE_AGENT=true only on a host with >=1 vCPU.
+# RUN_VOICE_AGENT=true co-hosts the LiveKit agent in this container. That is the simplest
+# single-service deployment, but the agent competes with HTTP traffic for CPU; on a 0.1-vCPU
+# instance expect "job executor is unresponsive" in the logs. For anything beyond testing,
+# deploy services/voice-agent separately (see docs/DEPLOYMENT.md).
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -16,13 +17,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY services/api/requirements.txt /app/req-api.txt
 COPY services/learning-engine/requirements.txt /app/req-le.txt
+COPY services/voice-agent/requirements.txt /app/req-voice.txt
 
 RUN pip install --no-cache-dir -r /app/req-api.txt \
-    && pip install --no-cache-dir -r /app/req-le.txt
+    && pip install --no-cache-dir -r /app/req-le.txt \
+    && pip install --no-cache-dir -r /app/req-voice.txt
 
 COPY scripts/ /app/scripts/
 COPY services/api/ /app/services/api/
 COPY services/learning-engine/ /app/services/learning-engine/
+COPY services/voice-agent/ /app/services/voice-agent/
+
+# Bake the Silero VAD weights in so the first call does not stall downloading them.
+RUN python -c "from livekit.plugins import silero; silero.VAD.load()" || true
 
 ENV PORT=10000 \
     PYTHONUNBUFFERED=1

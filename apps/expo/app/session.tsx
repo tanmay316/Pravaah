@@ -134,6 +134,7 @@ export default function SessionScreen() {
   const [repetitionCount, setRepetitionCount] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
+  const [coachJoined, setCoachJoined] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // LiveKit Room ref
@@ -145,6 +146,7 @@ export default function SessionScreen() {
   const analyserRef = useRef<any>(null);
   const animFrameRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
+  const coachWatchdogRef = useRef<any>(null);
   const transcriptScrollRef = useRef<ScrollView | null>(null);
 
   // Track whether we already pre-connected
@@ -304,6 +306,8 @@ export default function SessionScreen() {
         setSessionStatus((prev) => (prev !== "ended" ? "ended" : prev));
       });
 
+      room.on(RoomEvent.ParticipantConnected, () => setCoachJoined(true));
+
       room.on(RoomEvent.TrackSubscribed, attachAgentAudio);
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
@@ -397,6 +401,17 @@ export default function SessionScreen() {
       }
 
       setSessionStatus("active");
+      setCoachJoined(room.remoteParticipants.size > 0);
+
+      // A room with no agent in it looks identical to a working one from the client side,
+      // so say so rather than leaving the learner talking to silence.
+      coachWatchdogRef.current = setTimeout(() => {
+        if (!roomRef.current || roomRef.current.remoteParticipants.size > 0) return;
+        setErrorMessage(
+          "Coach Pravaah hasn't joined this room. The voice agent may not be running — " +
+            "check that the agent worker is deployed and registered with LiveKit."
+        );
+      }, 15000);
 
       timerRef.current = setInterval(() => {
         setSessionSeconds((prev) => prev + 1);
@@ -426,6 +441,7 @@ export default function SessionScreen() {
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (audioContextRef.current) {
         try {
@@ -511,6 +527,7 @@ export default function SessionScreen() {
     if (reconnecting) return "RECONNECTING...";
     if (sessionStatus === "starting") return "CONNECTING...";
     if (sessionStatus === "ended") return "SESSION ENDED";
+    if (!coachJoined) return "WAITING FOR COACH...";
     if (agentSpeaking) return "COACH SPEAKING";
     if (learnerSpeaking) return "YOU ARE SPEAKING";
     if (isMuted) return "MUTED";
@@ -518,7 +535,7 @@ export default function SessionScreen() {
   };
 
   const getSpeakingStateColor = () => {
-    if (reconnecting || sessionStatus === "starting") return theme.colors.amberWarning;
+    if (reconnecting || sessionStatus === "starting" || !coachJoined) return theme.colors.amberWarning;
     if (sessionStatus === "ended") return theme.colors.fog;
     if (agentSpeaking) return theme.colors.orchidBloom;
     if (learnerSpeaking) return theme.colors.cyanSignal;
@@ -765,6 +782,13 @@ export default function SessionScreen() {
 
       {/* Main Conversation Body */}
       <View style={styles.activeCallBody}>
+        {errorMessage ? (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
+            <Text style={styles.errorBannerText}>{errorMessage}</Text>
+          </View>
+        ) : null}
+
         {/* Dynamic Glowing Audio Orb */}
         <View style={styles.visualizerOrbContainer}>
           <View style={[styles.visualizerOrb, { borderColor: getSpeakingStateColor() }]}>

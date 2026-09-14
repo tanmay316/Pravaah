@@ -67,6 +67,7 @@ try:
         apply_proficiency_assessment,
         get_or_create_daily_plan,
         complete_daily_plan_activity,
+        compute_focus_ranking,
         process_event,
         analyze_session_messages,
     )
@@ -420,23 +421,28 @@ async def get_my_mistakes(user: CurrentUser, req_id: RequestId, response: Respon
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
     db = get_firestore_client()
-    results = []
+    base_ref = db.collection("users").document(uid).collection("mistakes")
     try:
-        mistakes_ref = db.collection("users").document(uid).collection("mistakes").order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
-        for doc in mistakes_ref.stream():
-            data = doc.to_dict() or {}
-            data["mistake_id"] = doc.id
-            if "short_explanation" in data and "explanation" not in data:
-                data["explanation"] = data["short_explanation"]
-            results.append(data)
+        docs = base_ref.order_by("created_at", direction=firestore.Query.DESCENDING).limit(300).stream()
     except Exception:
-        mistakes_ref = db.collection("users").document(uid).collection("mistakes").limit(50)
-        for doc in mistakes_ref.stream():
-            data = doc.to_dict() or {}
-            data["mistake_id"] = doc.id
-            if "short_explanation" in data and "explanation" not in data:
-                data["explanation"] = data["short_explanation"]
-            results.append(data)
+        docs = base_ref.limit(300).stream()
+
+    results = []
+    for doc in docs:
+        data = doc.to_dict() or {}
+        data["mistake_id"] = doc.id
+        if "short_explanation" in data and "explanation" not in data:
+            data["explanation"] = data["short_explanation"]
+        # The client groups by skill and then by day, so both must always be present.
+        if not data.get("curriculum_skill_id"):
+            data["curriculum_skill_id"] = data.get("category") or "sentence_structure"
+        created = data.get("created_at")
+        if hasattr(created, "isoformat"):
+            data["created_at"] = created.isoformat()
+        elif created is not None:
+            data["created_at"] = str(created)
+        data.pop("updated_at", None)
+        results.append(data)
     return results
 
 
@@ -919,6 +925,38 @@ async def complete_activity_in_daily_plan(
         learner_speaking_time_seconds=body.learner_speaking_time_seconds,
         idle_time_seconds=body.idle_time_seconds,
     )
+    return DailyLearningPlanModel(**plan)
+
+
+@app.get("/api/me/focus")
+async def get_focus_ranking(
+    user: CurrentUser,
+    req_id: RequestId,
+    response: Response,
+):
+    """
+    The learner's skills ordered by how urgently they need work, derived from the mistakes
+    actually recorded in their sessions rather than from the one-off assessment. Drives the
+    Lessons page and the ordering of today's plan.
+    """
+    response.headers["X-Request-ID"] = req_id
+    try:
+        ranking = compute_focus_ranking(user["uid"])
+    except Exception as exc:
+        logging.getLogger("api").error("Focus ranking failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="Focus ranking is temporarily unavailable.")
+    return {"skills": ranking}
+
+
+@app.post("/api/me/daily-plan/refresh", response_model=DailyLearningPlanModel)
+async def refresh_daily_plan(
+    user: CurrentUser,
+    req_id: RequestId,
+    response: Response,
+):
+    """Rebuild today's plan against the latest mistake evidence."""
+    response.headers["X-Request-ID"] = req_id
+    plan = get_or_create_daily_plan(user_id=user["uid"], force_regenerate=True)
     return DailyLearningPlanModel(**plan)
 
 

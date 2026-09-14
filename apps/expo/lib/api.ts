@@ -225,13 +225,40 @@ export interface Mistake {
   session_id: string;
   message_id?: string;
   category: string;
+  curriculum_skill_id?: string;
   original: string;
   corrected: string;
   explanation: string;
   severity: "low" | "medium" | "high";
   confidence?: number;
+  created_at?: string;
   timestamp?: string;
   repeated_correctly?: boolean;
+}
+
+/** One curriculum skill, scored by how urgently the learner needs to practise it. */
+export interface FocusSkill {
+  skill_id: string;
+  title: string;
+  category: string;
+  cefr_level: string;
+  rule_summary: string;
+  memory_hook?: string;
+  practice_activity?: string;
+  mastery: number;
+  mistake_count: number;
+  failed_repetitions: number;
+  attempts: number;
+  stage: string;
+  priority_score: number;
+  reason:
+    | "recent_mistakes"
+    | "failed_repetitions"
+    | "low_mastery"
+    | "developing"
+    | "mastered";
+  last_mistake_at?: string | null;
+  recent_examples?: { original: string; corrected: string }[];
 }
 
 export interface VocabularyEntry {
@@ -369,6 +396,15 @@ export async function submitProficiencyAssessment(
 
 export async function getMistakes(): Promise<Mistake[]> {
   return apiFetch<Mistake[]>("/api/me/mistakes", { method: "GET" });
+}
+
+export async function getFocusSkills(): Promise<FocusSkill[]> {
+  const res = await apiFetch<{ skills: FocusSkill[] }>("/api/me/focus", { method: "GET" });
+  return res.skills || [];
+}
+
+export async function refreshDailyPlan(): Promise<DailyLearningPlan> {
+  return apiFetch<DailyLearningPlan>("/api/me/daily-plan/refresh", { method: "POST" });
 }
 
 export async function getVocabulary(): Promise<VocabularyEntry[]> {

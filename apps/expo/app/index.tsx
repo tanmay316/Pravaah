@@ -13,12 +13,14 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -32,12 +34,15 @@ import {
   getVocabulary,
   getProgress,
   getLessons,
+  getFocusSkills,
+  refreshDailyPlan,
   setDailyGoal,
   updateProfile,
   deleteAccount,
   LearnerProfile,
   DailyLearningPlan,
   DailyPlanActivity,
+  FocusSkill,
   LessonRecord,
   Mistake,
   VocabularyEntry,
@@ -54,6 +59,99 @@ import {
 } from "../lib/notifications";
 
 type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
+
+const SKILL_LABELS: Record<string, string> = {
+  past_simple_auxiliary: "Past Simple (did/didn't)",
+  past_simple: "Past Simple",
+  stative_verbs: "Stative Verbs",
+  subject_verb_agreement: "Subject-Verb Agreement",
+  be_verb_misuse: "Be-Verb Usage",
+  prepositions: "Prepositions",
+  articles: "Articles",
+  collocations: "Collocations",
+  sentence_structure: "Sentence Structure",
+};
+
+const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
+  recent_mistakes: "RECENT MISTAKES",
+  failed_repetitions: "KEEPS SLIPPING",
+  low_mastery: "NEEDS WORK",
+  developing: "DEVELOPING",
+  mastered: "MASTERED",
+};
+
+function skillLabel(id?: string | null): string {
+  if (!id) return "General";
+  return SKILL_LABELS[id] || id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatDayLabel(iso?: string): string {
+  if (!iso) return "Earlier";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "Earlier";
+  const today = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(today) - startOfDay(date)) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+interface MistakeGroup {
+  skillId: string;
+  title: string;
+  total: number;
+  latestIso?: string;
+  days: { key: string; label: string; items: Mistake[] }[];
+}
+
+/** Groups mistakes by curriculum skill, then by calendar day, newest first. */
+function groupMistakes(mistakes: Mistake[]): MistakeGroup[] {
+  const bySkill = new Map<string, Mistake[]>();
+  for (const m of mistakes) {
+    const key = m.curriculum_skill_id || m.category || "sentence_structure";
+    const list = bySkill.get(key);
+    if (list) list.push(m);
+    else bySkill.set(key, [m]);
+  }
+
+  const groups: MistakeGroup[] = [];
+  bySkill.forEach((items, skillId) => {
+    const sorted = [...items].sort(
+      (a, b) =>
+        new Date(b.created_at || b.timestamp || 0).getTime() -
+        new Date(a.created_at || a.timestamp || 0).getTime()
+    );
+
+    const byDay = new Map<string, Mistake[]>();
+    for (const m of sorted) {
+      const iso = m.created_at || m.timestamp;
+      const date = iso ? new Date(iso) : null;
+      const key =
+        date && !Number.isNaN(date.getTime()) ? date.toISOString().slice(0, 10) : "unknown";
+      const dayList = byDay.get(key);
+      if (dayList) dayList.push(m);
+      else byDay.set(key, [m]);
+    }
+
+    groups.push({
+      skillId,
+      title: skillLabel(skillId),
+      total: sorted.length,
+      latestIso: sorted[0]?.created_at || sorted[0]?.timestamp,
+      days: Array.from(byDay.entries())
+        .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+        .map(([key, items]) => ({
+          key,
+          label: formatDayLabel(items[0]?.created_at || items[0]?.timestamp),
+          items,
+        })),
+    });
+  });
+
+  return groups.sort((a, b) => b.total - a.total);
+}
 
 // Helper to generate instant optimistic activities matching chosen goal minutes
 function buildOptimisticActivities(
@@ -233,8 +331,14 @@ export default function DashboardScreen() {
   const [mistakes, setMistakes] = useState<Mistake[]>([]);
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
   const [lessons, setLessons] = useState<LessonRecord[]>([]);
+  const [focusSkills, setFocusSkills] = useState<FocusSkill[]>([]);
   const [progress, setProgress] = useState<ProgressSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [refreshingPlan, setRefreshingPlan] = useState(false);
 
   // Request sequence IDs to eliminate race conditions
   const goalRequestIdRef = useRef<number>(0);
@@ -244,26 +348,29 @@ export default function DashboardScreen() {
   const loadData = useCallback(async () => {
     setErrorMessage(null);
     try {
-      const [profData, planData, mstkData, vocData, lessonData, progData] = await Promise.all([
-        getProfile().catch((e) => {
-          console.warn("Profile fetch error:", e);
-          return null;
-        }),
-        getDailyPlan().catch((e) => {
-          console.warn("Daily plan fetch error:", e);
-          return null;
-        }),
-        getMistakes().catch(() => [] as Mistake[]),
-        getVocabulary().catch(() => [] as VocabularyEntry[]),
-        getLessons().catch(() => [] as LessonRecord[]),
-        getProgress().catch(() => ({ total_sessions: 0, total_practice_minutes: 0 })),
-      ]);
+      const [profData, planData, mstkData, vocData, lessonData, focusData, progData] =
+        await Promise.all([
+          getProfile().catch((e) => {
+            console.warn("Profile fetch error:", e);
+            return null;
+          }),
+          getDailyPlan().catch((e) => {
+            console.warn("Daily plan fetch error:", e);
+            return null;
+          }),
+          getMistakes().catch(() => [] as Mistake[]),
+          getVocabulary().catch(() => [] as VocabularyEntry[]),
+          getLessons().catch(() => [] as LessonRecord[]),
+          getFocusSkills().catch(() => [] as FocusSkill[]),
+          getProgress().catch(() => ({ total_sessions: 0, total_practice_minutes: 0 })),
+        ]);
 
       if (profData) setProfile(profData);
       if (planData) setDailyPlan(planData);
       setMistakes(mstkData);
       setVocabulary(vocData);
       setLessons(lessonData);
+      setFocusSkills(focusData);
       setProgress(progData);
 
       if (!profData && !planData) {
@@ -351,6 +458,37 @@ export default function DashboardScreen() {
   const handleSignOut = async () => {
     await signOut();
     router.replace("/auth");
+  };
+
+  const handleSaveProfile = async () => {
+    const name = editName.trim();
+    if (!name) return;
+    setSavingProfile(true);
+    try {
+      const updated = await updateProfile({ display_name: name });
+      setProfile(updated);
+      setEditingProfile(false);
+    } catch (err: any) {
+      setErrorMessage(err?.message || "Could not save your profile.");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleRefreshPlan = async () => {
+    setRefreshingPlan(true);
+    try {
+      const [plan, focus] = await Promise.all([
+        refreshDailyPlan(),
+        getFocusSkills().catch(() => focusSkills),
+      ]);
+      setDailyPlan(plan);
+      setFocusSkills(focus);
+    } catch (err: any) {
+      setErrorMessage(err?.message || "Could not rebuild today's plan.");
+    } finally {
+      setRefreshingPlan(false);
+    }
   };
 
   const [notificationPermission, setNotificationPermission] = useState<string>("default");
@@ -480,6 +618,8 @@ export default function DashboardScreen() {
   const streakDays = profile?.streak_days ?? 0;
   const totalSessions = progress?.total_sessions ?? profile?.total_sessions ?? 0;
   const totalMinutes = Math.round(progress?.total_practice_minutes ?? profile?.total_practice_minutes ?? 0);
+  const mistakeGroups = groupMistakes(mistakes);
+  const priorityFocus = focusSkills.filter((s) => s.reason !== "mastered").slice(0, 4);
 
   return (
     <View style={styles.screen}>
@@ -678,10 +818,30 @@ export default function DashboardScreen() {
             {/* ACTIVITY SEQUENCE TIMELINE */}
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>TODAY'S EXERCISES</Text>
-              <Text style={styles.sectionBadge}>
-                {dailyPlan?.activities?.length || 0} TASKS
-              </Text>
+              <Pressable
+                style={({ pressed }) => [styles.refreshPlanBtn, pressed && styles.btnPressed]}
+                onPress={handleRefreshPlan}
+                disabled={refreshingPlan}
+              >
+                {refreshingPlan ? (
+                  <ActivityIndicator size="small" color={theme.colors.paleIris} />
+                ) : (
+                  <>
+                    <Ionicons name="refresh" size={13} color={theme.colors.paleIris} />
+                    <Text style={styles.refreshPlanText}>REBUILD</Text>
+                  </>
+                )}
+              </Pressable>
             </View>
+
+            {priorityFocus.length > 0 ? (
+              <Text style={styles.planRationaleText}>
+                Ordered around {priorityFocus.slice(0, 2).map((s) => s.title).join(" and ")}
+                {priorityFocus[0].mistake_count > 0
+                  ? ` — your most frequent recent mistakes.`
+                  : ` — your weakest skills so far.`}
+              </Text>
+            ) : null}
 
             <View style={styles.activityList}>
               {!dailyPlan?.activities || dailyPlan.activities.length === 0 ? (
@@ -965,41 +1125,98 @@ export default function DashboardScreen() {
 
             {/* Curriculum Skills Mastery List */}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>SKILL MASTERY BREAKDOWN</Text>
+              <Text style={styles.sectionTitle}>FIX THESE FIRST</Text>
+              <Text style={styles.sectionBadge}>RANKED</Text>
             </View>
 
-            <View style={styles.cardContainer}>
-              {profile?.skill_mastery && Object.keys(profile.skill_mastery).length > 0 ? (
-                Object.entries(profile.skill_mastery).map(([skillId, score], idx) => (
-                  <View key={skillId} style={[styles.skillRow, idx > 0 && styles.skillRowBorder]}>
-                    <View style={styles.skillRowTop}>
-                      <Text style={styles.skillNameText}>{skillId.replace(/_/g, " ").toUpperCase()}</Text>
-                      <Text style={styles.skillPercentText}>{Math.round(score * 100)}%</Text>
-                    </View>
-                    <View style={styles.skillTrack}>
-                      <View
-                        style={[
-                          styles.skillFill,
-                          {
-                            width: `${Math.round(score * 100)}%`,
-                            backgroundColor:
-                              score > 0.75
-                                ? theme.colors.emeraldSuccess
-                                : score > 0.5
-                                ? theme.colors.irisGleam
-                                : theme.colors.amberWarning,
-                          },
-                        ]}
-                      />
-                    </View>
-                  </View>
-                ))
-              ) : (
+            {focusSkills.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Ionicons name="trending-up-outline" size={28} color={theme.colors.fog} />
                 <Text style={styles.emptyCardText}>
-                  Your skill mastery levels will appear here after your first conversation.
+                  Finish one conversation and your ranked improvement plan will appear here.
                 </Text>
-              )}
-            </View>
+              </View>
+            ) : (
+              <View style={styles.activityList}>
+                {focusSkills.map((skill, idx) => {
+                  const pct = Math.round(skill.mastery * 100);
+                  const isTop = idx === 0 && skill.reason !== "mastered";
+                  return (
+                    <Pressable
+                      key={skill.skill_id}
+                      style={({ pressed }) => [
+                        styles.focusCardRow,
+                        isTop && styles.focusCardRowTop,
+                        pressed && styles.btnPressed,
+                      ]}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/session",
+                          params: {
+                            mode: skill.category === "vocabulary" ? "vocabulary_practice" : "grammar_practice",
+                            target_skill: skill.skill_id,
+                            activity_title: skill.title,
+                            stage: skill.stage,
+                          },
+                        })
+                      }
+                    >
+                      <View style={styles.focusRankBadge}>
+                        <Text style={styles.focusRankText}>{idx + 1}</Text>
+                      </View>
+
+                      <View style={styles.focusCardBody}>
+                        <View style={styles.focusCardTopRow}>
+                          <Text style={styles.focusSkillTitle} numberOfLines={1}>
+                            {skill.title}
+                          </Text>
+                          <Text style={styles.focusMasteryText}>{pct}%</Text>
+                        </View>
+
+                        <View style={styles.skillTrack}>
+                          <View
+                            style={[
+                              styles.skillFill,
+                              {
+                                width: `${pct}%`,
+                                backgroundColor:
+                                  skill.mastery > 0.75
+                                    ? theme.colors.emeraldSuccess
+                                    : skill.mastery > 0.5
+                                    ? theme.colors.irisGleam
+                                    : theme.colors.amberWarning,
+                              },
+                            ]}
+                          />
+                        </View>
+
+                        <View style={styles.focusMetaRow}>
+                          <View style={styles.focusReasonPill}>
+                            <Text style={styles.focusReasonText}>
+                              {FOCUS_REASON_LABELS[skill.reason]}
+                            </Text>
+                          </View>
+                          {skill.mistake_count > 0 ? (
+                            <Text style={styles.focusMetaText}>
+                              {skill.mistake_count} logged · last{" "}
+                              {formatDayLabel(skill.last_mistake_at || undefined).toLowerCase()}
+                            </Text>
+                          ) : (
+                            <Text style={styles.focusMetaText}>CEFR {skill.cefr_level}</Text>
+                          )}
+                        </View>
+
+                        {isTop && skill.rule_summary ? (
+                          <Text style={styles.focusRuleText} numberOfLines={3}>
+                            {skill.rule_summary}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
 
             {/* Lesson history */}
             <View style={styles.sectionHeader}>
@@ -1084,55 +1301,114 @@ export default function DashboardScreen() {
                 <Text style={styles.heroHeadlineItalic}>Review</Text> past corrections.
               </Text>
               <Text style={styles.tabHeroSubhead}>
-                Every error detected during your live speech is saved with clear coaching.
+                Grouped by grammar point. Tap one to see every time it came up, day by day.
               </Text>
             </View>
 
-            <View style={styles.activityList}>
-              {mistakes.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.emeraldSuccess} />
-                  <Text style={styles.emptyCardText}>
-                    No mistakes logged yet! Once you practice voice sessions, coach recasts will appear here.
-                  </Text>
-                </View>
-              ) : (
-                mistakes.map((m) => (
-                  <View key={m.mistake_id} style={styles.mistakeCard}>
-                    <View style={styles.mistakeCardHeader}>
-                      <View style={styles.mistakeTag}>
-                        <Text style={styles.mistakeTagText}>
-                          {(m.category || "Grammar").replace(/_/g, " ").toUpperCase()}
-                        </Text>
-                      </View>
-                      <Text style={styles.mistakeSeverityText}>
-                        {(m.severity || "medium").toUpperCase()}
-                      </Text>
-                    </View>
+            {mistakes.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.emeraldSuccess} />
+                <Text style={styles.emptyCardText}>
+                  No mistakes logged yet. Once you finish a voice session, coach recasts appear here.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.activityList}>
+                {mistakeGroups.map((group) => {
+                  const open = expandedSkill === group.skillId;
+                  return (
+                    <View key={group.skillId} style={styles.skillGroupCard}>
+                      <Pressable
+                        style={styles.skillGroupHeader}
+                        onPress={() => setExpandedSkill(open ? null : group.skillId)}
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: open }}
+                      >
+                        <View style={styles.skillGroupHeaderText}>
+                          <Text style={styles.skillGroupTitle}>{group.title}</Text>
+                          <Text style={styles.skillGroupMeta}>
+                            {group.total} {group.total === 1 ? "mistake" : "mistakes"} · last{" "}
+                            {formatDayLabel(group.latestIso).toLowerCase()}
+                          </Text>
+                        </View>
+                        <View style={styles.skillGroupCountPill}>
+                          <Text style={styles.skillGroupCountText}>{group.total}</Text>
+                        </View>
+                        <Ionicons
+                          name={open ? "chevron-up" : "chevron-down"}
+                          size={18}
+                          color={theme.colors.fog}
+                        />
+                      </Pressable>
 
-                    {/* What you said */}
-                    <View style={styles.mistakeCompareBox}>
-                      <View style={styles.saidHeader}>
-                        <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
-                        <Text style={styles.saidLabel}>YOU SAID:</Text>
-                      </View>
-                      <Text style={styles.saidText}>"{m.original}"</Text>
-                    </View>
+                      {open ? (
+                        <View style={styles.skillGroupBody}>
+                          {group.days.map((day) => (
+                            <View key={day.key} style={styles.dayBlock}>
+                              <Text style={styles.dayBlockLabel}>{day.label.toUpperCase()}</Text>
 
-                    {/* Coach Recast */}
-                    <View style={styles.recastCompareBox}>
-                      <View style={styles.recastHeader}>
-                        <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
-                        <Text style={styles.recastLabel}>COACH RECAST:</Text>
-                      </View>
-                      <Text style={styles.recastText}>"{m.corrected}"</Text>
-                    </View>
+                              {day.items.map((m) => (
+                                <View key={m.mistake_id} style={styles.mistakeCard}>
+                                  <View style={styles.mistakeCardHeader}>
+                                    <View style={styles.mistakeTag}>
+                                      <Text style={styles.mistakeTagText}>
+                                        {(m.category || "Grammar").replace(/_/g, " ").toUpperCase()}
+                                      </Text>
+                                    </View>
+                                    <Text style={styles.mistakeSeverityText}>
+                                      {(m.severity || "medium").toUpperCase()}
+                                    </Text>
+                                  </View>
 
-                    <Text style={styles.mistakeWhyText}>💡 {m.explanation}</Text>
-                  </View>
-                ))
-              )}
-            </View>
+                                  <View style={styles.mistakeCompareBox}>
+                                    <View style={styles.saidHeader}>
+                                      <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
+                                      <Text style={styles.saidLabel}>YOU SAID:</Text>
+                                    </View>
+                                    <Text style={styles.saidText}>"{m.original}"</Text>
+                                  </View>
+
+                                  <View style={styles.recastCompareBox}>
+                                    <View style={styles.recastHeader}>
+                                      <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
+                                      <Text style={styles.recastLabel}>COACH RECAST:</Text>
+                                    </View>
+                                    <Text style={styles.recastText}>"{m.corrected}"</Text>
+                                  </View>
+
+                                  {m.explanation ? (
+                                    <Text style={styles.mistakeWhyText}>💡 {m.explanation}</Text>
+                                  ) : null}
+                                </View>
+                              ))}
+                            </View>
+                          ))}
+
+                          <Pressable
+                            style={({ pressed }) => [styles.smallActionBtn, pressed && styles.btnPressed]}
+                            onPress={() =>
+                              router.push({
+                                pathname: "/session",
+                                params: {
+                                  mode: "grammar_practice",
+                                  target_skill: group.skillId,
+                                  activity_title: `Fix: ${group.title}`,
+                                  stage: "guided_practice",
+                                },
+                              })
+                            }
+                          >
+                            <Text style={styles.smallActionBtnText}>
+                              Practise {group.title} now →
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
 
@@ -1209,6 +1485,17 @@ export default function DashboardScreen() {
                   ? "Diagnostic not taken yet"
                   : `Level ${userLevel} · ${levelName} · CEFR ${cefrRef}`}
               </Text>
+
+              <Pressable
+                style={({ pressed }) => [styles.editProfileBtn, pressed && styles.btnPressed]}
+                onPress={() => {
+                  setEditName(profile?.display_name || displayName);
+                  setEditingProfile(true);
+                }}
+              >
+                <Ionicons name="create-outline" size={16} color={theme.colors.cloud} />
+                <Text style={styles.editProfileBtnText}>Edit profile</Text>
+              </Pressable>
 
               <Pressable
                 style={({ pressed }) => [styles.retakeAssessmentBtn, pressed && styles.btnPressed]}
@@ -1433,6 +1720,54 @@ export default function DashboardScreen() {
           </Text>
         </Pressable>
       </View>
+
+      {/* Edit profile */}
+      <Modal visible={editingProfile} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.editSheet, { paddingBottom: Math.max(insets.bottom + 16, 20) }]}>
+            <Text style={styles.editSheetTitle}>Edit profile</Text>
+
+            <Text style={styles.inputLabelText}>DISPLAY NAME</Text>
+            <TextInput
+              style={styles.editInput}
+              value={editName}
+              onChangeText={setEditName}
+              placeholder="How should your coach address you?"
+              placeholderTextColor={theme.colors.steel}
+              autoCapitalize="words"
+              maxLength={60}
+            />
+            {profile?.email ? (
+              <Text style={styles.editHintText}>Signed in as {profile.email}</Text>
+            ) : null}
+
+            <View style={styles.editSheetActions}>
+              <Pressable
+                style={styles.editCancelBtn}
+                onPress={() => setEditingProfile(false)}
+                disabled={savingProfile}
+              >
+                <Text style={styles.editCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.editSaveBtn,
+                  (!editName.trim() || savingProfile) && styles.btnDisabledSoft,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={handleSaveProfile}
+                disabled={!editName.trim() || savingProfile}
+              >
+                {savingProfile ? (
+                  <ActivityIndicator size="small" color={theme.colors.void} />
+                ) : (
+                  <Text style={styles.editSaveText}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1553,6 +1888,276 @@ const styles = StyleSheet.create({
   profileEmail: {
     fontFamily: theme.fonts.sans,
     fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    marginTop: 2,
+  },
+  editProfileBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: theme.spacing.md,
+    minHeight: 40,
+    paddingHorizontal: 16,
+    borderRadius: theme.radii.full,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  editProfileBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
+    color: theme.colors.cloud,
+  },
+  editSheet: {
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
+    backgroundColor: theme.colors.graphiteCard,
+    borderTopLeftRadius: theme.radii.xl,
+    borderTopRightRadius: theme.radii.xl,
+    borderRadius: theme.radii.xl,
+    padding: theme.spacing.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
+    justifyContent: "center",
+    padding: theme.spacing.lg,
+  },
+  editSheetTitle: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingSm,
+    color: theme.colors.cloud,
+    marginBottom: theme.spacing.lg,
+  },
+  inputLabelText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    letterSpacing: 0.8,
+    fontWeight: "700",
+    color: theme.colors.fog,
+    marginBottom: 6,
+  },
+  editInput: {
+    height: theme.mobile.minTouchSize,
+    borderRadius: theme.radii.sm,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    paddingHorizontal: theme.spacing.md,
+    color: theme.colors.pure,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.body,
+  },
+  editHintText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.fog,
+    marginTop: 8,
+  },
+  editSheetActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 12,
+    marginTop: theme.spacing.xl,
+  },
+  editCancelBtn: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  editCancelText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+  },
+  editSaveBtn: {
+    minHeight: 44,
+    minWidth: 100,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    borderRadius: theme.radii.sm,
+    backgroundColor: theme.colors.pure,
+  },
+  editSaveText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.void,
+  },
+  btnDisabledSoft: {
+    opacity: 0.45,
+  },
+  refreshPlanBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: theme.radii.full,
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+  },
+  refreshPlanText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    color: theme.colors.paleIris,
+  },
+  planRationaleText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    lineHeight: 17,
+    color: theme.colors.ash,
+    marginTop: -8,
+  },
+  skillGroupCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    overflow: "hidden",
+  },
+  skillGroupHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: theme.spacing.md,
+    minHeight: theme.mobile.minTouchSize,
+  },
+  skillGroupHeaderText: {
+    flex: 1,
+  },
+  skillGroupTitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+  },
+  skillGroupMeta: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.fog,
+    marginTop: 2,
+  },
+  skillGroupCountPill: {
+    minWidth: 26,
+    height: 22,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.radii.full,
+    backgroundColor: "rgba(255, 82, 82, 0.15)",
+  },
+  skillGroupCountText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.crimsonError,
+  },
+  skillGroupBody: {
+    paddingHorizontal: theme.spacing.md,
+    paddingBottom: theme.spacing.md,
+    gap: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderMuted,
+    paddingTop: theme.spacing.md,
+  },
+  dayBlock: {
+    gap: 8,
+  },
+  dayBlockLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    letterSpacing: 0.8,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  focusCardRow: {
+    flexDirection: "row",
+    gap: 12,
+    padding: theme.spacing.md,
+    borderRadius: theme.radii.md,
+    backgroundColor: theme.colors.graphiteCard,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  focusCardRowTop: {
+    borderColor: theme.colors.borderIris,
+    backgroundColor: "rgba(132, 125, 255, 0.08)",
+  },
+  focusRankBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surfaceElevated,
+  },
+  focusRankText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 12,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+  },
+  focusCardBody: {
+    flex: 1,
+    gap: 6,
+  },
+  focusCardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  focusSkillTitle: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+  },
+  focusMasteryText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.ash,
+  },
+  focusMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  focusReasonPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: theme.radii.xs,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+  },
+  focusReasonText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  focusMetaText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.fog,
+  },
+  focusRuleText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.ash,
     marginTop: 2,
   },

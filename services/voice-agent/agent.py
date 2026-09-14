@@ -37,6 +37,7 @@ from livekit.agents import (
     WorkerOptions,
     cli,
 )
+from livekit.agents import llm as agent_llm
 from livekit.plugins import google, groq, openai, silero
 
 load_dotenv()
@@ -46,8 +47,26 @@ logger = logging.getLogger("pravaah-voice-agent")
 
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 LITELLM_PROXY_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-pravaah-dev-key")
-REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
-GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash-lite")
+
+# Gemini free-tier quotas differ sharply per model, and a 429 on one model says nothing about
+# the next. Ordered best-first by (RPD, RPM, TPM); each entry is tried in turn on quota errors.
+#   gemini-3.1-flash-lite  15 RPM / 250K TPM / 500 RPD
+#   gemini-3.5-flash-lite  15 RPM / 250K TPM / 500 RPD
+#   gemini-3.5-flash        5 RPM / 250K TPM /  20 RPD
+#   gemma-4-31b            30 RPM /  16K TPM / 14.4K RPD  (huge daily budget, small context)
+DEFAULT_GEMINI_CHAIN = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash,gemma-4-31b"
+
+
+def _model_chain(env_var: str, default: str) -> list[str]:
+    raw = os.getenv(env_var) or default
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+# Conversation LLM fallbacks, used only when Groq is unavailable.
+GEMINI_CHAIN = _model_chain("GEMINI_MODEL_CHAIN", DEFAULT_GEMINI_CHAIN)
+# The correction/translation card prompt is tiny, so the high-RPD small-context models suit it.
+GEMINI_CARD_CHAIN = _model_chain("GEMINI_CARD_MODEL_CHAIN", "gemma-4-31b," + DEFAULT_GEMINI_CHAIN)
+REALTIME_MODEL = os.getenv("REALTIME_MODEL", GEMINI_CHAIN[0])
 
 # Persisting transcripts from inside the realtime process pulls in the learning engine
 # (and litellm). The API already persists and analyses the full transcript on session end.
@@ -421,24 +440,30 @@ Return JSON ONLY:
                 except Exception as groq_err:
                     logger.debug("Groq parallel analysis notice: %s", groq_err)
 
-            # 2. Fallback: Gemini
+            # 2. Fallback: walk the Gemini chain until one is not rate limited.
             gemini_key = os.getenv("GEMINI_API_KEY")
             if gemini_key:
                 try:
                     import google.generativeai as genai
                     genai.configure(api_key=gemini_key)
-                    model = genai.GenerativeModel(GEMINI_FAST_MODEL)
-                    res = model.generate_content(
-                        analysis_prompt,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "max_output_tokens": 200,
-                            "temperature": 0.2,
-                        },
-                    )
-                    return json.loads(res.text.strip())
-                except Exception as g_err:
-                    logger.debug("Gemini parallel analysis notice: %s", g_err)
+                except Exception as cfg_err:
+                    logger.debug("Gemini configure notice: %s", cfg_err)
+                    return None
+
+                for model_name in GEMINI_CARD_CHAIN:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        res = model.generate_content(
+                            analysis_prompt,
+                            generation_config={
+                                "response_mime_type": "application/json",
+                                "max_output_tokens": 200,
+                                "temperature": 0.2,
+                            },
+                        )
+                        return json.loads(res.text.strip())
+                    except Exception as g_err:
+                        logger.debug("Gemini card model %s unavailable: %s", model_name, g_err)
             return None
 
         analysis = await asyncio.to_thread(_analyze)
@@ -616,30 +641,42 @@ async def entrypoint(ctx: JobContext):
             prompt="Bilingual English and Hindi practice. Supports Hindi Devanagari and Romanized Hinglish. नमस्ते, मैं ठीक हूँ। Hello, how are you? I want to practice speaking.",
         )
 
-    # 3. LLM: Groq for high rate-limits & lightning-fast speech, with fallback to Gemini
+    # 3. LLM: Groq first for latency, then the Gemini chain. FallbackAdapter switches
+    # providers per-request, so one model's quota running out doesn't end the session.
     groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
+    llm_candidates = []
+
     if groq_key:
-        groq_model = os.getenv("GROQ_VOICE_MODEL", "openai/gpt-oss-20b")
-        logger.info("Using Groq LLM (%s) for ultra-fast, zero-latency conversation", groq_model)
-        llm = groq.LLM(
-            model=groq_model,
-            api_key=groq_key,
-            temperature=0.3,
+        for groq_model in _model_chain(
+            "GROQ_MODEL_CHAIN",
+            os.getenv("GROQ_VOICE_MODEL", "openai/gpt-oss-20b") + ",llama-3.3-70b-versatile",
+        ):
+            try:
+                llm_candidates.append(groq.LLM(model=groq_model, api_key=groq_key, temperature=0.3))
+            except Exception as exc:
+                logger.warning("Groq LLM %s unavailable: %s", groq_model, exc)
+
+    if gemini_key:
+        for gemini_model in GEMINI_CHAIN:
+            try:
+                llm_candidates.append(
+                    google.LLM(model=gemini_model, api_key=gemini_key, temperature=0.25)
+                )
+            except Exception as exc:
+                logger.warning("Gemini LLM %s unavailable: %s", gemini_model, exc)
+
+    if not llm_candidates:
+        logger.error(
+            "No GROQ_API_KEY or GEMINI_API_KEY set; falling back to the LiteLLM proxy at %s",
+            LITELLM_PROXY_URL,
         )
-    elif gemini_key:
-        logger.info("Using Google Gemini (%s)", GEMINI_FAST_MODEL)
-        llm = google.LLM(
-            model=GEMINI_FAST_MODEL,
-            api_key=gemini_key,
-            temperature=0.25,
+        llm_candidates.append(
+            openai.LLM(model=REALTIME_MODEL, base_url=LITELLM_PROXY_URL, api_key=LITELLM_PROXY_KEY)
         )
-    else:
-        llm = openai.LLM(
-            model=REALTIME_MODEL,
-            base_url=LITELLM_PROXY_URL,
-            api_key=LITELLM_PROXY_KEY,
-        )
+
+    logger.info("LLM chain: %s", [c.model for c in llm_candidates])
+    llm = llm_candidates[0] if len(llm_candidates) == 1 else agent_llm.FallbackAdapter(llm_candidates)
 
     # 4. TTS: Neural Indian English voice over an OpenAI-compatible /v1/audio/speech endpoint.
     # TTS_BASE_URL must point at a host that is not competing with the agent for CPU.

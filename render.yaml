@@ -1,7 +1,9 @@
 services:
-  # REST API + embedded neural TTS. This fits the 512MB free plan only because the realtime
-  # voice agent is NOT co-hosted here - a 0.1-vCPU instance cannot run one. Deploy the agent
-  # separately (see docs/DEPLOYMENT.md).
+  # REST API + embedded neural TTS, co-hosting the realtime voice agent.
+  #
+  # Co-hosting is the simplest free single-service setup, but 0.1 vCPU is genuinely tight for
+  # a realtime agent. If the logs show "job executor is unresponsive" or audio breaks up,
+  # move the agent to LiveKit Cloud Agents (livekit.toml) and set RUN_VOICE_AGENT=false.
   - type: web
     name: pravaah-backend
     env: docker
@@ -22,6 +24,9 @@ services:
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: RUN_VOICE_AGENT
-        value: "false"
+        value: "true"
+      # A second interpreter per job does not fit in 512MB, so run jobs as threads here.
+      - key: JOB_EXECUTOR
+        value: thread
       - key: ALLOW_DEMO_AUTH
         value: "false"

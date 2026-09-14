@@ -89,12 +89,49 @@ logger = logging.getLogger("learning-engine")
 # Configuration
 # ---------------------------------------------------------------------------
 
-ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-2.5-flash-lite")
-ASSESSMENT_MODEL = os.getenv("ASSESSMENT_MODEL", "gemini-2.5-flash")
-REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gemini-2.5-flash")
+# Gemini free-tier quotas are per-model, so a 429 on one says nothing about the next.
+# Ordered best-first by (RPD, RPM, TPM); every Gemini call walks this chain.
+#   gemini-3.1-flash-lite  15 RPM / 250K TPM / 500 RPD
+#   gemini-3.5-flash-lite  15 RPM / 250K TPM / 500 RPD
+#   gemini-3.5-flash        5 RPM / 250K TPM /  20 RPD
+#   gemma-4-31b            30 RPM /  16K TPM / 14.4K RPD
+DEFAULT_GEMINI_CHAIN = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash,gemma-4-31b"
+
+
+def _model_chain(env_var: str, default: str) -> list[str]:
+    raw = os.getenv(env_var) or default
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+GEMINI_CHAIN = _model_chain("GEMINI_MODEL_CHAIN", DEFAULT_GEMINI_CHAIN)
+# Assessment prompts carry the full transcript, so skip the 16K-TPM small-context models.
+ASSESSMENT_CHAIN = _model_chain(
+    "GEMINI_ASSESSMENT_MODEL_CHAIN",
+    "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash",
+)
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", GEMINI_CHAIN[0])
+ASSESSMENT_MODEL = os.getenv("ASSESSMENT_MODEL", ASSESSMENT_CHAIN[0])
+REALTIME_MODEL = os.getenv("REALTIME_MODEL", GEMINI_CHAIN[0])
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.75"))
+
+
+def _gemini_chain_for(preferred: Optional[str], chain: list[str]) -> list[str]:
+    """The configured chain with `preferred` moved to the front, de-duplicated."""
+    ordered = list(chain)
+    if preferred:
+        clean = preferred.replace("gemini/", "").strip()
+        if clean and clean in ordered:
+            ordered.remove(clean)
+        if clean:
+            ordered.insert(0, clean)
+    seen, result = set(), []
+    for name in ordered:
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
 
 # ---------------------------------------------------------------------------
 # Pydantic Schemas for Structured Analysis (Phase 3B & 3C)
@@ -412,44 +449,46 @@ async def analyze_session_messages(
             logger.warning("Groq session analysis notice: %s; trying Gemini fallback", groq_err)
 
     if not parsed_result.mistakes and not parsed_result.vocabulary and api_key:
-        try:
-            genai_model_name = model.replace("gemini/", "").replace("gemini-3.5-flash-lite", "gemini-2.5-flash")
-            genai.configure(api_key=api_key)
-            gmodel = genai.GenerativeModel(genai_model_name, system_instruction=ANALYSIS_SYSTEM_PROMPT)
-            resp = await asyncio.to_thread(gmodel.generate_content, user_prompt)
-            raw_text = resp.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            raw_text = raw_text.strip()
+        genai.configure(api_key=api_key)
+        for genai_model_name in _gemini_chain_for(model, GEMINI_CHAIN):
+            try:
+                gmodel = genai.GenerativeModel(genai_model_name, system_instruction=ANALYSIS_SYSTEM_PROMPT)
+                resp = await asyncio.to_thread(gmodel.generate_content, user_prompt)
+                raw_text = resp.text.strip()
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                if raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
+                raw_text = raw_text.strip()
 
-            raw_json = json.loads(raw_text)
-            for m in raw_json.get("mistakes", []):
-                if not m.get("session_id"):
-                    m["session_id"] = session_id
-                if not m.get("message_id") and user_turns:
-                    m["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
-                if not m.get("curriculum_skill_id"):
-                    m["curriculum_skill_id"] = map_to_curriculum_skill(m.get("category", ""), m.get("original", ""), m.get("short_explanation", ""))
-                if not m.get("fact_type"):
-                    m["fact_type"] = "grammar_error"
+                raw_json = json.loads(raw_text)
+                for m in raw_json.get("mistakes", []):
+                    if not m.get("session_id"):
+                        m["session_id"] = session_id
+                    if not m.get("message_id") and user_turns:
+                        m["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                    if not m.get("curriculum_skill_id"):
+                        m["curriculum_skill_id"] = map_to_curriculum_skill(m.get("category", ""), m.get("original", ""), m.get("short_explanation", ""))
+                    if not m.get("fact_type"):
+                        m["fact_type"] = "grammar_error"
 
-            for v in raw_json.get("vocabulary", []):
-                if not v.get("session_id"):
-                    v["session_id"] = session_id
-                if not v.get("message_id") and user_turns:
-                    v["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
-                if not v.get("curriculum_skill_id"):
-                    v["curriculum_skill_id"] = "collocations"
-                if not v.get("fact_type"):
-                    v["fact_type"] = "natural_alternative"
+                for v in raw_json.get("vocabulary", []):
+                    if not v.get("session_id"):
+                        v["session_id"] = session_id
+                    if not v.get("message_id") and user_turns:
+                        v["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                    if not v.get("curriculum_skill_id"):
+                        v["curriculum_skill_id"] = "collocations"
+                    if not v.get("fact_type"):
+                        v["fact_type"] = "natural_alternative"
 
-            parsed_result = SessionAnalysisResult.model_validate(raw_json)
-        except Exception as e:
-            logger.warning("Direct genai session analysis failed: %s; falling back to litellm", e)
+                parsed_result = SessionAnalysisResult.model_validate(raw_json)
+                logger.info("Session analysis succeeded via Gemini %s", genai_model_name)
+                break
+            except Exception as e:
+                logger.warning("Gemini %s session analysis failed: %s; trying next model", genai_model_name, e)
 
     if not parsed_result.mistakes and not parsed_result.vocabulary:
         litellm = _get_litellm()
@@ -464,7 +503,7 @@ async def analyze_session_messages(
                     "api_key": api_key,
                     "fallbacks": [
                         "openrouter/minimax/minimax-01",
-                        "gemini/gemini-2.5-flash",
+                        f"gemini/{GEMINI_CHAIN[-1]}",
                     ],
                     "messages": [
                         {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
@@ -1243,7 +1282,7 @@ async def analyze_assessment_evidence(
     """
     Evaluates structured task-aware diagnostic spoken evidence using the configured Groq model.
     """
-    active_model = model or os.getenv("ANALYSIS_MODEL", "gemini-2.5-flash")
+    active_model = model or ASSESSMENT_MODEL
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 
     task_lines = []
@@ -1368,32 +1407,32 @@ async def analyze_assessment_evidence(
             except Exception as groq_err:
                 logger.warning("Groq evaluation attempt on %s failed: %s; trying next model", model_name, groq_err)
 
-    # 2. Secondary: Google Generative AI direct API
+    # 2. Secondary: Google Generative AI direct API, walking the chain past any 429s.
     if api_key:
-        try:
-            import google.generativeai as genai
-            genai_model_name = active_model.replace("gemini/", "").replace("gemini-3.5-flash-lite", "gemini-2.5-flash")
-            genai.configure(api_key=api_key)
-            gmodel = genai.GenerativeModel(genai_model_name)
-            resp = await asyncio.wait_for(
-                asyncio.to_thread(gmodel.generate_content, full_prompt),
-                timeout=12.0
-            )
-            raw_text = resp.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            raw_text = raw_text.strip()
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        for genai_model_name in _gemini_chain_for(active_model, ASSESSMENT_CHAIN):
+            try:
+                gmodel = genai.GenerativeModel(genai_model_name)
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(gmodel.generate_content, full_prompt),
+                    timeout=12.0
+                )
+                raw_text = resp.text.strip()
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                if raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
+                raw_text = raw_text.strip()
 
-            parsed = json.loads(raw_text)
-            validated = AssessmentObservationOutput.model_validate(parsed)
-            logger.info("Assessment successfully analyzed via Gemini %s", genai_model_name)
-            return build_result_from_output(validated)
-        except Exception as e:
-            logger.warning("Generative AI assessment analysis notice: %s", e)
+                parsed = json.loads(raw_text)
+                validated = AssessmentObservationOutput.model_validate(parsed)
+                logger.info("Assessment successfully analyzed via Gemini %s", genai_model_name)
+                return build_result_from_output(validated)
+            except Exception as e:
+                logger.warning("Gemini %s assessment attempt failed: %s; trying next model", genai_model_name, e)
 
     # 3. Tertiary: LiteLLM provider fallback (optional dependency)
     try:
@@ -1401,7 +1440,7 @@ async def analyze_assessment_evidence(
         if litellm is None:
             raise RuntimeError("litellm is not installed")
         kwargs = {
-            "model": "gemini/gemini-2.5-flash",
+            "model": f"gemini/{ASSESSMENT_CHAIN[0]}",
             "api_key": api_key,
             "fallbacks": [
                 "openrouter/minimax/minimax-01",
@@ -1777,14 +1816,128 @@ async def apply_proficiency_assessment(
     }
 
 
+def compute_focus_ranking(user_id: str, db=None, mistake_limit: int = 200) -> list[dict]:
+    """
+    Ranks curriculum skills by how much practice the learner actually needs, newest evidence
+    first. Mastery alone is too slow to react — a learner who made the same error twice this
+    morning should see it in today's plan, not three sessions later.
+
+    Score = recency-weighted mistake count + severity + failed repetitions + (1 - mastery).
+    Returns one entry per skill with evidence, ordered most-urgent first.
+    """
+    db = db or get_firestore_client()
+    user_ref = db.collection("users").document(user_id)
+
+    user_doc = user_ref.get()
+    user_data = user_doc.to_dict() if user_doc.exists else {}
+    mastery_map = user_data.get("skill_mastery", {}) or {}
+
+    stats: dict[str, dict] = {}
+    try:
+        for doc in user_ref.collection("skills").stream():
+            d = doc.to_dict() or {}
+            stats[doc.id] = d
+            if doc.id not in mastery_map and "mastery" in d:
+                mastery_map[doc.id] = d["mastery"]
+    except Exception as exc:
+        logger.warning("Skill stats read failed for %s: %s", user_id, exc)
+
+    now = datetime.now(timezone.utc)
+    evidence: dict[str, dict] = {}
+
+    try:
+        mistakes_q = (
+            user_ref.collection("mistakes")
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(mistake_limit)
+        )
+        mistake_docs = list(mistakes_q.stream())
+    except Exception:
+        mistake_docs = list(user_ref.collection("mistakes").limit(mistake_limit).stream())
+
+    severity_weight = {"high": 1.6, "medium": 1.0, "low": 0.6}
+
+    for doc in mistake_docs:
+        m = doc.to_dict() or {}
+        skill_id = m.get("curriculum_skill_id") or map_to_curriculum_skill(
+            m.get("category", ""), m.get("original", ""), m.get("explanation", "")
+        )
+        created = m.get("created_at")
+        age_days = 0.0
+        if hasattr(created, "timestamp"):
+            age_days = max(0.0, (now.timestamp() - created.timestamp()) / 86400.0)
+        # Halve the weight of evidence every 7 days.
+        recency = 0.5 ** (age_days / 7.0)
+
+        bucket = evidence.setdefault(
+            skill_id, {"count": 0, "weighted": 0.0, "last_seen": None, "examples": []}
+        )
+        bucket["count"] += 1
+        bucket["weighted"] += recency * severity_weight.get(str(m.get("severity", "medium")).lower(), 1.0)
+        if bucket["last_seen"] is None and created is not None:
+            bucket["last_seen"] = created
+        if len(bucket["examples"]) < 3 and m.get("original"):
+            bucket["examples"].append({
+                "original": m.get("original"),
+                "corrected": m.get("corrected"),
+            })
+
+    ranked = []
+    for skill_id, meta in CURRICULUM_SKILLS.items():
+        ev = evidence.get(skill_id, {})
+        s_stats = stats.get(skill_id, {})
+        mastery = float(mastery_map.get(skill_id, 0.5))
+        failed_reps = int(s_stats.get("failed_repetitions", 0) or 0)
+
+        score = (
+            10.0 * float(ev.get("weighted", 0.0))
+            + 6.0 * min(failed_reps, 3)
+            + 12.0 * max(0.0, 1.0 - mastery)
+        )
+        if ev.get("count"):
+            reason = "recent_mistakes"
+        elif failed_reps:
+            reason = "failed_repetitions"
+        elif mastery < MASTERY_BANDS["weakness"]:
+            reason = "low_mastery"
+        elif mastery >= 0.85:
+            reason = "mastered"
+        else:
+            reason = "developing"
+
+        last_seen = ev.get("last_seen")
+        ranked.append({
+            "skill_id": skill_id,
+            "title": meta.get("title", skill_id),
+            "category": meta.get("category", "grammar"),
+            "cefr_level": meta.get("cefr_level", "A2"),
+            "rule_summary": meta.get("rule_summary", ""),
+            "memory_hook": meta.get("memory_hook", ""),
+            "practice_activity": meta.get("practice_activity", ""),
+            "mastery": round(mastery, 3),
+            "mistake_count": int(ev.get("count", 0)),
+            "failed_repetitions": failed_reps,
+            "attempts": int(s_stats.get("attempts", 0) or 0),
+            "stage": determine_lesson_stage(mastery, attempts=int(s_stats.get("attempts", 0) or 0)),
+            "priority_score": round(score, 3),
+            "reason": reason,
+            "last_mistake_at": last_seen.isoformat() if hasattr(last_seen, "isoformat") else None,
+            "recent_examples": ev.get("examples", []),
+        })
+
+    ranked.sort(key=lambda r: r["priority_score"], reverse=True)
+    return ranked
+
+
 def get_or_create_daily_plan(
     user_id: str,
     date_str: Optional[str] = None,
     goal_minutes: Optional[int] = None,
+    force_regenerate: bool = False,
 ) -> dict:
     """
     Retrieves the daily plan for date_str (defaulting to today).
-    If no plan exists, generates a fresh, structured plan tailored to user's weaknesses and goal.
+    If no plan exists, generates a fresh plan ordered by what the learner actually got wrong.
     """
     db = get_firestore_client()
     user_ref = db.collection("users").document(user_id)
@@ -1798,18 +1951,29 @@ def get_or_create_daily_plan(
 
     target_goal = goal_minutes or user_data.get("daily_goal_minutes", 30)
 
-    if plan_doc.exists:
+    if plan_doc.exists and not force_regenerate:
         existing_data = plan_doc.to_dict()
         if not goal_minutes or existing_data.get("goal_minutes") == target_goal:
             return existing_data
 
-    # Generate new plan
-    weaknesses = user_data.get("weaknesses", ["past_simple_auxiliary", "be_verb_misuse"])
-    mastery = user_data.get("skill_mastery", {})
+    # Order today's work by live evidence, falling back to the assessment diagnosis.
+    try:
+        ranking = compute_focus_ranking(user_id, db=db)
+        practice_worthy = [r for r in ranking if r["reason"] != "mastered"]
+        weaknesses = [r["skill_id"] for r in (practice_worthy or ranking)][:4]
+        mastery = {r["skill_id"]: r["mastery"] for r in ranking}
+        current_focus = weaknesses[0] if weaknesses else None
+    except Exception as exc:
+        logger.warning("Focus ranking failed for %s (%s); using stored weaknesses.", user_id, exc)
+        weaknesses = user_data.get("weaknesses") or ["past_simple_auxiliary", "be_verb_misuse"]
+        mastery = user_data.get("skill_mastery", {})
+        current_focus = user_data.get("current_focus")
+
     new_plan = generate_daily_plan(
         user_id=user_id,
         goal_minutes=target_goal,
         weaknesses=weaknesses,
+        current_focus=current_focus,
         skill_mastery=mastery,
         date_str=today_str,
     )

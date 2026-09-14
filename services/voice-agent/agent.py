@@ -875,7 +875,7 @@ if __name__ == "__main__":
     # stall; only use it where memory is too tight for a second interpreter.
     executor_type = (
         JobExecutorType.THREAD
-        if os.getenv("JOB_EXECUTOR", "process").lower() == "thread"
+        if os.getenv("JOB_EXECUTOR", "thread").lower() == "thread"
         else JobExecutorType.PROCESS
     )
     logger.info("Starting worker with %s job executor", executor_type)

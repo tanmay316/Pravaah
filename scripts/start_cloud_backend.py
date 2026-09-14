@@ -35,7 +35,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 port = int(os.environ.get("PORT", "10000"))
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "false").lower() in {"1", "true", "yes"}
+RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "true").lower() in {"1", "true", "yes"}
 
 # Credentials come from the environment only. Never commit keys to the repo: anything
 # checked in is public to everyone who can read it and must be treated as compromised.

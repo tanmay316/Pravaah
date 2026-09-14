@@ -1,13 +1,14 @@
 /**
- * Pravaah — Root Layout
+ * Pravaah — Mobile-First Root Layout
  *
- * Configures Expo Router, global Obsidian theme styling, Google Fonts web injection, and auth gating.
+ * Configures SafeAreaProvider, Expo Router, obsidian dark theme styling, status bar, and auth gating.
  */
 
 import { useEffect } from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useAuth } from "../lib/firebase";
 import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
@@ -17,10 +18,20 @@ export default function RootLayout() {
   const segments = useSegments();
   const router = useRouter();
 
-    // Inject Google Fonts, Page Title, Pravaah Favicon, and PWA Service Worker for web
+  // Inject Mobile Web meta tags, Google Fonts, Favicon, and PWA setup
   useEffect(() => {
     if (Platform.OS === "web" && typeof document !== "undefined") {
       document.title = PRAVAAH_APP_TITLE;
+
+      // Ensure mobile viewport with viewport-fit=cover
+      let viewportMeta = document.querySelector("meta[name='viewport']") as HTMLMetaElement;
+      if (!viewportMeta) {
+        viewportMeta = document.createElement("meta");
+        viewportMeta.name = "viewport";
+        document.head.appendChild(viewportMeta);
+      }
+      viewportMeta.content =
+        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
 
       // PWA Manifest and Theme Color
       let manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement;
@@ -35,18 +46,18 @@ export default function RootLayout() {
       if (!themeMeta) {
         themeMeta = document.createElement("meta");
         themeMeta.name = "theme-color";
-        themeMeta.content = "#0f1011";
         document.head.appendChild(themeMeta);
       }
+      themeMeta.content = "#0f1011";
 
-      // Register PWA Service Worker for offline support and push notifications
+      // Register PWA Service Worker
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js").catch((err) => {
           console.log("Service Worker registration notice:", err);
         });
       }
 
-      // Update or inject Favicon with custom Pravaah emblem
+      // Update Favicon
       const setFavicon = () => {
         let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
         if (!link) {
@@ -67,31 +78,38 @@ export default function RootLayout() {
       };
       setFavicon();
 
-      const fontId = "pravaah-origin-fonts";
+      const fontId = "pravaah-mobile-fonts";
       if (!document.getElementById(fontId)) {
         const link = document.createElement("link");
         link.id = fontId;
         link.rel = "stylesheet";
         link.href =
-          "https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@300;400;500;600&family=Roboto+Mono:wght@400;500&display=swap";
+          "https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap";
         document.head.appendChild(link);
 
-        // Global base css overrides for web
+        // Mobile touch & styling resets
         const style = document.createElement("style");
         style.innerHTML = `
-          * { box-sizing: border-box; }
+          * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+          }
           body, html, #root {
             background-color: #0f1011 !important;
             margin: 0;
             padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow-x: hidden;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            overscroll-behavior-y: none;
           }
-          /* Custom scrollbar for origin look */
+          /* Custom mobile scrollbar */
           ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
+            width: 4px;
+            height: 4px;
           }
           ::-webkit-scrollbar-track {
             background: #090a0b;
@@ -100,14 +118,11 @@ export default function RootLayout() {
             background: #28292c;
             border-radius: 4px;
           }
-          ::-webkit-scrollbar-thumb:hover {
-            background: #3f4041;
-          }
         `;
         document.head.appendChild(style);
       }
 
-      // Automatically clean internal Expo Router key from the browser address bar for crisp URLs
+      // Automatically clean internal Expo Router key from the browser address bar
       if (window.location.search && window.location.search.includes("__EXPO_ROUTER_key")) {
         try {
           const url = new URL(window.location.href);
@@ -132,18 +147,22 @@ export default function RootLayout() {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={theme.colors.irisGleam} />
-      </View>
+      <SafeAreaProvider>
+        <StatusBar style="light" backgroundColor={theme.colors.obsidian} />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={theme.colors.irisGleam} />
+        </View>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <>
-      <StatusBar style="light" />
+    <SafeAreaProvider>
+      <StatusBar style="light" backgroundColor={theme.colors.obsidian} translucent={false} />
       <Stack
         screenOptions={{
           headerShown: false,
+          animation: Platform.OS === "ios" ? "default" : "slide_from_right",
           contentStyle: { backgroundColor: theme.colors.obsidian },
         }}
       >
@@ -152,7 +171,7 @@ export default function RootLayout() {
         <Stack.Screen name="assessment" />
         <Stack.Screen name="session" />
       </Stack>
-    </>
+    </SafeAreaProvider>
   );
 }
 

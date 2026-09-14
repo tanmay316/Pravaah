@@ -1,12 +1,11 @@
 /**
- * Pravaah — Central Learning Hub & Dashboard
+ * Pravaah — Mobile-First Central Learning Hub & Dashboard
  *
- * Style reference: Origin Financial (Midnight gallery of quiet wealth).
- * Canvas: Obsidian #0f1011, Abyss #090a0b, Graphite #2e2e2e, Steel #3f4041, Silver #cacaca.
- * Accents: Iris Gleam #847dff, Cyan Signal #00b3dd, Orchid Bloom #dd90d8, Periwinkle #90b8f0.
- * Pure white primary CTA fill #ffffff with black text #000000.
- *
- * 100% Realtime Backend Data — No hardcoded text inputs or static mock items.
+ * Designed for native mobile touch interaction:
+ * - Native Mobile App Bar (Top) with user greeting, streak flame pill, and level badge
+ * - Fixed Frosted Glass Bottom Navigation Bar (Plan, Lessons, Mistakes, Vocab, Profile)
+ * - Thumb-friendly touch targets, fluid card elevations, and safe area handling
+ * - 100% Realtime Backend Data sync with zero mock fallbacks
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -22,6 +21,8 @@ import {
   View,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import {
   getProfile,
   getDailyPlan,
@@ -48,7 +49,7 @@ import {
   scheduleDailyPracticeReminder,
 } from "../lib/notifications";
 
-type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "progress" | "settings";
+type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
 
 // Helper to generate instant optimistic activities matching chosen goal minutes
 function buildOptimisticActivities(
@@ -217,6 +218,7 @@ function buildOptimisticActivities(
 }
 
 export default function DashboardScreen() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<NavTab>("plan");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -231,7 +233,7 @@ export default function DashboardScreen() {
   const goalRequestIdRef = useRef<number>(0);
   const hindiRequestIdRef = useRef<number>(0);
 
-  // Fetch real data from backend with instant unblocking
+  // Fetch real data from backend
   const loadData = useCallback(async () => {
     setErrorMessage(null);
     try {
@@ -288,7 +290,6 @@ export default function DashboardScreen() {
     const level = profile?.pravaah_level || "C";
     const optimisticActivities = buildOptimisticActivities(minutes, targetSkill, level);
 
-    // 1. Instant local state update (0ms latency) - updates goal chips, progress bar, and activity sequence instantly
     setDailyPlan((prev) => ({
       plan_id: prev?.plan_id || `plan_${new Date().toISOString().split("T")[0]}`,
       plan_date: prev?.plan_date || new Date().toISOString().split("T")[0],
@@ -303,7 +304,6 @@ export default function DashboardScreen() {
     }));
     setProfile((prev) => (prev ? { ...prev, daily_goal_minutes: minutes } : null));
 
-    // 2. Background sync with backend — only apply response if this is still the latest user request
     setDailyGoal(minutes)
       .then((res) => {
         if (reqId === goalRequestIdRef.current && res.daily_plan) {
@@ -319,7 +319,6 @@ export default function DashboardScreen() {
   const handleHindiSupportChange = (level: string) => {
     const reqId = ++hindiRequestIdRef.current;
 
-    // 1. Instant local state update (0ms latency)
     setProfile((prev) => (prev ? { ...prev, hindi_support: level } : {
       uid: "user_local",
       pravaah_level: "C",
@@ -329,7 +328,6 @@ export default function DashboardScreen() {
       hindi_support: level,
     }));
 
-    // 2. Background sync with backend — only apply response if this is still the latest user request
     updateProfile({ hindi_support: level })
       .then((updated) => {
         if (reqId === hindiRequestIdRef.current && updated) {
@@ -351,7 +349,6 @@ export default function DashboardScreen() {
   const [reminderEnabled, setReminderEnabled] = useState<boolean>(true);
   const [notificationFeedback, setNotificationFeedback] = useState<string | null>(null);
 
-  // Check notification permission on mount
   useEffect(() => {
     getNotificationPermissionStatus().then((status) => {
       setNotificationPermission(status);
@@ -363,7 +360,7 @@ export default function DashboardScreen() {
     const status = await getNotificationPermissionStatus();
     setNotificationPermission(status);
     if (granted) {
-      setNotificationFeedback("Notification permissions enabled! Daily reminders are active.");
+      setNotificationFeedback("Reminders enabled! You will receive daily practice alerts.");
       setTimeout(() => setNotificationFeedback(null), 4000);
     }
   };
@@ -371,14 +368,14 @@ export default function DashboardScreen() {
   const handleTestNotification = async () => {
     const focusSkill = profile?.current_focus || "past_simple_auxiliary";
     const sent = await sendLocalNotification(
-      "🎙️ Pravaah — Time for Today's Speaking Practice!",
-      `Your 30-minute English speaking session is ready. Today's priority: ${focusSkill.replace(/_/g, " ")}.`,
+      "🎙️ Pravaah — Daily Practice Reminder",
+      `Your English session is ready. Today's focus: ${focusSkill.replace(/_/g, " ")}.`,
       { type: "test_notification" }
     );
     if (sent) {
-      setNotificationFeedback("Test notification sent! Check your notification tray.");
+      setNotificationFeedback("Test reminder sent! Check your notifications.");
     } else {
-      setNotificationFeedback("Please allow notifications in your browser or device settings.");
+      setNotificationFeedback("Please enable notification permissions in your device settings.");
     }
     setTimeout(() => setNotificationFeedback(null), 4500);
   };
@@ -432,7 +429,7 @@ export default function DashboardScreen() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={theme.colors.irisGleam} />
-        <Text style={styles.loadingText}>Connecting to Pravaah Coach...</Text>
+        <Text style={styles.loadingText}>Syncing with Coach Pravaah...</Text>
       </View>
     );
   }
@@ -448,12 +445,11 @@ export default function DashboardScreen() {
   return (
     <View style={styles.screen}>
       {/* ------------------------------------------------------------------- */}
-      {/* STICKY FROSTED GLASS TOP NAVIGATION BAR */}
+      {/* MOBILE APP BAR (HEADER) */}
       {/* ------------------------------------------------------------------- */}
-      <View style={styles.navBar}>
-        <View style={styles.navContent}>
-          {/* Logo & Brand */}
-          <Pressable style={styles.brandContainer} onPress={() => setActiveTab("plan")}>
+      <View style={[styles.mobileAppBar, { paddingTop: Math.max(insets.top, 12) }]}>
+        <View style={styles.appBarLeft}>
+          <Pressable style={styles.appBarBrand} onPress={() => setActiveTab("plan")}>
             <Image
               source={require("../assets/pravaah_navbar_logo.png")}
               style={styles.brandLogoImage}
@@ -461,88 +457,65 @@ export default function DashboardScreen() {
               accessibilityLabel="Pravaah"
             />
           </Pressable>
+        </View>
 
-          {/* Nav Items */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.navItemsScroll}
-          >
-            <Pressable
-              style={[styles.navItem, activeTab === "plan" && styles.navItemActive]}
-              onPress={() => setActiveTab("plan")}
-            >
-              <Text style={[styles.navItemText, activeTab === "plan" && styles.navItemTextActive]}>
-                TODAY'S PLAN
-              </Text>
-            </Pressable>
+        <View style={styles.appBarRight}>
+          {/* Streak Badge */}
+          <View style={styles.streakBadge}>
+            <Text style={styles.streakEmoji}>🔥</Text>
+            <Text style={styles.streakCount}>
+              {profile?.streak_days ? `${profile.streak_days}d` : "1d"}
+            </Text>
+          </View>
 
-            <Pressable
-              style={[styles.navItem, activeTab === "lessons" && styles.navItemActive]}
-              onPress={() => setActiveTab("lessons")}
-            >
-              <Text style={[styles.navItemText, activeTab === "lessons" && styles.navItemTextActive]}>
-                LESSONS & FOCUS
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.navItem, activeTab === "mistakes" && styles.navItemActive]}
-              onPress={() => setActiveTab("mistakes")}
-            >
-              <Text style={[styles.navItemText, activeTab === "mistakes" && styles.navItemTextActive]}>
-                MISTAKES
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.navItem, activeTab === "vocabulary" && styles.navItemActive]}
-              onPress={() => setActiveTab("vocabulary")}
-            >
-              <Text style={[styles.navItemText, activeTab === "vocabulary" && styles.navItemTextActive]}>
-                VOCABULARY
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.navItem, activeTab === "progress" && styles.navItemActive]}
-              onPress={() => setActiveTab("progress")}
-            >
-              <Text style={[styles.navItemText, activeTab === "progress" && styles.navItemTextActive]}>
-                PROGRESS
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.navItem, activeTab === "settings" && styles.navItemActive]}
-              onPress={() => setActiveTab("settings")}
-            >
-              <Text style={[styles.navItemText, activeTab === "settings" && styles.navItemTextActive]}>
-                SETTINGS
-              </Text>
-            </Pressable>
-          </ScrollView>
-
-          {/* Quick CTA Flush Right */}
+          {/* Level Pill */}
           <Pressable
-            style={({ pressed }) => [styles.navCtaButton, pressed && styles.buttonPressed]}
-            onPress={handleStartNextActivity}
+            style={styles.levelBadge}
+            onPress={() => (userLevel === "unassessed" ? router.push("/assessment") : setActiveTab("profile"))}
           >
-            <Text style={styles.navCtaText}>PRACTICE →</Text>
+            <Text style={styles.levelBadgeText}>
+              {userLevel === "unassessed" ? "⚡ ASSESS" : `⚡ LVL ${userLevel}`}
+            </Text>
+          </Pressable>
+
+          {/* Profile / Avatar Shortcut */}
+          <Pressable
+            style={[styles.avatarBtn, activeTab === "profile" && styles.avatarBtnActive]}
+            onPress={() => setActiveTab("profile")}
+          >
+            <Ionicons
+              name={activeTab === "profile" ? "person" : "person-outline"}
+              size={18}
+              color={activeTab === "profile" ? theme.colors.pure : theme.colors.ash}
+            />
           </Pressable>
         </View>
       </View>
 
       {/* ------------------------------------------------------------------- */}
-      {/* MAIN BODY CONTAINER */}
+      {/* MAIN SCROLLABLE CONTENT */}
       {/* ------------------------------------------------------------------- */}
       <ScrollView
-        contentContainerStyle={styles.mainScroll}
+        style={styles.mainContainer}
+        contentContainerStyle={[
+          styles.mainScroll,
+          {
+            paddingBottom: theme.mobile.tabBarHeight + Math.max(insets.bottom, 12) + 24,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.irisGleam} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.colors.irisGleam}
+            colors={[theme.colors.irisGleam]}
+          />
+        }
       >
         {errorMessage ? (
           <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
             <Text style={styles.errorBannerText}>{errorMessage}</Text>
           </View>
         ) : null}
@@ -551,71 +524,66 @@ export default function DashboardScreen() {
         {/* TAB 1: TODAY'S PLAN */}
         {/* ================================================================= */}
         {activeTab === "plan" && (
-          <View style={styles.contentContainer}>
-            {/* HERO SECTION — SKY ATMOSPHERE */}
-            <View style={styles.heroAtmosphere}>
-              {/* Eyebrow Badge */}
-              <View style={styles.heroEyebrow}>
-                <Text style={styles.heroEyebrowText}>
-                  {userLevel === "unassessed"
-                    ? "NEW LEARNER • ASSESSMENT RECOMMENDED"
-                    : `LEVEL ${userLevel} (${levelName}) • DAILY PRACTICE PLAN`}
-                </Text>
+          <View style={styles.tabContent}>
+            {/* HERO QUICK-ACTION CARD */}
+            <View style={styles.heroActionCard}>
+              <View style={styles.ambientCardGlow} />
+
+              <View style={styles.heroTopRow}>
+                <View style={styles.heroEyebrowPill}>
+                  <View style={styles.greenPulse} />
+                  <Text style={styles.heroEyebrowText}>
+                    {userLevel === "unassessed" ? "DIAGNOSTIC PENDING" : `LEVEL ${userLevel} • READY`}
+                  </Text>
+                </View>
+                <Text style={styles.heroCefrText}>CEFR {cefrRef}</Text>
               </View>
 
-              {/* Lyon Display Signature Whisper Headline */}
               <Text style={styles.heroHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Own</Text> your fluency.
+                <Text style={styles.heroHeadlineItalic}>Own</Text> your fluency today.
               </Text>
-
               <Text style={styles.heroSubhead}>
-                Pravaah is your personal AI Spoken English Coach. Master spontaneous speaking, natural
-                collocations, and effortless grammar in real-time voice sessions.
+                Real-time voice coaching tailored to eliminate your recurring speech errors.
               </Text>
 
-              {/* Primary Action CTA (Pure White on Dark) */}
-              <View style={styles.heroCtaRow}>
-                {userLevel === "unassessed" ? (
-                  <Pressable
-                    style={({ pressed }) => [styles.heroPrimaryCta, pressed && styles.buttonPressed]}
-                    onPress={() => router.push("/assessment")}
-                  >
-                    <Text style={styles.heroPrimaryCtaText}>Take Initial Spoken Assessment →</Text>
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    style={({ pressed }) => [styles.heroPrimaryCta, pressed && styles.buttonPressed]}
-                    onPress={handleStartNextActivity}
-                  >
-                    <Text style={styles.heroPrimaryCtaText}>
-                      {nextUnfinishedActivity
-                        ? `Continue Today's Practice (${nextUnfinishedActivity.duration_minutes}m) →`
-                        : "Start Spoken Practice Session →"}
-                    </Text>
-                  </Pressable>
-                )}
-              </View>
-
-
+              {userLevel === "unassessed" ? (
+                <Pressable
+                  style={({ pressed }) => [styles.primaryHeroBtn, pressed && styles.btnPressed]}
+                  onPress={() => router.push("/assessment")}
+                >
+                  <Ionicons name="mic" size={20} color={theme.colors.void} />
+                  <Text style={styles.primaryHeroBtnText}>Take Spoken Diagnostic (3 min) →</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={({ pressed }) => [styles.primaryHeroBtn, pressed && styles.btnPressed]}
+                  onPress={handleStartNextActivity}
+                >
+                  <Ionicons name="mic" size={20} color={theme.colors.void} />
+                  <Text style={styles.primaryHeroBtnText}>
+                    {nextUnfinishedActivity
+                      ? `Continue: ${nextUnfinishedActivity.title.split(":")[0]} (${nextUnfinishedActivity.duration_minutes}m) →`
+                      : "Start Daily Spoken Practice →"}
+                  </Text>
+                </Pressable>
+              )}
             </View>
 
-            {/* DAILY GOAL & PROGRESS SUMMARY MODULE */}
-            <View style={styles.planCard}>
+            {/* DAILY COMMITMENT & PROGRESS MODULE */}
+            <View style={styles.cardContainer}>
               <View style={styles.cardHeaderRow}>
                 <View>
-                  <Text style={styles.cardEyebrow}>TODAY'S COMMITMENT & PROGRESS</Text>
+                  <Text style={styles.cardEyebrow}>DAILY COMMITMENT</Text>
                   <Text style={styles.cardTitle}>
-                    {completedMins} of {currentGoal} minutes completed
+                    {completedMins} of {currentGoal} min completed
                   </Text>
                 </View>
-                <View style={styles.levelPill}>
-                  <Text style={styles.levelPillText}>
-                    {userLevel === "unassessed" ? "UNASSESSED" : `LEVEL ${userLevel} (${levelName})`}
-                  </Text>
+                <View style={styles.progressPercentPill}>
+                  <Text style={styles.progressPercentText}>{progressPercent}%</Text>
                 </View>
               </View>
 
-              {/* Goal Selection Chips */}
+              {/* Goal Selection Pills */}
               <View style={styles.goalChipsRow}>
                 {[15, 30, 60, 90].map((mins) => (
                   <Pressable
@@ -632,195 +600,239 @@ export default function DashboardScreen() {
                         currentGoal === mins && styles.goalChipTextActive,
                       ]}
                     >
-                      {mins} MIN
+                      {mins}m
                     </Text>
                   </Pressable>
                 ))}
               </View>
 
-              {/* Progress Bar */}
+              {/* Progress Bar Track */}
               <View style={styles.progressBarTrack}>
                 <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
               </View>
+
               <Text style={styles.progressSubtext}>
-                {progressPercent}% of today's plan finished • {dailyPlan?.activities?.filter((a) => a.is_completed).length || 0} of {dailyPlan?.activities?.length || 0} activities complete
+                {dailyPlan?.activities?.filter((a) => a.is_completed).length || 0} of{" "}
+                {dailyPlan?.activities?.length || 0} exercises finished today
               </Text>
             </View>
 
-            {/* ACTIVITY SCHEDULE CHECKLIST */}
-            <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>TODAY'S ACTIVITY SEQUENCE & ASSIGNMENTS</Text>
-              <View style={styles.activityList}>
-                {(!dailyPlan?.activities || dailyPlan.activities.length === 0) ? (
-                  <View style={styles.emptyCard}>
-                    <Text style={styles.emptyText}>No activities generated yet. Select a daily goal above to initialize.</Text>
-                  </View>
-                ) : (
-                  dailyPlan.activities.map((activity, idx) => {
-                    const isCurrent = idx === (dailyPlan.current_activity_index ?? 0) && !activity.is_completed;
-                    const modeTag =
-                      activity.mode === "free_conversation"
-                        ? "☕ WARMUP FLUENCY"
-                        : activity.mode === "grammar_practice"
-                        ? "🎯 GRAMMAR DRILL"
-                        : "💬 VOCABULARY & COLLOCATIONS";
-
-                    return (
-                      <Pressable
-                        key={activity.activity_id}
-                        style={({ pressed }) => [
-                          styles.activityItem,
-                          activity.is_completed && styles.activityItemCompleted,
-                          isCurrent && styles.activityItemCurrent,
-                          pressed && styles.buttonPressed,
-                        ]}
-                        onPress={() => handleLaunchActivity(activity)}
-                      >
-                        <View style={styles.activityStatusCol}>
-                          <View
-                            style={[
-                              styles.activityIconCircle,
-                              activity.is_completed && styles.activityIconCircleCompleted,
-                              isCurrent && styles.activityIconCircleCurrent,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.activityStatusIcon,
-                                activity.is_completed && styles.activityStatusIconCompleted,
-                                isCurrent && styles.activityStatusIconCurrent,
-                              ]}
-                            >
-                              {activity.is_completed ? "✓" : isCurrent ? "▶" : `${idx + 1}`}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <View style={styles.activityContentCol}>
-                          <View style={styles.activityMetaRow}>
-                            <Text style={styles.activityModeTag}>{modeTag}</Text>
-                            <Text style={styles.activityDurationText}>
-                              ⏱ {activity.duration_minutes} MIN
-                            </Text>
-                            {activity.is_completed ? (
-                              <View style={styles.completedBadge}>
-                                <Text style={styles.completedBadgeText}>COMPLETED</Text>
-                              </View>
-                            ) : isCurrent ? (
-                              <View style={styles.upNextBadge}>
-                                <Text style={styles.upNextBadgeText}>UP NEXT</Text>
-                              </View>
-                            ) : null}
-                          </View>
-                          <Text style={styles.activityTitleText}>{activity.title}</Text>
-                          <Text style={styles.activityObjectiveText}>{activity.objective}</Text>
-                        </View>
-
-                        <View style={styles.activityActionCol}>
-                          <View
-                            style={[
-                              styles.activityActionBtn,
-                              isCurrent && styles.activityActionBtnCurrent,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.activityActionBtnText,
-                                isCurrent && styles.activityActionBtnTextCurrent,
-                              ]}
-                            >
-                              {activity.is_completed ? "Review" : isCurrent ? "Start →" : "Start"}
-                            </Text>
-                          </View>
-                        </View>
-                      </Pressable>
-                    );
-                  })
-                )}
-              </View>
+            {/* ACTIVITY SEQUENCE TIMELINE */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>TODAY'S EXERCISES</Text>
+              <Text style={styles.sectionBadge}>
+                {dailyPlan?.activities?.length || 0} TASKS
+              </Text>
             </View>
 
-            {/* CHROMATIC CATEGORY TILES */}
-            <View style={styles.sectionBlock}>
+            <View style={styles.activityList}>
+              {!dailyPlan?.activities || dailyPlan.activities.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Ionicons name="sparkles-outline" size={28} color={theme.colors.fog} />
+                  <Text style={styles.emptyCardText}>
+                    Select a daily goal above to initialize your tailored practice sequence.
+                  </Text>
+                </View>
+              ) : (
+                dailyPlan.activities.map((activity, idx) => {
+                  const isCurrent =
+                    idx === (dailyPlan.current_activity_index ?? 0) && !activity.is_completed;
+                  const modeIcon =
+                    activity.mode === "free_conversation"
+                      ? "cafe-outline"
+                      : activity.mode === "grammar_practice"
+                      ? "radio-button-on-outline"
+                      : "chatbubble-ellipses-outline";
+
+                  return (
+                    <Pressable
+                      key={activity.activity_id}
+                      style={({ pressed }) => [
+                        styles.activityCard,
+                        activity.is_completed && styles.activityCardCompleted,
+                        isCurrent && styles.activityCardCurrent,
+                        pressed && styles.btnPressed,
+                      ]}
+                      onPress={() => handleLaunchActivity(activity)}
+                    >
+                      <View style={styles.activityCardLeft}>
+                        <View
+                          style={[
+                            styles.stepIconCircle,
+                            activity.is_completed && styles.stepCircleCompleted,
+                            isCurrent && styles.stepCircleCurrent,
+                          ]}
+                        >
+                          {activity.is_completed ? (
+                            <Ionicons name="checkmark" size={16} color={theme.colors.emeraldSuccess} />
+                          ) : isCurrent ? (
+                            <Ionicons name="play" size={14} color={theme.colors.void} />
+                          ) : (
+                            <Text style={styles.stepNumText}>{idx + 1}</Text>
+                          )}
+                        </View>
+                      </View>
+
+                      <View style={styles.activityCardBody}>
+                        <View style={styles.activityBadgeRow}>
+                          <View style={styles.modeTag}>
+                            <Ionicons name={modeIcon as any} size={12} color={theme.colors.paleIris} />
+                            <Text style={styles.modeTagText}>
+                              {activity.mode === "free_conversation"
+                                ? "WARMUP"
+                                : activity.mode === "grammar_practice"
+                                ? "PRECISION"
+                                : "VOCABULARY"}
+                            </Text>
+                          </View>
+                          <Text style={styles.activityDurationText}>
+                            ⏱ {activity.duration_minutes}m
+                          </Text>
+                          {activity.is_completed ? (
+                            <View style={styles.doneBadge}>
+                              <Text style={styles.doneBadgeText}>DONE</Text>
+                            </View>
+                          ) : isCurrent ? (
+                            <View style={styles.upNextBadge}>
+                              <Text style={styles.upNextBadgeText}>NEXT</Text>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        <Text style={styles.activityTitle}>{activity.title}</Text>
+                        <Text style={styles.activityObjective} numberOfLines={2}>
+                          {activity.objective}
+                        </Text>
+                      </View>
+
+                      <View style={styles.activityCardRight}>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={18}
+                          color={isCurrent ? theme.colors.irisGleam : theme.colors.steel}
+                        />
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+
+            {/* PRACTICE MODES GRID */}
+            <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>PRACTICE MODES</Text>
-              <View style={styles.categoryGrid}>
-                {/* Tile 1: Grammar */}
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.categoryTile,
-                    { backgroundColor: theme.colors.irisGleam },
-                    pressed && styles.buttonPressed,
-                  ]}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/session",
-                      params: {
-                        mode: "grammar_practice",
-                        target_skill: profile?.current_focus || "past_simple_auxiliary",
-                        activity_title: "Targeted Grammar Practice",
-                      },
-                    })
-                  }
-                >
-                  <Text style={styles.categoryTileMono}>MODULE 01 • GRAMMAR</Text>
-                  <Text style={styles.categoryTileHeading}>Targeted Grammar Precision</Text>
-                  <Text style={styles.categoryTileDesc}>
-                    Eliminate recurring grammar errors through natural conversational drills.
-                  </Text>
-                  <Text style={styles.categoryTileCta}>Start Grammar Session →</Text>
-                </Pressable>
+            </View>
 
-                {/* Tile 2: Vocabulary */}
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.categoryTile,
-                    { backgroundColor: theme.colors.orchidBloom },
-                    pressed && styles.buttonPressed,
-                  ]}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/session",
-                      params: {
-                        mode: "vocabulary_practice",
-                        target_skill: "collocations",
-                        activity_title: "Natural English Collocations",
-                      },
-                    })
-                  }
-                >
-                  <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 02 • VOCABULARY</Text>
-                  <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Collocations & Phrasing</Text>
-                  <Text style={[styles.categoryTileDesc, { color: "rgba(0,0,0,0.75)" }]}>
-                    Learn and speak natural English collocations in context.
-                  </Text>
-                  <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Vocabulary Session →</Text>
-                </Pressable>
+            <View style={styles.modeGrid}>
+              {/* Tile 1: Grammar Drill */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modeGridCard,
+                  { borderColor: "rgba(132, 125, 255, 0.35)" },
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/session",
+                    params: {
+                      mode: "grammar_practice",
+                      target_skill: profile?.current_focus || "past_simple_auxiliary",
+                      activity_title: "Grammar Precision Drill",
+                    },
+                  })
+                }
+              >
+                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(132, 125, 255, 0.15)" }]}>
+                  <Ionicons name="flash-outline" size={20} color={theme.colors.irisGleam} />
+                </View>
+                <Text style={styles.modeCardTitle}>Targeted Grammar</Text>
+                <Text style={styles.modeCardDesc}>
+                  Active speech drills to eliminate recurring errors in muscle memory.
+                </Text>
+                <Text style={[styles.modeCardAction, { color: theme.colors.paleIris }]}>Start Drill →</Text>
+              </Pressable>
 
-                {/* Tile 3: Fluency */}
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.categoryTile,
-                    { backgroundColor: theme.colors.cyanSignal },
-                    pressed && styles.buttonPressed,
-                  ]}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/session",
-                      params: {
-                        mode: "free_conversation",
-                        activity_title: "Free Spoken Conversation",
-                      },
-                    })
-                  }
-                >
-                  <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 03 • FLUENCY</Text>
-                  <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Free Spoken Conversation</Text>
-                  <Text style={[styles.categoryTileDesc, { color: "rgba(0,0,0,0.75)" }]}>
-                    Speak freely on any topic with active real-time AI feedback.
-                  </Text>
-                  <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Free Conversation →</Text>
-                </Pressable>
-              </View>
+              {/* Tile 2: Free Spoken Flow */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modeGridCard,
+                  { borderColor: "rgba(0, 179, 221, 0.35)" },
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/session",
+                    params: {
+                      mode: "free_conversation",
+                      activity_title: "Conversational Fluency Flow",
+                    },
+                  })
+                }
+              >
+                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(0, 179, 221, 0.15)" }]}>
+                  <Ionicons name="chatbubbles-outline" size={20} color={theme.colors.cyanSignal} />
+                </View>
+                <Text style={styles.modeCardTitle}>Conversational Flow</Text>
+                <Text style={styles.modeCardDesc}>
+                  Casual spontaneous speaking with real-time coach feedback.
+                </Text>
+                <Text style={[styles.modeCardAction, { color: theme.colors.cyanSignal }]}>Talk Now →</Text>
+              </Pressable>
+
+              {/* Tile 3: Collocations & Vocab */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modeGridCard,
+                  { borderColor: "rgba(221, 144, 216, 0.35)" },
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/session",
+                    params: {
+                      mode: "vocabulary_practice",
+                      target_skill: "collocations",
+                      activity_title: "Idioms & Collocations",
+                    },
+                  })
+                }
+              >
+                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(221, 144, 216, 0.15)" }]}>
+                  <Ionicons name="bulb-outline" size={20} color={theme.colors.orchidBloom} />
+                </View>
+                <Text style={styles.modeCardTitle}>Collocations</Text>
+                <Text style={styles.modeCardDesc}>
+                  Natural phrasing and high-frequency business expressions.
+                </Text>
+                <Text style={[styles.modeCardAction, { color: theme.colors.orchidBloom }]}>Expand Vocab →</Text>
+              </Pressable>
+
+              {/* Tile 4: Roleplay Simulation */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modeGridCard,
+                  { borderColor: "rgba(144, 184, 240, 0.35)" },
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/session",
+                    params: {
+                      mode: "roleplay",
+                      activity_title: "Workplace Dialogue Simulation",
+                    },
+                  })
+                }
+              >
+                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(144, 184, 240, 0.15)" }]}>
+                  <Ionicons name="briefcase-outline" size={20} color={theme.colors.periwinkle} />
+                </View>
+                <Text style={styles.modeCardTitle}>Roleplay Simulation</Text>
+                <Text style={styles.modeCardDesc}>
+                  Real workplace and social interviews under pressure.
+                </Text>
+                <Text style={[styles.modeCardAction, { color: theme.colors.periwinkle }]}>Enter Roleplay →</Text>
+              </Pressable>
             </View>
           </View>
         )}
@@ -829,39 +841,43 @@ export default function DashboardScreen() {
         {/* TAB 2: LESSONS & FOCUS */}
         {/* ================================================================= */}
         {activeTab === "lessons" && (
-          <View style={styles.contentContainer}>
-            <View style={styles.tabHeaderBlock}>
-              <Text style={styles.tabEyebrow}>ADAPTIVE CURRICULUM & SKILL FOCUS</Text>
-              <Text style={styles.tabHeadline}>
+          <View style={styles.tabContent}>
+            <View style={styles.tabHeroSection}>
+              <Text style={styles.tabHeroEyebrow}>ADAPTIVE CURRICULUM</Text>
+              <Text style={styles.tabHeroHeadline}>
                 <Text style={styles.heroHeadlineItalic}>Targeted</Text> lesson progression.
               </Text>
-              <Text style={styles.tabSubhead}>
-                Lessons are dynamically sequenced based on your spoken evidence and lowest mastery skills.
+              <Text style={styles.tabHeroSubhead}>
+                Dynamic exercises sequenced based on your recorded speaking evidence.
               </Text>
             </View>
 
             {/* Recommended Lesson Banner */}
             {profile?.recommended_lesson ? (
-              <View style={styles.recommendedCard}>
+              <View style={styles.cardContainer}>
                 <View style={styles.cardHeaderRow}>
                   <View style={styles.stagePill}>
                     <Text style={styles.stagePillText}>
-                      {profile.recommended_lesson.stage?.toUpperCase() || "GUIDED PRACTICE"}
+                      {profile.recommended_lesson.stage?.toUpperCase() || "RECOMMENDED LESSON"}
                     </Text>
                   </View>
                   <Text style={styles.cefrRefText}>
-                    CEFR {profile.recommended_lesson.cefr_level} • MASTERY {Math.round((profile.recommended_lesson.mastery_score || 0) * 100)}%
+                    MASTERY {Math.round((profile.recommended_lesson.mastery_score || 0) * 100)}%
                   </Text>
                 </View>
 
-                <Text style={styles.recommendedTitle}>{profile.recommended_lesson.lesson_title}</Text>
-                <Text style={styles.ruleSummaryText}>{profile.recommended_lesson.rule_summary}</Text>
-                <Text style={styles.practiceActivityText}>
-                  💡 Practice Goal: {profile.recommended_lesson.practice_activity}
-                </Text>
+                <Text style={styles.lessonTitle}>{profile.recommended_lesson.lesson_title}</Text>
+                <Text style={styles.lessonRule}>{profile.recommended_lesson.rule_summary}</Text>
+
+                <View style={styles.goalTipBox}>
+                  <Ionicons name="information-circle-outline" size={16} color={theme.colors.paleIris} />
+                  <Text style={styles.goalTipText}>
+                    {profile.recommended_lesson.practice_activity}
+                  </Text>
+                </View>
 
                 <Pressable
-                  style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+                  style={({ pressed }) => [styles.primaryHeroBtn, { marginTop: 12 }, pressed && styles.btnPressed]}
                   onPress={() =>
                     router.push({
                       pathname: "/session",
@@ -875,82 +891,120 @@ export default function DashboardScreen() {
                     })
                   }
                 >
-                  <Text style={styles.primaryButtonText}>Launch Targeted Lesson →</Text>
+                  <Text style={styles.primaryHeroBtnText}>Launch Targeted Lesson →</Text>
                 </Pressable>
               </View>
             ) : (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>Complete an assessment to receive personalized lesson recommendations.</Text>
+                <Ionicons name="clipboard-outline" size={28} color={theme.colors.fog} />
+                <Text style={styles.emptyCardText}>
+                  Complete a 3-minute spoken assessment to receive tailored recommendations.
+                </Text>
+                <Pressable
+                  style={[styles.smallActionBtn, { marginTop: 12 }]}
+                  onPress={() => router.push("/assessment")}
+                >
+                  <Text style={styles.smallActionBtnText}>Take Assessment →</Text>
+                </Pressable>
               </View>
             )}
 
-            {/* Curriculum Skills List */}
-            <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>CURRICULUM SKILLS & CURRENT MASTERY</Text>
-              <View style={styles.skillsList}>
-                {profile?.skill_mastery && Object.keys(profile.skill_mastery).length > 0 ? (
-                  Object.entries(profile.skill_mastery).map(([skillId, score]) => (
-                    <View key={skillId} style={styles.skillRow}>
-                      <View style={styles.skillInfo}>
-                        <Text style={styles.skillName}>{skillId.replace(/_/g, " ").toUpperCase()}</Text>
-                        <Text style={styles.skillScore}>{Math.round(score * 100)}% Mastery</Text>
-                      </View>
-                      <View style={styles.skillBarTrack}>
-                        <View style={[styles.skillBarFill, { width: `${Math.round(score * 100)}%` }]} />
-                      </View>
+            {/* Curriculum Skills Mastery List */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>SKILL MASTERY BREAKDOWN</Text>
+            </View>
+
+            <View style={styles.cardContainer}>
+              {profile?.skill_mastery && Object.keys(profile.skill_mastery).length > 0 ? (
+                Object.entries(profile.skill_mastery).map(([skillId, score], idx) => (
+                  <View key={skillId} style={[styles.skillRow, idx > 0 && styles.skillRowBorder]}>
+                    <View style={styles.skillRowTop}>
+                      <Text style={styles.skillNameText}>{skillId.replace(/_/g, " ").toUpperCase()}</Text>
+                      <Text style={styles.skillPercentText}>{Math.round(score * 100)}%</Text>
                     </View>
-                  ))
-                ) : (
-                  <View style={styles.emptyCard}>
-                    <Text style={styles.emptyText}>Skill mastery will appear here after your first speaking session.</Text>
+                    <View style={styles.skillTrack}>
+                      <View
+                        style={[
+                          styles.skillFill,
+                          {
+                            width: `${Math.round(score * 100)}%`,
+                            backgroundColor:
+                              score > 0.75
+                                ? theme.colors.emeraldSuccess
+                                : score > 0.5
+                                ? theme.colors.irisGleam
+                                : theme.colors.amberWarning,
+                          },
+                        ]}
+                      />
+                    </View>
                   </View>
-                )}
-              </View>
+                ))
+              ) : (
+                <Text style={styles.emptyCardText}>
+                  Your skill mastery levels will appear here after your first conversation.
+                </Text>
+              )}
             </View>
           </View>
         )}
 
         {/* ================================================================= */}
-        {/* TAB 3: MISTAKES LOG */}
+        {/* TAB 3: MISTAKES NOTEBOOK */}
         {/* ================================================================= */}
         {activeTab === "mistakes" && (
-          <View style={styles.contentContainer}>
-            <View style={styles.tabHeaderBlock}>
-              <Text style={styles.tabEyebrow}>PERSONAL ERROR NOTEBOOK</Text>
-              <Text style={styles.tabHeadline}>
+          <View style={styles.tabContent}>
+            <View style={styles.tabHeroSection}>
+              <Text style={styles.tabHeroEyebrow}>ERROR LOG & RECASTS</Text>
+              <Text style={styles.tabHeroHeadline}>
                 <Text style={styles.heroHeadlineItalic}>Review</Text> past corrections.
               </Text>
-              <Text style={styles.tabSubhead}>
-                Every mistake detected during real-time speech is cataloged with clear explanations.
+              <Text style={styles.tabHeroSubhead}>
+                Every error detected during your live speech is saved with clear coaching.
               </Text>
             </View>
 
-            <View style={styles.mistakesList}>
+            <View style={styles.activityList}>
               {mistakes.length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>No mistakes recorded yet. Start a speaking session to begin tracking.</Text>
+                  <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.emeraldSuccess} />
+                  <Text style={styles.emptyCardText}>
+                    No mistakes logged yet! Once you practice voice sessions, coach recasts will appear here.
+                  </Text>
                 </View>
               ) : (
                 mistakes.map((m) => (
                   <View key={m.mistake_id} style={styles.mistakeCard}>
-                    <View style={styles.mistakeHeader}>
-                      <Text style={styles.mistakeCategory}>{(m.category || "grammar_error").replace(/_/g, " ").toUpperCase()}</Text>
-                      <Text style={styles.mistakeSeverity}>{(m.severity || "medium").toUpperCase()} SEVERITY</Text>
+                    <View style={styles.mistakeCardHeader}>
+                      <View style={styles.mistakeTag}>
+                        <Text style={styles.mistakeTagText}>
+                          {(m.category || "Grammar").replace(/_/g, " ").toUpperCase()}
+                        </Text>
+                      </View>
+                      <Text style={styles.mistakeSeverityText}>
+                        {(m.severity || "medium").toUpperCase()}
+                      </Text>
                     </View>
 
-                    <View style={styles.comparisonRow}>
-                      <View style={styles.comparisonCol}>
-                        <Text style={styles.compLabel}>YOU SAID:</Text>
-                        <Text style={styles.originalText}>"{m.original}"</Text>
+                    {/* What you said */}
+                    <View style={styles.mistakeCompareBox}>
+                      <View style={styles.saidHeader}>
+                        <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
+                        <Text style={styles.saidLabel}>YOU SAID:</Text>
                       </View>
-
-                      <View style={styles.comparisonCol}>
-                        <Text style={styles.compLabelCorrect}>CORRECTED:</Text>
-                        <Text style={styles.correctedText}>"{m.corrected}"</Text>
-                      </View>
+                      <Text style={styles.saidText}>"{m.original}"</Text>
                     </View>
 
-                    <Text style={styles.explanationText}>💡 {m.explanation}</Text>
+                    {/* Coach Recast */}
+                    <View style={styles.recastCompareBox}>
+                      <View style={styles.recastHeader}>
+                        <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
+                        <Text style={styles.recastLabel}>COACH RECAST:</Text>
+                      </View>
+                      <Text style={styles.recastText}>"{m.corrected}"</Text>
+                    </View>
+
+                    <Text style={styles.mistakeWhyText}>💡 {m.explanation}</Text>
                   </View>
                 ))
               )}
@@ -962,29 +1016,44 @@ export default function DashboardScreen() {
         {/* TAB 4: VOCABULARY NOTEBOOK */}
         {/* ================================================================= */}
         {activeTab === "vocabulary" && (
-          <View style={styles.contentContainer}>
-            <View style={styles.tabHeaderBlock}>
-              <Text style={styles.tabEyebrow}>COLLOCATIONS & IDIOMATIC PHRASES</Text>
-              <Text style={styles.tabHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Expand</Text> your vocabulary.
+          <View style={styles.tabContent}>
+            <View style={styles.tabHeroSection}>
+              <Text style={styles.tabHeroEyebrow}>SPOKEN VOCABULARY</Text>
+              <Text style={styles.tabHeroHeadline}>
+                <Text style={styles.heroHeadlineItalic}>Natural</Text> expressions.
               </Text>
-              <Text style={styles.tabSubhead}>
-                Natural expressions acquired and practiced across your voice conversations.
+              <Text style={styles.tabHeroSubhead}>
+                Idioms and professional phrasing acquired across your conversations.
               </Text>
             </View>
 
-            <View style={styles.vocabGrid}>
+            <View style={styles.activityList}>
               {vocabulary.length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>Vocabulary and expressions from your speaking sessions will be saved here.</Text>
+                  <Ionicons name="book-outline" size={32} color={theme.colors.fog} />
+                  <Text style={styles.emptyCardText}>
+                    Vocabulary and collocations from your voice sessions will automatically be collected here.
+                  </Text>
                 </View>
               ) : (
                 vocabulary.map((v) => (
                   <View key={v.vocabulary_id} style={styles.vocabCard}>
-                    <Text style={styles.vocabTerm}>{v.term || v.word || "Expression"}</Text>
-                    <Text style={styles.vocabContext}>"{v.context || v.example || ""}"</Text>
+                    <View style={styles.vocabHeaderRow}>
+                      <Text style={styles.vocabTerm}>{v.term || v.word || "Expression"}</Text>
+                      <Ionicons name="bookmark" size={16} color={theme.colors.irisGleam} />
+                    </View>
+
+                    {v.context || v.example ? (
+                      <Text style={styles.vocabContext}>"{v.context || v.example}"</Text>
+                    ) : null}
+
                     {v.natural_usage_tip || v.meaning ? (
-                      <Text style={styles.vocabTip}>💡 {v.natural_usage_tip || v.meaning}</Text>
+                      <View style={styles.vocabTipBox}>
+                        <Ionicons name="sparkles" size={14} color={theme.colors.paleIris} />
+                        <Text style={styles.vocabTipText}>
+                          {v.natural_usage_tip || v.meaning}
+                        </Text>
+                      </View>
                     ) : null}
                   </View>
                 ))
@@ -994,102 +1063,54 @@ export default function DashboardScreen() {
         )}
 
         {/* ================================================================= */}
-        {/* TAB 5: PROGRESS & MASTERY */}
+        {/* TAB 5: PROFILE, PROGRESS & SETTINGS */}
         {/* ================================================================= */}
-        {activeTab === "progress" && (
-          <View style={styles.contentContainer}>
-            <View style={styles.tabHeaderBlock}>
-              <Text style={styles.tabEyebrow}>FLUENCY STANDING & STATISTICS</Text>
-              <Text style={styles.tabHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Track</Text> your growth.
+        {activeTab === "profile" && (
+          <View style={styles.tabContent}>
+            {/* User Identity Card */}
+            <View style={styles.profileHeroCard}>
+              <View style={styles.avatarLargeCircle}>
+                <Ionicons name="person" size={32} color={theme.colors.pure} />
+              </View>
+              <Text style={styles.profileTitle}>
+                {userLevel === "unassessed" ? "New Learner" : `Level ${userLevel} Learner`}
               </Text>
-              <Text style={styles.tabSubhead}>
-                Comprehensive diagnostics and cumulative practice milestones.
+              <Text style={styles.profileSubtitle}>
+                {levelName} • CEFR Reference: {cefrRef}
               </Text>
+
+              <Pressable
+                style={({ pressed }) => [styles.retakeAssessmentBtn, pressed && styles.btnPressed]}
+                onPress={() => router.push("/assessment")}
+              >
+                <Ionicons name="mic-outline" size={16} color={theme.colors.paleIris} />
+                <Text style={styles.retakeAssessmentBtnText}>Retake Diagnostic Assessment →</Text>
+              </Pressable>
             </View>
 
-            {/* Stats Summary Row */}
+            {/* Quick Stats Grid */}
             <View style={styles.statsRow}>
-              <View style={styles.statCard}>
-                <Text style={styles.statNumber}>{progress?.total_sessions || 0}</Text>
-                <Text style={styles.statLabel}>TOTAL SESSIONS</Text>
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{progress?.total_sessions || 0}</Text>
+                <Text style={styles.statLbl}>SESSIONS</Text>
               </View>
-              <View style={styles.statCard}>
-                <Text style={styles.statNumber}>{Math.round(progress?.total_practice_minutes || 0)}m</Text>
-                <Text style={styles.statLabel}>PRACTICE MINUTES</Text>
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{Math.round(progress?.total_practice_minutes || 0)}m</Text>
+                <Text style={styles.statLbl}>MINUTES</Text>
               </View>
-              <View style={styles.statCard}>
-                <Text style={styles.statNumber}>{userLevel === "unassessed" ? "—" : `Level ${userLevel} (${levelName})`}</Text>
-                <Text style={styles.statLabel}>CEFR {cefrRef}</Text>
-              </View>
-            </View>
-
-            {/* Mastery Bands */}
-            <View style={styles.sectionBlock}>
-              <Text style={styles.sectionTitle}>MASTERY BANDS BREAKDOWN</Text>
-              <View style={styles.bandsContainer}>
-                <View style={styles.bandCard}>
-                  <Text style={styles.bandTitle}>ACTIVE WEAKNESSES (&lt;60%)</Text>
-                  <Text style={styles.bandItems}>
-                    {profile?.weaknesses && profile.weaknesses.length > 0
-                      ? profile.weaknesses.map((s) => s.replace(/_/g, " ")).join(", ")
-                      : "None"}
-                  </Text>
-                </View>
-
-                <View style={styles.bandCard}>
-                  <Text style={styles.bandTitle}>DEVELOPING SKILLS (60-75%)</Text>
-                  <Text style={styles.bandItems}>
-                    {profile?.developing_skills && profile.developing_skills.length > 0
-                      ? profile.developing_skills.map((s) => s.replace(/_/g, " ")).join(", ")
-                      : "None"}
-                  </Text>
-                </View>
-
-                <View style={styles.bandCard}>
-                  <Text style={styles.bandTitle}>STRONG & MASTERED (&gt;75%)</Text>
-                  <Text style={styles.bandItems}>
-                    {profile?.strong_skills || profile?.mastered_skills
-                      ? [...(profile.strong_skills || []), ...(profile.mastered_skills || [])]
-                          .map((s) => s.replace(/_/g, " "))
-                          .join(", ") || "None"
-                      : "None"}
-                  </Text>
-                </View>
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{mistakes.length}</Text>
+                <Text style={styles.statLbl}>CORRECTIONS</Text>
               </View>
             </View>
 
-            {/* Diagnostic Retake CTA */}
-            <Pressable
-              style={({ pressed }) => [styles.ghostButton, pressed && styles.ghostPressed]}
-              onPress={() => router.push("/assessment")}
-            >
-              <Text style={styles.ghostButtonText}>🎙 Retake Spoken Assessment →</Text>
-            </Pressable>
-          </View>
-        )}
+            {/* Preferences Group: Hindi Support */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>HINDI EXPLANATION SUPPORT</Text>
+              <Text style={styles.settingsGroupDesc}>
+                Controls when Coach Pravaah explains grammatical corrections using Hindi translations.
+              </Text>
 
-        {/* ================================================================= */}
-        {/* TAB 6: PROFILE & SETTINGS */}
-        {/* ================================================================= */}
-        {activeTab === "settings" && (
-          <View style={styles.contentContainer}>
-            <View style={styles.tabHeaderBlock}>
-              <Text style={styles.tabEyebrow}>ACCOUNT & PREFERENCES</Text>
-              <Text style={styles.tabHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Manage</Text> your coach.
-              </Text>
-              <Text style={styles.tabSubhead}>
-                Customize Hindi explanation support, daily targets, and account data.
-              </Text>
-            </View>
-
-            {/* Hindi Support Setting */}
-            <View style={styles.settingsCard}>
-              <Text style={styles.settingsLabel}>HINDI EXPLANATION SUPPORT</Text>
-              <Text style={styles.settingsDesc}>
-                Controls how frequently the AI tutor provides Hindi translations and hints for complex corrections.
-              </Text>
               <View style={styles.supportChipsRow}>
                 {["high", "occasional", "minimal", "off"].map((lvl) => (
                   <Pressable
@@ -1113,103 +1134,170 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {/* Notifications & Reminders Setting */}
-            <View style={styles.settingsCard}>
-              <View style={styles.settingsCardHeaderRow}>
-                <Text style={styles.settingsLabel}>DAILY PRACTICE REMINDERS & NOTIFICATIONS</Text>
-                <View
-                  style={[
-                    styles.notifStatusBadge,
-                    notificationPermission === "granted"
-                      ? styles.notifStatusGranted
-                      : styles.notifStatusDefault,
-                  ]}
-                >
-                  <Text style={styles.notifStatusText}>
-                    {notificationPermission === "granted" ? "ACTIVE ✓" : "TAP TO ENABLE"}
-                  </Text>
-                </View>
-              </View>
-
-              <Text style={styles.settingsDesc}>
-                Receive a daily spoken practice prompt on your mobile phone or browser to keep your fluency streak strong.
+            {/* Notifications & Reminders */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>DAILY PRACTICE REMINDERS</Text>
+              <Text style={styles.settingsGroupDesc}>
+                Set a regular time to receive a push notification for your daily speaking practice.
               </Text>
 
-              {/* Feedback toast if any */}
               {notificationFeedback ? (
-                <View style={styles.notifFeedbackBanner}>
-                  <Text style={styles.notifFeedbackText}>🔔 {notificationFeedback}</Text>
+                <View style={styles.feedbackBanner}>
+                  <Text style={styles.feedbackBannerText}>{notificationFeedback}</Text>
                 </View>
               ) : null}
 
-              {/* Reminder Time Options */}
-              <Text style={styles.settingsSubLabel}>PREFERRED REMINDER TIME</Text>
-              <View style={styles.supportChipsRow}>
+              <View style={styles.timeChipsRow}>
                 {[
-                  { label: "8:00 AM", hour: 8, min: 0 },
-                  { label: "1:00 PM", hour: 13, min: 0 },
-                  { label: "8:00 PM", hour: 20, min: 0 },
-                  { label: "9:30 PM", hour: 21, min: 30 },
-                ].map((item) => (
+                  { time: "08:00 AM", h: 8, m: 0 },
+                  { time: "01:00 PM", h: 13, m: 0 },
+                  { time: "08:00 PM", h: 20, m: 0 },
+                  { time: "09:30 PM", h: 21, m: 30 },
+                ].map((slot) => (
                   <Pressable
-                    key={item.label}
+                    key={slot.time}
                     style={[
-                      styles.supportChip,
-                      reminderTime === item.label && styles.supportChipActive,
+                      styles.timeChip,
+                      reminderTime === slot.time && styles.timeChipActive,
                     ]}
-                    onPress={() => handleSelectReminderTime(item.label, item.hour, item.min)}
+                    onPress={() => handleSelectReminderTime(slot.time, slot.h, slot.m)}
                   >
                     <Text
                       style={[
-                        styles.supportChipText,
-                        reminderTime === item.label && styles.supportChipTextActive,
+                        styles.timeChipText,
+                        reminderTime === slot.time && styles.timeChipTextActive,
                       ]}
                     >
-                      {item.label}
+                      {slot.time}
                     </Text>
                   </Pressable>
                 ))}
               </View>
 
-              {/* Action Buttons for Notification */}
-              <View style={styles.notifButtonRow}>
+              <View style={styles.notifActionsRow}>
                 {notificationPermission !== "granted" ? (
                   <Pressable
-                    style={({ pressed }) => [styles.enableNotifBtn, pressed && styles.buttonPressed]}
+                    style={styles.notifActionBtn}
                     onPress={handleRequestNotification}
                   >
-                    <Text style={styles.enableNotifBtnText}>Enable Device Notifications 🔔</Text>
+                    <Text style={styles.notifActionBtnText}>Enable Reminders</Text>
                   </Pressable>
-                ) : null}
-
-                <Pressable
-                  style={({ pressed }) => [styles.testNotifBtn, pressed && styles.ghostPressed]}
-                  onPress={handleTestNotification}
-                >
-                  <Text style={styles.testNotifBtnText}>Send Instant Test Notification ⚡</Text>
-                </Pressable>
+                ) : (
+                  <Pressable
+                    style={styles.notifActionBtn}
+                    onPress={handleTestNotification}
+                  >
+                    <Text style={styles.notifActionBtnText}>Send Test Reminder</Text>
+                  </Pressable>
+                )}
               </View>
             </View>
 
-            {/* Action Buttons */}
-            <View style={styles.settingsActionRow}>
+            {/* Account Actions */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>ACCOUNT</Text>
               <Pressable
-                style={({ pressed }) => [styles.signOutButton, pressed && styles.ghostPressed]}
+                style={({ pressed }) => [styles.signOutBtn, pressed && styles.btnPressed]}
                 onPress={handleSignOut}
               >
-                <Text style={styles.signOutText}>Sign Out</Text>
+                <Ionicons name="log-out-outline" size={18} color={theme.colors.pure} />
+                <Text style={styles.signOutBtnText}>Sign Out</Text>
               </Pressable>
 
               <Pressable
-                style={({ pressed }) => [styles.deleteButton, pressed && styles.deletePressed]}
+                style={({ pressed }) => [styles.deleteBtn, pressed && styles.btnPressed]}
                 onPress={handleDeleteAccount}
               >
-                <Text style={styles.deleteText}>Delete Account</Text>
+                <Ionicons name="trash-outline" size={16} color={theme.colors.crimsonError} />
+                <Text style={styles.deleteBtnText}>Delete Account & History</Text>
               </Pressable>
             </View>
           </View>
         )}
       </ScrollView>
+
+      {/* ------------------------------------------------------------------- */}
+      {/* MOBILE BOTTOM NAVIGATION BAR */}
+      {/* ------------------------------------------------------------------- */}
+      <View
+        style={[
+          styles.bottomTabBar,
+          {
+            paddingBottom: Math.max(insets.bottom, 10),
+            height: theme.mobile.tabBarHeight + Math.max(insets.bottom, 10),
+          },
+        ]}
+      >
+        <Pressable
+          style={[styles.tabItem, activeTab === "plan" && styles.tabItemActive]}
+          onPress={() => setActiveTab("plan")}
+        >
+          <Ionicons
+            name={activeTab === "plan" ? "calendar" : "calendar-outline"}
+            size={22}
+            color={activeTab === "plan" ? theme.colors.pure : theme.colors.fog}
+          />
+          <Text style={[styles.tabItemLabel, activeTab === "plan" && styles.tabItemLabelActive]}>
+            Plan
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.tabItem, activeTab === "lessons" && styles.tabItemActive]}
+          onPress={() => setActiveTab("lessons")}
+        >
+          <Ionicons
+            name={activeTab === "lessons" ? "library" : "library-outline"}
+            size={22}
+            color={activeTab === "lessons" ? theme.colors.pure : theme.colors.fog}
+          />
+          <Text style={[styles.tabItemLabel, activeTab === "lessons" && styles.tabItemLabelActive]}>
+            Lessons
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.tabItem, activeTab === "mistakes" && styles.tabItemActive]}
+          onPress={() => setActiveTab("mistakes")}
+        >
+          <Ionicons
+            name={activeTab === "mistakes" ? "alert-circle" : "alert-circle-outline"}
+            size={22}
+            color={activeTab === "mistakes" ? theme.colors.pure : theme.colors.fog}
+          />
+          <Text style={[styles.tabItemLabel, activeTab === "mistakes" && styles.tabItemLabelActive]}>
+            Mistakes
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.tabItem, activeTab === "vocabulary" && styles.tabItemActive]}
+          onPress={() => setActiveTab("vocabulary")}
+        >
+          <Ionicons
+            name={activeTab === "vocabulary" ? "bookmark" : "bookmark-outline"}
+            size={22}
+            color={activeTab === "vocabulary" ? theme.colors.pure : theme.colors.fog}
+          />
+          <Text style={[styles.tabItemLabel, activeTab === "vocabulary" && styles.tabItemLabelActive]}>
+            Vocab
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.tabItem, activeTab === "profile" && styles.tabItemActive]}
+          onPress={() => setActiveTab("profile")}
+        >
+          <Ionicons
+            name={activeTab === "profile" ? "person" : "person-outline"}
+            size={22}
+            color={activeTab === "profile" ? theme.colors.pure : theme.colors.fog}
+          />
+          <Text style={[styles.tabItemLabel, activeTab === "profile" && styles.tabItemLabelActive]}>
+            Profile
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1224,990 +1312,960 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.obsidian,
     justifyContent: "center",
     alignItems: "center",
+    gap: 12,
   },
   loadingText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.ash,
-    marginTop: theme.spacing.lg,
-    fontSize: 14,
   },
-  errorBanner: {
-    backgroundColor: "rgba(255, 82, 82, 0.15)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.3)",
-    padding: 12,
-    marginHorizontal: 20,
-    marginTop: 16,
-    borderRadius: theme.radii.sm,
-  },
-  errorBannerText: {
-    color: theme.colors.crimsonError,
-    fontSize: 13,
-    textAlign: "center",
-  },
-
-  // -------------------------------------------------------------------------
-  // STICKY TOP NAV
-  // -------------------------------------------------------------------------
-  navBar: {
-    backgroundColor: theme.colors.glassNav,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderMuted,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    zIndex: 100,
-    ...Platform.select({
-      web: {
-        position: "sticky" as any,
-        top: 0,
-        backdropFilter: "blur(24px)",
-      },
-    }),
-  },
-  navContent: {
-    maxWidth: 1200,
-    width: "100%",
-    alignSelf: "center",
+  mobileAppBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: 12,
+    backgroundColor: theme.colors.glassNav,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderMuted,
+    zIndex: 10,
   },
-  brandContainer: {
+  appBarLeft: {
     flexDirection: "row",
     alignItems: "center",
-    marginRight: 24,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+  },
+  appBarBrand: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   brandLogoImage: {
-    width: 124,
-    height: 38,
-    ...Platform.select({
-      web: {
-        userSelect: "none" as any,
-      },
-    }),
+    width: 110,
+    height: 32,
   },
-  navItemsScroll: {
+  appBarRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 8,
   },
-  navItem: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: theme.radii.sm,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+  streakBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 183, 77, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 183, 77, 0.28)",
+    borderRadius: theme.radii.full,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    gap: 3,
   },
-  navItemActive: {
-    backgroundColor: theme.colors.glassFill,
+  streakEmoji: {
+    fontSize: 12,
   },
-  navItemText: {
-    color: theme.colors.fog,
-    fontSize: 11,
+  streakCount: {
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    fontWeight: "500",
-  },
-  navItemTextActive: {
-    color: theme.colors.pure,
-  },
-  navCtaButton: {
-    backgroundColor: theme.colors.pure,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: theme.radii.sm,
-    marginLeft: 16,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  navCtaText: {
-    color: theme.colors.void,
     fontSize: 11,
-    fontWeight: "600",
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
+    fontWeight: "700",
+    color: theme.colors.amberWarning,
   },
-
-  // -------------------------------------------------------------------------
-  // MAIN BODY
-  // -------------------------------------------------------------------------
+  levelBadge: {
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    borderRadius: theme.radii.full,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  levelBadgeText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  avatarBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarBtnActive: {
+    borderColor: theme.colors.irisGleam,
+    backgroundColor: theme.colors.graphite,
+  },
+  mainContainer: {
+    flex: 1,
+  },
   mainScroll: {
-    flexGrow: 1,
-    paddingBottom: 64,
-  },
-  contentContainer: {
-    maxWidth: 1200,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    maxWidth: theme.mobile.maxContentWidth,
     width: "100%",
     alignSelf: "center",
-    paddingHorizontal: 20,
-    paddingTop: 32,
   },
-
-  // -------------------------------------------------------------------------
-  // HERO SECTION
-  // -------------------------------------------------------------------------
-  heroAtmosphere: {
-    paddingVertical: 40,
+  tabContent: {
+    gap: theme.spacing.lg,
+  },
+  errorBanner: {
+    flexDirection: "row",
     alignItems: "center",
-    textAlign: "center",
-    marginBottom: 24,
-  },
-  heroEyebrow: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: "rgba(255, 82, 82, 0.12)",
     borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
+    borderColor: "rgba(255, 82, 82, 0.3)",
+    borderRadius: theme.radii.sm,
+    padding: 10,
+    gap: 8,
+    marginBottom: theme.spacing.sm,
+  },
+  errorBannerText: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.crimsonError,
+  },
+  heroActionCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.xl,
+    padding: theme.spacing.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    overflow: "hidden",
+    ...theme.shadows.card,
+  },
+  ambientCardGlow: {
+    position: "absolute",
+    top: -40,
+    right: -40,
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: theme.colors.glowIris,
+    pointerEvents: "none",
+  },
+  heroTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: theme.spacing.sm,
+  },
+  heroEyebrowPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: theme.radii.full,
-    paddingHorizontal: 20,
-    paddingVertical: 6,
-    marginBottom: 20,
+    gap: 6,
+  },
+  greenPulse: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.emeraldSuccess,
   },
   heroEyebrowText: {
-    color: theme.colors.cloud,
-    fontSize: 11,
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "500",
+    fontSize: theme.fontSizes.micro,
+    color: theme.colors.ash,
+    letterSpacing: 0.8,
+    fontWeight: "600",
+  },
+  heroCefrText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: theme.fontSizes.micro,
+    color: theme.colors.paleIris,
+    fontWeight: "700",
   },
   heroHeadline: {
-    fontSize: Platform.OS === "web" ? 72 : 44,
-    fontWeight: "300",
-    color: theme.colors.pure,
     fontFamily: theme.fonts.serif,
-    letterSpacing: -1,
-    textAlign: "center",
-    lineHeight: Platform.OS === "web" ? 76 : 48,
-    marginBottom: 16,
+    fontSize: theme.fontSizes.headingMd,
+    color: theme.colors.cloud,
+    marginBottom: 4,
   },
   heroHeadlineItalic: {
     fontStyle: "italic",
+    color: theme.colors.irisGleam,
   },
   heroSubhead: {
-    fontSize: 16,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.ash,
-    textAlign: "center",
-    maxWidth: 620,
-    lineHeight: 24,
-    marginBottom: 32,
+    lineHeight: 18,
+    marginBottom: theme.spacing.lg,
   },
-  heroCtaRow: {
+  primaryHeroBtn: {
     flexDirection: "row",
-    gap: 12,
-    marginBottom: 24,
-  },
-  heroPrimaryCta: {
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: theme.colors.pure,
+    height: 48,
     borderRadius: theme.radii.sm,
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+    gap: 8,
   },
-  heroPrimaryCtaText: {
+  primaryHeroBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm + 1,
+    fontWeight: "700",
     color: theme.colors.void,
-    fontSize: 15,
-    fontWeight: "500",
-    letterSpacing: 0.2,
   },
-  laurelContainer: {
-    marginTop: 8,
-  },
-  laurelText: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-  },
-
-  // -------------------------------------------------------------------------
-  // TODAY'S PLAN CARD
-  // -------------------------------------------------------------------------
-  planCard: {
+  cardContainer: {
     backgroundColor: theme.colors.graphiteCard,
     borderRadius: theme.radii.lg,
-    padding: theme.spacing.xxxl,
+    padding: theme.spacing.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
-    marginBottom: 32,
+    ...theme.shadows.sm,
   },
   cardHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 20,
+    alignItems: "center",
+    marginBottom: theme.spacing.md,
   },
   cardEyebrow: {
-    color: theme.colors.fog,
-    fontSize: 10,
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: 4,
+    fontSize: 10,
+    color: theme.colors.fog,
+    letterSpacing: 0.8,
+    fontWeight: "600",
   },
   cardTitle: {
-    color: theme.colors.pure,
-    fontSize: 22,
-    fontWeight: "400",
-  },
-  levelPill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    borderWidth: 1,
-    borderColor: "rgba(132, 125, 255, 0.3)",
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-  },
-  levelPillText: {
-    color: theme.colors.irisGleam,
-    fontSize: 11,
-    fontFamily: theme.fonts.mono,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.body,
     fontWeight: "600",
+    color: theme.colors.cloud,
+    marginTop: 2,
+  },
+  progressPercentPill: {
+    backgroundColor: "rgba(132, 125, 255, 0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.full,
+  },
+  progressPercentText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 12,
+    fontWeight: "700",
+    color: theme.colors.irisGleam,
   },
   goalChipsRow: {
     flexDirection: "row",
-    gap: 10,
-    marginBottom: 20,
+    gap: 8,
+    marginBottom: theme.spacing.md,
   },
   goalChip: {
     flex: 1,
-    backgroundColor: theme.colors.obsidian,
+    paddingVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    paddingVertical: 10,
-    alignItems: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
   },
   goalChipActive: {
-    borderColor: theme.colors.pure,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: theme.colors.surfaceElevated,
+    borderColor: theme.colors.irisGleam,
   },
   goalChipText: {
-    color: theme.colors.fog,
-    fontSize: 11,
     fontFamily: theme.fonts.mono,
+    fontSize: 12,
+    color: theme.colors.ash,
+    fontWeight: "600",
   },
   goalChipTextActive: {
     color: theme.colors.pure,
-    fontWeight: "600",
   },
   progressBarTrack: {
     height: 6,
-    backgroundColor: theme.colors.obsidian,
+    backgroundColor: theme.colors.abyss,
     borderRadius: 3,
     overflow: "hidden",
     marginBottom: 8,
   },
   progressBarFill: {
     height: "100%",
-    backgroundColor: theme.colors.cyanSignal,
+    backgroundColor: theme.colors.irisGleam,
     borderRadius: 3,
   },
   progressSubtext: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.micro + 1,
     color: theme.colors.fog,
-    fontSize: 12,
   },
-
-  // -------------------------------------------------------------------------
-  // ACTIVITY SEQUENCE
-  // -------------------------------------------------------------------------
-  sectionBlock: {
-    marginBottom: 40,
-  },
-  sectionTitle: {
-    color: theme.colors.fog,
-    fontSize: 11,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    marginBottom: 16,
-  },
-  activityList: {
-    gap: 12,
-  },
-  activityItem: {
+  sectionHeader: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  activityItemCompleted: {
-    opacity: 0.75,
-    borderColor: "rgba(34, 197, 94, 0.25)",
-  },
-  activityItemCurrent: {
-    borderColor: "rgba(0, 229, 255, 0.4)",
-    backgroundColor: "rgba(15, 25, 35, 0.8)",
-    ...Platform.select({
-      web: {
-        boxShadow: "0 4px 20px rgba(0, 229, 255, 0.1)",
-      } as any,
-    }),
-  },
-  activityStatusCol: {
-    width: 44,
-    alignItems: "center",
-  },
-  activityIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
-  },
-  activityIconCircleCompleted: {
-    backgroundColor: "rgba(34, 197, 94, 0.15)",
-    borderColor: theme.colors.emeraldSuccess,
-  },
-  activityIconCircleCurrent: {
-    backgroundColor: "rgba(0, 229, 255, 0.15)",
-    borderColor: theme.colors.cyanSignal,
-  },
-  activityStatusIcon: {
-    color: theme.colors.fog,
-    fontSize: 13,
-    fontWeight: "bold",
-    fontFamily: theme.fonts.mono,
-  },
-  activityStatusIconCompleted: {
-    color: theme.colors.emeraldSuccess,
-    fontSize: 15,
-  },
-  activityStatusIconCurrent: {
-    color: theme.colors.cyanSignal,
-    fontSize: 12,
-  },
-  activityContentCol: {
-    flex: 1,
-    paddingHorizontal: 12,
-  },
-  activityMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    marginTop: 4,
     marginBottom: 4,
   },
-  activityModeTag: {
-    color: theme.colors.orchidBloom,
-    fontSize: 10,
+  sectionTitle: {
     fontFamily: theme.fonts.mono,
-    letterSpacing: 0.8,
-    fontWeight: "600",
-  },
-  activityStageBadge: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-  },
-  activityDurationText: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-  },
-  completedBadge: {
-    backgroundColor: "rgba(34, 197, 94, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: theme.radii.full,
-  },
-  completedBadgeText: {
-    color: theme.colors.emeraldSuccess,
-    fontSize: 9,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "600",
-  },
-  upNextBadge: {
-    backgroundColor: "rgba(0, 229, 255, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: theme.radii.full,
-  },
-  upNextBadgeText: {
-    color: theme.colors.cyanSignal,
-    fontSize: 9,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "600",
-  },
-  activityTitleText: {
-    color: theme.colors.pure,
-    fontSize: 16,
-    fontWeight: "500",
-    marginBottom: 2,
-  },
-  activityObjectiveText: {
-    color: theme.colors.ash,
-    fontSize: 13,
-  },
-  activityActionCol: {
-    paddingLeft: 8,
-  },
-  activityActionBtn: {
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
-  },
-  activityActionBtnCurrent: {
-    backgroundColor: theme.colors.pure,
-    borderColor: theme.colors.pure,
-  },
-  activityActionBtnText: {
-    color: theme.colors.fog,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  activityActionBtnTextCurrent: {
-    color: theme.colors.void,
-    fontWeight: "700",
-  },
-  activityActionArrow: {
-    color: theme.colors.fog,
-    fontSize: 18,
-  },
-
-  // -------------------------------------------------------------------------
-  // CHROMATIC CATEGORY TILES
-  // -------------------------------------------------------------------------
-  categoryGrid: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    gap: 16,
-  },
-  categoryTile: {
-    flex: 1,
-    borderRadius: theme.radii.tile,
-    padding: theme.spacing.xxxl,
-    minHeight: 220,
-    justifyContent: "space-between",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  categoryTileMono: {
-    color: theme.colors.pure,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "600",
-  },
-  categoryTileHeading: {
-    fontSize: 22,
-    fontWeight: "300",
-    fontFamily: theme.fonts.serif,
-    color: theme.colors.pure,
-    lineHeight: 28,
-  },
-  categoryTileDesc: {
-    fontSize: 13,
-    color: "rgba(255, 255, 255, 0.85)",
-    lineHeight: 18,
-  },
-  categoryTileCta: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.pure,
-  },
-
-  // -------------------------------------------------------------------------
-  // TAB 2: LESSONS
-  // -------------------------------------------------------------------------
-  tabHeaderBlock: {
-    marginBottom: 32,
-  },
-  tabEyebrow: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    marginBottom: 8,
-  },
-  tabHeadline: {
-    fontSize: 38,
-    fontWeight: "300",
-    color: theme.colors.pure,
-    fontFamily: theme.fonts.serif,
-    marginBottom: 8,
-  },
-  tabSubhead: {
-    fontSize: 15,
-    color: theme.colors.ash,
-    maxWidth: 600,
-  },
-  recommendedCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.xxxl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    marginBottom: 32,
-  },
-  stagePill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-  },
-  stagePillText: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "600",
-  },
-  cefrRefText: {
-    color: theme.colors.fog,
     fontSize: 11,
-    fontFamily: theme.fonts.mono,
-  },
-  recommendedTitle: {
-    fontSize: 24,
-    color: theme.colors.pure,
-    fontWeight: "400",
-    marginVertical: 12,
-  },
-  ruleSummaryText: {
-    fontSize: 14,
+    fontWeight: "700",
     color: theme.colors.ash,
-    lineHeight: 22,
-    marginBottom: 12,
+    letterSpacing: 1.0,
   },
-  practiceActivityText: {
-    fontSize: 13,
-    color: theme.colors.cyanSignal,
-    marginBottom: 24,
-  },
-  primaryButton: {
-    backgroundColor: theme.colors.pure,
-    borderRadius: theme.radii.sm,
-    height: 48,
-    justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  primaryButtonText: {
-    color: theme.colors.void,
-    fontSize: 15,
-    fontWeight: "500",
-  },
-  skillsList: {
-    gap: 12,
-  },
-  skillRow: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.sm,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  skillInfo: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  skillName: {
-    color: theme.colors.pure,
-    fontSize: 13,
+  sectionBadge: {
     fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.fog,
   },
-  skillScore: {
-    color: theme.colors.cyanSignal,
-    fontSize: 13,
-    fontFamily: theme.fonts.mono,
-  },
-  skillBarTrack: {
-    height: 4,
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  skillBarFill: {
-    height: "100%",
-    backgroundColor: theme.colors.irisGleam,
-  },
-
-  // -------------------------------------------------------------------------
-  // TAB 3: MISTAKES
-  // -------------------------------------------------------------------------
-  mistakesList: {
-    gap: 16,
+  activityList: {
+    gap: 10,
   },
   emptyCard: {
     backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: theme.spacing.xl,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    gap: 8,
+  },
+  emptyCardText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  smallActionBtn: {
+    backgroundColor: theme.colors.pure,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: theme.radii.sm,
-    padding: 24,
+  },
+  smallActionBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
+    color: theme.colors.void,
+  },
+  activityCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  activityCardCompleted: {
+    opacity: 0.75,
+    backgroundColor: "rgba(22, 23, 26, 0.6)",
+  },
+  activityCardCurrent: {
+    borderColor: theme.colors.borderIris,
+    backgroundColor: "rgba(28, 29, 34, 0.95)",
+  },
+  activityCardLeft: {
+    marginRight: 12,
+  },
+  stepIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.abyss,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
     alignItems: "center",
+    justifyContent: "center",
   },
-  emptyText: {
+  stepCircleCompleted: {
+    backgroundColor: "rgba(56, 211, 159, 0.15)",
+    borderColor: theme.colors.emeraldSuccess,
+  },
+  stepCircleCurrent: {
+    backgroundColor: theme.colors.pure,
+    borderColor: theme.colors.pure,
+  },
+  stepNumText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 12,
+    fontWeight: "700",
     color: theme.colors.fog,
-    fontSize: 14,
-    textAlign: "center",
+  },
+  activityCardBody: {
+    flex: 1,
+  },
+  activityBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  modeTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: theme.radii.xs,
+  },
+  modeTagText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    color: theme.colors.paleIris,
+    fontWeight: "700",
+  },
+  activityDurationText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.fog,
+  },
+  doneBadge: {
+    backgroundColor: "rgba(56, 211, 159, 0.12)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: theme.radii.xs,
+  },
+  doneBadgeText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    color: theme.colors.emeraldSuccess,
+    fontWeight: "700",
+  },
+  upNextBadge: {
+    backgroundColor: "rgba(132, 125, 255, 0.18)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: theme.radii.xs,
+  },
+  upNextBadgeText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    color: theme.colors.irisGleam,
+    fontWeight: "700",
+  },
+  activityTitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm + 1,
+    fontWeight: "600",
+    color: theme.colors.cloud,
+    marginBottom: 2,
+  },
+  activityObjective: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.micro + 2,
+    color: theme.colors.ash,
+    lineHeight: 16,
+  },
+  activityCardRight: {
+    marginLeft: 8,
+  },
+  modeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  modeGridCard: {
+    width: "48.5%",
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: 14,
+    borderWidth: 1,
+    minHeight: 140,
+    justifyContent: "space-between",
+  },
+  modeIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  modeCardTitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+    marginBottom: 4,
+  },
+  modeCardDesc: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.ash,
+    lineHeight: 15,
+    marginBottom: 8,
+  },
+  modeCardAction: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  tabHeroSection: {
+    marginBottom: 4,
+  },
+  tabHeroEyebrow: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.paleIris,
+    letterSpacing: 1.0,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  tabHeroHeadline: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingMd,
+    color: theme.colors.cloud,
+    marginBottom: 4,
+  },
+  tabHeroSubhead: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    lineHeight: 18,
+  },
+  stagePill: {
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.full,
+  },
+  stagePillText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.paleIris,
+    fontWeight: "700",
+  },
+  cefrRefText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.fog,
+  },
+  lessonTitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.headingSm,
+    fontWeight: "700",
+    color: theme.colors.cloud,
+    marginBottom: 6,
+  },
+  lessonRule: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  goalTipBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: theme.colors.abyss,
+    padding: 10,
+    borderRadius: theme.radii.sm,
+    gap: 8,
+  },
+  goalTipText: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.cloud,
+  },
+  skillRow: {
+    paddingVertical: 10,
+  },
+  skillRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderMuted,
+  },
+  skillRowTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  skillNameText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.cloud,
+    fontWeight: "600",
+  },
+  skillPercentText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.ash,
+  },
+  skillTrack: {
+    height: 6,
+    backgroundColor: theme.colors.abyss,
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  skillFill: {
+    height: "100%",
+    borderRadius: 3,
   },
   mistakeCard: {
     backgroundColor: theme.colors.graphiteCard,
     borderRadius: theme.radii.lg,
-    padding: 24,
+    padding: 14,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
+    gap: 10,
   },
-  mistakeHeader: {
+  mistakeCardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 16,
+    alignItems: "center",
   },
-  mistakeCategory: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
+  mistakeTag: {
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.xs,
+  },
+  mistakeTagText: {
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
+    fontSize: 10,
+    color: theme.colors.paleIris,
+    fontWeight: "700",
   },
-  mistakeSeverity: {
+  mistakeSeverityText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
     color: theme.colors.amberWarning,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
+    fontWeight: "600",
   },
-  comparisonRow: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    gap: 16,
-    marginBottom: 16,
+  mistakeCompareBox: {
+    backgroundColor: "rgba(255, 82, 82, 0.08)",
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.crimsonError,
+    borderRadius: theme.radii.xs,
+    padding: 10,
   },
-  comparisonCol: {
-    flex: 1,
-  },
-  compLabel: {
-    color: theme.colors.crimsonError,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
+  saidHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     marginBottom: 4,
   },
-  originalText: {
-    color: theme.colors.ash,
-    fontSize: 15,
+  saidLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.crimsonError,
+    fontWeight: "700",
+  },
+  saidText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.cloud,
     fontStyle: "italic",
   },
-  compLabelCorrect: {
-    color: theme.colors.emeraldSuccess,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
+  recastCompareBox: {
+    backgroundColor: "rgba(56, 211, 159, 0.08)",
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.emeraldSuccess,
+    borderRadius: theme.radii.xs,
+    padding: 10,
+  },
+  recastHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     marginBottom: 4,
   },
-  correctedText: {
+  recastLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.emeraldSuccess,
+    fontWeight: "700",
+  },
+  recastText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.pure,
-    fontSize: 15,
-    fontWeight: "500",
+    fontWeight: "600",
   },
-  explanationText: {
+  mistakeWhyText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
     color: theme.colors.ash,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-
-  // -------------------------------------------------------------------------
-  // TAB 4: VOCABULARY
-  // -------------------------------------------------------------------------
-  vocabGrid: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    flexWrap: "wrap",
-    gap: 16,
+    lineHeight: 16,
   },
   vocabCard: {
-    flex: 1,
-    minWidth: 320,
     backgroundColor: theme.colors.graphiteCard,
     borderRadius: theme.radii.lg,
-    padding: 24,
+    padding: 14,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
+    gap: 6,
+  },
+  vocabHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   vocabTerm: {
-    fontSize: 18,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.subheading,
+    fontWeight: "700",
     color: theme.colors.pure,
-    fontWeight: "500",
-    marginBottom: 8,
   },
   vocabContext: {
-    fontSize: 14,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.ash,
     fontStyle: "italic",
-    lineHeight: 20,
-    marginBottom: 12,
   },
-  vocabTip: {
-    fontSize: 12,
-    color: theme.colors.cyanSignal,
-  },
-
-  // -------------------------------------------------------------------------
-  // TAB 5: PROGRESS
-  // -------------------------------------------------------------------------
-  statsRow: {
+  vocabTipBox: {
     flexDirection: "row",
-    gap: 16,
-    marginBottom: 32,
+    alignItems: "center",
+    backgroundColor: theme.colors.abyss,
+    padding: 8,
+    borderRadius: theme.radii.sm,
+    gap: 6,
+    marginTop: 4,
   },
-  statCard: {
+  vocabTipText: {
     flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.paleIris,
+  },
+  profileHeroCard: {
     backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 24,
+    borderRadius: theme.radii.xl,
+    padding: theme.spacing.xl,
     alignItems: "center",
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
   },
-  statNumber: {
-    fontSize: 28,
-    color: theme.colors.pure,
-    fontFamily: theme.fonts.serif,
-    marginBottom: 4,
-  },
-  statLabel: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-  },
-  bandsContainer: {
-    gap: 12,
-  },
-  bandCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.sm,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  bandTitle: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: 6,
-  },
-  bandItems: {
-    color: theme.colors.ash,
-    fontSize: 13,
-  },
-  ghostButton: {
-    borderWidth: 1,
-    borderColor: theme.colors.borderActive,
-    borderRadius: theme.radii.sm,
-    height: 48,
+  avatarLargeCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 2,
+    borderColor: theme.colors.irisGleam,
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "center",
-    marginTop: 16,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+    marginBottom: theme.spacing.sm,
   },
-  ghostButtonText: {
-    color: theme.colors.cloud,
-    fontSize: 14,
-  },
-
-  // -------------------------------------------------------------------------
-  // TAB 6: SETTINGS
-  // -------------------------------------------------------------------------
-  settingsCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: 24,
-  },
-  settingsLabel: {
+  profileTitle: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingSm,
     color: theme.colors.pure,
-    fontSize: 13,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-    marginBottom: 6,
+    marginBottom: 2,
   },
-  settingsDesc: {
+  profileSubtitle: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.ash,
-    fontSize: 13,
-    lineHeight: 20,
-    marginBottom: 16,
+    marginBottom: theme.spacing.md,
   },
-  supportChipsRow: {
+  retakeAssessmentBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: theme.radii.full,
+    gap: 6,
+  },
+  retakeAssessmentBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    fontWeight: "600",
+    color: theme.colors.paleIris,
+  },
+  statsRow: {
     flexDirection: "row",
     gap: 10,
   },
-  supportChip: {
+  statBox: {
     flex: 1,
-    backgroundColor: theme.colors.obsidian,
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: 14,
+    alignItems: "center",
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    paddingVertical: 10,
+  },
+  statNum: {
+    fontFamily: theme.fonts.mono,
+    fontSize: theme.fontSizes.headingSm,
+    fontWeight: "700",
+    color: theme.colors.pure,
+    marginBottom: 2,
+  },
+  statLbl: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    color: theme.colors.fog,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  settingsGroupTitle: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.ash,
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  settingsGroupDesc: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.fog,
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  supportChipsRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  supportChip: {
+    flex: 1,
+    paddingVertical: 8,
     alignItems: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+    justifyContent: "center",
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
   },
   supportChipActive: {
-    borderColor: theme.colors.pure,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: theme.colors.surfaceElevated,
+    borderColor: theme.colors.irisGleam,
   },
   supportChipText: {
-    color: theme.colors.fog,
-    fontSize: 11,
     fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.fog,
+    fontWeight: "700",
   },
   supportChipTextActive: {
     color: theme.colors.pure,
-    fontWeight: "600",
   },
-  settingsCardHeaderRow: {
+  timeChipsRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 8,
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 12,
   },
-  notifStatusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
+  timeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
     borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
   },
-  notifStatusGranted: {
-    backgroundColor: "rgba(34, 197, 94, 0.15)",
-    borderColor: "rgba(34, 197, 94, 0.4)",
+  timeChipActive: {
+    backgroundColor: theme.colors.surfaceElevated,
+    borderColor: theme.colors.irisGleam,
   },
-  notifStatusDefault: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    borderColor: "rgba(132, 125, 255, 0.4)",
-  },
-  notifStatusText: {
-    fontSize: 10,
+  timeChipText: {
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
+    fontSize: 11,
+    color: theme.colors.ash,
     fontWeight: "600",
+  },
+  timeChipTextActive: {
     color: theme.colors.pure,
   },
-  settingsSubLabel: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginTop: 12,
-    marginBottom: 8,
-    fontWeight: "500",
-  },
-  notifFeedbackBanner: {
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    borderColor: theme.colors.irisGleam,
+  feedbackBanner: {
+    backgroundColor: "rgba(56, 211, 159, 0.12)",
     borderWidth: 1,
+    borderColor: "rgba(56, 211, 159, 0.28)",
     borderRadius: theme.radii.sm,
     padding: 10,
     marginBottom: 12,
   },
-  notifFeedbackText: {
-    color: theme.colors.pure,
+  feedbackBannerText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 12,
-    fontWeight: "500",
+    color: theme.colors.emeraldSuccess,
   },
-  notifButtonRow: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    gap: 12,
-    marginTop: 16,
+  notifActionsRow: {
+    flexDirection: "row",
   },
-  enableNotifBtn: {
-    backgroundColor: theme.colors.irisGleam,
+  notifActionBtn: {
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: theme.radii.sm,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+  },
+  notifActionBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    fontWeight: "600",
+    color: theme.colors.pure,
+  },
+  signOutBtn: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
+    backgroundColor: theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    height: 44,
+    borderRadius: theme.radii.sm,
+    gap: 8,
+    marginBottom: 10,
   },
-  enableNotifBtnText: {
+  signOutBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
     color: theme.colors.pure,
-    fontSize: 13,
+  },
+  deleteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 40,
+    gap: 6,
+  },
+  deleteBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.crimsonError,
+  },
+  bottomTabBar: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: theme.colors.glassNav,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderMuted,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    paddingHorizontal: theme.spacing.sm,
+    zIndex: 100,
+  },
+  tabItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 6,
+  },
+  tabItemActive: {},
+  tabItemLabel: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 10,
+    fontWeight: "500",
+    color: theme.colors.fog,
+    marginTop: 3,
+  },
+  tabItemLabelActive: {
+    color: theme.colors.pure,
     fontWeight: "600",
   },
-  testNotifBtn: {
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.glassFill,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  testNotifBtnText: {
-    color: theme.colors.cloud,
-    fontSize: 13,
-    fontWeight: "500",
-  },
-  settingsActionRow: {
-    flexDirection: "row",
-    gap: 16,
-  },
-  signOutButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    height: 48,
-    justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  signOutText: {
-    color: theme.colors.ash,
-    fontSize: 14,
-  },
-  deleteButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.3)",
-    borderRadius: theme.radii.sm,
-    height: 48,
-    justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  deleteText: {
-    color: theme.colors.crimsonError,
-    fontSize: 14,
-  },
-  deletePressed: {
-    backgroundColor: "rgba(255, 82, 82, 0.1)",
-  },
-  ghostPressed: {
-    backgroundColor: theme.colors.glassFillHover,
-  },
-  buttonPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.99 }],
+  btnPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.98 }],
   },
 });

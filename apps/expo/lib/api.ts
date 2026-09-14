@@ -63,6 +63,7 @@ export interface LearnerProfile {
   current_focus?: string | null;
   skill_mastery?: Record<string, number>;
   recommended_lesson?: PersonalizedLesson | null;
+  streak_days?: number;
 }
 
 export interface PersonalizedLesson {

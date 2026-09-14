@@ -1,21 +1,18 @@
 /**
- * Pravaah — Spoken English Proficiency Diagnostic Assessment
+ * Pravaah — Mobile-First Spoken English Diagnostic Assessment
  *
- * Connects to LiveKit Cloud WebRTC voice pipeline (wss://pravaah-qj6q5gxo.livekit.cloud)
- * for realtime spoken audio transmission and speech-to-text evaluation.
- *
- * Gathers task-aware linguistic evidence (verbatim transcripts with preserved errors)
- * and speaking behavior telemetry (duration, pauses, restarts, WPM, latency) across
- * the 4 diagnostic tasks:
+ * Connects to LiveKit Cloud WebRTC voice pipeline for real-time speech evaluation.
+ * Gathers task-aware linguistic evidence across 4 diagnostic tasks:
  *   1. Introduction & Daily Routine (A1/A2)
  *   2. Past Experience & Storytelling (A2/B1)
  *   3. Opinion & Reasoning (B1/B2)
  *   4. Hypothetical & Complex Discussion (B2/C1)
  *
- * Submits raw task evidence to POST /api/assessment for Gemini LLM analysis,
- * Pydantic validation, and Pravaah Rubric scoring (E/D/C/B/A/S).
- *
- * NO hardcoded fallback levels or static ratings.
+ * Mobile-first experience with:
+ * - 4-step segmented progress bar
+ * - Collapsible Hindi hint accordion
+ * - Large thumb recording trigger with live animated visualizer
+ * - Native diagnostic report card with CEFR reference and daily plan generator
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -31,6 +28,8 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { Room, RoomEvent, Track } from "livekit-client";
 import {
   createSession,
@@ -93,19 +92,6 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   },
 ];
 
-// Filter ambient noise, repetition loops, and speech recognition hallucinations
-function cleanTranscript(raw: string): string {
-  if (!raw) return "";
-  let text = raw.trim();
-  // 1. Remove continuous repetitive phrase loops (caused by ambient microphone feedback)
-  text = text.replace(/(\b.+?\b)(?:\s+\1){2,}/gi, "$1");
-  // 2. Remove 3+ identical consecutive words
-  text = text.replace(/\b(\w+)(?:\s+\1){2,}\b/gi, "$1 $1");
-  // 3. Normalize whitespace
-  return text.replace(/\s+/g, " ").trim();
-}
-
-// Optional browser SpeechRecognition helper (used as realtime transcription assist on web)
 function getSpeechRecognition(): any | null {
   if (Platform.OS !== "web" || typeof window === "undefined") return null;
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -113,10 +99,11 @@ function getSpeechRecognition(): any | null {
 }
 
 export default function AssessmentScreen() {
+  const insets = useSafeAreaInsets();
   const [currentStep, setCurrentStep] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedSeconds, setRecordedSeconds] = useState(0);
-  const [showHindi, setShowHindi] = useState(true);
+  const [showHindi, setShowHindi] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState(30);
@@ -142,7 +129,7 @@ export default function AssessmentScreen() {
   const isRecordingRef = useRef<boolean>(false);
   const lastTasksRef = useRef<AssessmentTaskEvidence[]>([]);
 
-  // Result state — entirely from backend, no fallbacks
+  // Result state
   const [assessmentResult, setAssessmentResult] = useState<ProficiencyAssessmentRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -186,7 +173,6 @@ export default function AssessmentScreen() {
           setLivekitConnected(false);
         });
 
-        // Remote assessor audio
         room.on(RoomEvent.TrackSubscribed, (track) => {
           if (track.kind === Track.Kind.Audio && Platform.OS === "web") {
             const audioElement = track.attach();
@@ -221,7 +207,6 @@ export default function AssessmentScreen() {
     };
   }, []);
 
-  // Setup Web Audio Visualizer and Telemetry Detection
   const setupAudioCapture = async () => {
     taskStartTimeRef.current = Date.now();
     speechStartTimeRef.current = 0;
@@ -251,7 +236,6 @@ export default function AssessmentScreen() {
           const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
           const ctx = new AudioCtx();
           audioContextRef.current = ctx;
-          // Ensure AudioContext is active in modern browsers
           if (ctx.state === "suspended") {
             try {
               await ctx.resume();
@@ -272,7 +256,6 @@ export default function AssessmentScreen() {
             analyser.getByteFrequencyData(dataArray);
             const energy = (dataArray[1] + dataArray[2] + dataArray[3] + dataArray[4] + dataArray[5]) / 5;
 
-            // Voice activity detection for telemetry
             const now = Date.now();
             if (energy > 16) {
               if (!isSpeaking) {
@@ -317,7 +300,6 @@ export default function AssessmentScreen() {
     setLiveInterim("");
     await setupAudioCapture();
 
-    // Start Web Speech recognition for verbatim real-time transcript assist
     const recognition = getSpeechRecognition();
     if (recognition) {
       recognition.continuous = true;
@@ -334,7 +316,6 @@ export default function AssessmentScreen() {
           const text = (result[0]?.transcript || "").trim();
           if (!text) continue;
 
-          // Dual-layer pause detection: track inter-phrase timing pauses
           if (lastSpeechTimeRef.current > 0) {
             const gap = now - lastSpeechTimeRef.current;
             if (gap > 650) {
@@ -348,7 +329,6 @@ export default function AssessmentScreen() {
 
           if (result.isFinal) {
             sessionFinal += text + " ";
-            // Detect false starts and repetitions
             if (/\b(\w+)\s+\1\b/i.test(text) || /\b(I|we|they|he|she|it)\s+\w+\s+\1\b/i.test(text)) {
               restartCountRef.current += 1;
             }
@@ -359,18 +339,14 @@ export default function AssessmentScreen() {
 
         if (sessionFinal) {
           committedTextRef.current = (committedTextRef.current + " " + sessionFinal).trim();
+          setCurrentTranscript(committedTextRef.current);
+          setLiveInterim("");
+        } else if (sessionInterim) {
+          setLiveInterim(sessionInterim);
         }
-
-        const fullSoFar = committedTextRef.current;
-        setCurrentTranscript(cleanTranscript(fullSoFar));
-        setLiveInterim(cleanTranscript(sessionInterim));
       };
 
-      recognition.onerror = (event: any) => {
-        console.warn("Speech recognition notice:", event.error);
-      };
-
-      // Auto-restart recognition while user is recording to prevent Chrome timeout/buffer overwrites
+      recognition.onerror = () => {};
       recognition.onend = () => {
         if (isRecordingRef.current) {
           try {
@@ -387,7 +363,6 @@ export default function AssessmentScreen() {
   };
 
   const stopRecording = () => {
-    isRecordingRef.current = false;
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -395,7 +370,10 @@ export default function AssessmentScreen() {
       recognitionRef.current = null;
     }
 
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+    }
+
     if (audioContextRef.current) {
       try {
         audioContextRef.current.close();
@@ -409,7 +387,6 @@ export default function AssessmentScreen() {
     barAnim5.setValue(16);
   };
 
-  // Timer
   useEffect(() => {
     let timer: any;
     if (isRecording) {
@@ -439,20 +416,20 @@ export default function AssessmentScreen() {
   const saveTaskEvidenceAndAdvance = (verbatimTranscript: string) => {
     const now = Date.now();
     const durationMs = taskStartTimeRef.current > 0 ? now - taskStartTimeRef.current : recordedSeconds * 1000;
-    const latencyMs = speechStartTimeRef.current > 0 && taskStartTimeRef.current > 0
-      ? Math.max(0, speechStartTimeRef.current - taskStartTimeRef.current)
-      : 0;
+    const latencyMs =
+      speechStartTimeRef.current > 0 && taskStartTimeRef.current > 0
+        ? Math.max(0, speechStartTimeRef.current - taskStartTimeRef.current)
+        : 0;
 
     const wordCount = verbatimTranscript ? verbatimTranscript.split(/\s+/).filter(Boolean).length : 0;
 
-    // Detect false starts and restarts directly from verbatim transcript patterns
-    const transcriptRestarts = (verbatimTranscript.match(/\b(\w+)\s+\1\b/gi) || []).length
-      + (verbatimTranscript.match(/\b(I\s+\w+)\s+I\s+\w+/gi) || []).length
-      + (verbatimTranscript.match(/\b(want to|prefer to)\s+\w+\s+(want to|prefer to)/gi) || []).length
-      + (verbatimTranscript.match(/\b(was|is|are|were)\s+\w+\s+\1\b/gi) || []).length;
+    const transcriptRestarts =
+      (verbatimTranscript.match(/\b(\w+)\s+\1\b/gi) || []).length +
+      (verbatimTranscript.match(/\b(I\s+\w+)\s+I\s+\w+/gi) || []).length +
+      (verbatimTranscript.match(/\b(want to|prefer to)\s+\w+\s+(want to|prefer to)/gi) || []).length +
+      (verbatimTranscript.match(/\b(was|is|are|were)\s+\w+\s+\1\b/gi) || []).length;
     const finalRestarts = Math.max(restartCountRef.current, transcriptRestarts);
 
-    // Natural cadence check: Ensure pauses accurately reflect natural speech gaps
     let finalPauses = pauseCountRef.current;
     let finalLongPauses = longPauseCountRef.current;
     const durationSec = durationMs / 1000.0;
@@ -467,7 +444,7 @@ export default function AssessmentScreen() {
       task_id: currentQ.id,
       task_title: currentQ.stageTitle,
       prompt: currentQ.question,
-      transcript: verbatimTranscript, // Verbatim transcript preserving all learner errors
+      transcript: verbatimTranscript,
       duration_ms: durationMs,
       word_count: wordCount,
       pause_count: finalPauses,
@@ -504,7 +481,6 @@ export default function AssessmentScreen() {
     setError(null);
 
     try {
-      // Submit raw task evidence to backend for Gemini LLM analysis & rubric scoring
       const response = await submitProficiencyAssessment({
         session_id: sessionId || undefined,
         tasks: finalTasks,
@@ -539,403 +515,290 @@ export default function AssessmentScreen() {
     };
   }, []);
 
-  // -------------------------------------------------------------------------
-  // RESULT VIEW — 100% computed by backend, no hardcoded fallbacks
-  // -------------------------------------------------------------------------
-  if (completed) {
-    if (error || !assessmentResult) {
-      return (
-        <View style={styles.container}>
-          <ScrollView contentContainerStyle={styles.resultScrollContent} showsVerticalScrollIndicator={false}>
-            <View style={styles.resultCard}>
-              <View style={styles.errorEyebrowContainer}>
-                <Text style={styles.errorEyebrowText}>ASSESSMENT EVALUATION NOTICE</Text>
-              </View>
-              <Text style={styles.resultTitle}>Unable to Complete Analysis</Text>
-              <Text style={styles.resultSummaryText}>
-                {error || "An unexpected issue occurred while evaluating your spoken diagnostic."}
-              </Text>
-              <Pressable
-                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
-                onPress={() => {
-                  if (lastTasksRef.current && lastTasksRef.current.length > 0) {
-                    setError(null);
-                    setCompleted(false);
-                    handleFinalizeAssessment(lastTasksRef.current);
-                  } else {
-                    setCompleted(false);
-                    setCurrentStep(0);
-                    setTaskEvidences([]);
-                    setError(null);
-                  }
-                }}
-              >
-                <Text style={styles.primaryButtonText}>Retry Spoken Diagnostic Analysis →</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [styles.secondaryButton, { marginTop: 12 }, pressed && styles.buttonPressed]}
-                onPress={() => {
-                  setCompleted(false);
-                  setCurrentStep(0);
-                  setTaskEvidences([]);
-                  setError(null);
-                }}
-              >
-                <Text style={styles.secondaryButtonText}>Start Over from Question 1</Text>
-              </Pressable>
-            </View>
-          </ScrollView>
+  // =========================================================================
+  // VIEW: ANALYSIS IN PROGRESS
+  // =========================================================================
+  if (isAnalyzing) {
+    return (
+      <View style={[styles.screen, styles.centerView]}>
+        <View style={styles.analyzingCard}>
+          <ActivityIndicator size="large" color={theme.colors.irisGleam} />
+          <Text style={styles.analyzingHeading}>Evaluating Spoken Evidence</Text>
+          <Text style={styles.analyzingDesc}>
+            AI is analyzing your spoken fluency, grammar stability, pauses, and vocabulary complexity...
+          </Text>
         </View>
-      );
-    }
+      </View>
+    );
+  }
 
+  // =========================================================================
+  // VIEW: ASSESSMENT RESULT REPORT CARD
+  // =========================================================================
+  if (completed && assessmentResult) {
     const { pravaah_level, cefr_reference, criteria, notes, strengths, weaknesses } = assessmentResult;
     const levelName = PRAVAAH_LEVEL_NAMES[pravaah_level] || (assessmentResult as any).name || "Elementary";
 
     return (
-      <View style={styles.container}>
-        <ScrollView contentContainerStyle={styles.resultScrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.ambientGlow} />
-
-          <View style={styles.resultCard}>
-            <View style={styles.scorecardLogoWrapper}>
-              <Image
-                source={require("../assets/pravaah_navbar_logo.png")}
-                style={styles.scorecardLogo}
-                resizeMode="contain"
-                accessibilityLabel="Pravaah"
-              />
-            </View>
-            <View style={styles.eyebrowContainer}>
-              <Text style={styles.eyebrowText}>ASSESSMENT COMPLETE • DIAGNOSTIC REPORT</Text>
+      <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) }]}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.resultScroll,
+            { paddingBottom: Math.max(insets.bottom + 20, 32) },
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Header */}
+          <View style={styles.resultHeaderCard}>
+            <View style={styles.scorePill}>
+              <Text style={styles.scorePillText}>DIAGNOSTIC REPORT</Text>
             </View>
 
-            <Text style={styles.resultTitle}>
-              Your Spoken Level:{" "}
-              <Text style={styles.levelHighlight}>
-                Level {pravaah_level} ({levelName})
+            <Text style={styles.resultHeadline}>
+              Level {pravaah_level}{" "}
+              <Text style={styles.resultHeadlineSub}>({levelName})</Text>
+            </Text>
+
+            <View style={styles.cefrBadgeRow}>
+              <Text style={styles.cefrBadgeText}>CEFR EQUIVALENT: {cefr_reference}</Text>
+            </View>
+
+            <Text style={styles.resultOverviewText}>
+              {criteria || "Your spoken diagnostic has been processed and saved to your profile."}
+            </Text>
+          </View>
+
+          {/* AI Diagnostic Notes */}
+          {notes ? (
+            <View style={styles.cardBox}>
+              <Text style={styles.cardBoxLabel}>AI DIAGNOSTIC OBSERVATIONS</Text>
+              <Text style={styles.cardBoxText}>{notes}</Text>
+            </View>
+          ) : null}
+
+          {/* Strengths & Focus Skills */}
+          <View style={styles.strengthsWeaknessesRow}>
+            <View style={styles.halfCard}>
+              <Text style={[styles.cardBoxLabel, { color: theme.colors.emeraldSuccess }]}>
+                DIAGNOSED STRENGTHS
               </Text>
-            </Text>
-            <Text style={styles.cefrBadge}>
-              CEFR REFERENCE: {cefr_reference}
-            </Text>
-
-            <Text style={styles.resultSummaryText}>
-              {criteria || "Your spoken diagnostic has been evaluated and saved to your profile in Firestore."}
-            </Text>
-
-            {/* AI Analysis Notes */}
-            {notes ? (
-              <View style={styles.analysisNotesBlock}>
-                <Text style={styles.analysisNotesLabel}>AI DIAGNOSTIC OBSERVATIONS</Text>
-                <Text style={styles.analysisNotesText}>{notes}</Text>
-              </View>
-            ) : null}
-
-            {/* Strengths & Focus Areas */}
-            <View style={styles.diagnosticsRow}>
-              <View style={styles.diagBlock}>
-                <Text style={styles.diagBlockHeader}>DIAGNOSED STRENGTHS</Text>
-                <View style={styles.chipRow}>
-                  {strengths && strengths.length > 0 ? (
-                    strengths.map((str: string, idx: number) => (
-                      <View key={idx} style={styles.strengthChip}>
-                        <Text style={styles.strengthChipText}>
-                          ✓ {str.replace(/_/g, " ")}
-                        </Text>
-                      </View>
-                    ))
-                  ) : (
-                    <Text style={styles.emptyChipText}>Baseline developing</Text>
-                  )}
-                </View>
-              </View>
-
-              <View style={styles.diagBlock}>
-                <Text style={styles.diagBlockHeader}>IMMEDIATE FOCUS SKILLS</Text>
-                <View style={styles.chipRow}>
-                  {weaknesses && weaknesses.length > 0 ? (
-                    weaknesses.map((weak: string, idx: number) => (
-                      <View key={idx} style={styles.weaknessChip}>
-                        <Text style={styles.weaknessChipText}>
-                          ⚠ {weak.replace(/_/g, " ")}
-                        </Text>
-                      </View>
-                    ))
-                  ) : (
-                    <Text style={styles.emptyChipText}>None diagnosed</Text>
-                  )}
-                </View>
+              <View style={styles.chipWrap}>
+                {strengths && strengths.length > 0 ? (
+                  strengths.map((str: string, idx: number) => (
+                    <View key={idx} style={styles.strengthChip}>
+                      <Text style={styles.strengthChipText}>✓ {str.replace(/_/g, " ")}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyNotice}>Baseline developing</Text>
+                )}
               </View>
             </View>
 
-            {/* Dimension-Level Diagnostic Ratings */}
-            <View style={styles.dimensionGridBlock}>
-              <Text style={styles.dimensionGridHeader}>DIMENSION-LEVEL DIAGNOSTIC RATINGS</Text>
-              <View style={styles.dimensionRow}>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Grammar:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).grammar_rating || (assessmentResult as any).assessment_observations?.grammar || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Vocabulary:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).vocabulary_rating || (assessmentResult as any).assessment_observations?.vocabulary || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.dimensionRow}>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Fluency & Timing:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).fluency_rating || (assessmentResult as any).assessment_observations?.fluency || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Comprehension:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).comprehension_rating || (assessmentResult as any).assessment_observations?.comprehension || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.dimensionRow}>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Speaking Complexity:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).speaking_complexity || (assessmentResult as any).assessment_observations?.speaking_complexity || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.dimensionCol}>
-                  <Text style={styles.dimensionColLabel}>Conversational Ability:</Text>
-                  <Text style={styles.dimensionColValue}>
-                    {((assessmentResult as any).conversation_ability || (assessmentResult as any).assessment_observations?.conversation_ability || "elementary").toUpperCase()}
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Speech Flow & Filler Word Diagnosis */}
-            <View style={styles.fillerWordsBlock}>
-              <Text style={styles.sectionHeaderTitle}>SPEECH FLOW & FILLER WORD DIAGNOSIS</Text>
-              <Text style={styles.fillerSubtitle}>
-                Identifies vocalized hesitation sounds (ah, umm, aaa.., ehh) and verbal crutches that disturb natural English cadence and flow:
+            <View style={styles.halfCard}>
+              <Text style={[styles.cardBoxLabel, { color: theme.colors.amberWarning }]}>
+                IMMEDIATE FOCUS
               </Text>
-              {assessmentResult.filler_words_detected && assessmentResult.filler_words_detected.length > 0 ? (
-                <View style={styles.fillerChipRow}>
-                  {assessmentResult.filler_words_detected.map((filler, idx) => (
-                    <View key={idx} style={styles.fillerChip}>
-                      <Text style={styles.fillerChipText}>💬 "{filler}"</Text>
+              <View style={styles.chipWrap}>
+                {weaknesses && weaknesses.length > 0 ? (
+                  weaknesses.map((weak: string, idx: number) => (
+                    <View key={idx} style={styles.weaknessChip}>
+                      <Text style={styles.weaknessChipText}>⚠ {weak.replace(/_/g, " ")}</Text>
                     </View>
-                  ))}
-                </View>
-              ) : (
-                <View style={styles.cleanFlowBadge}>
-                  <Text style={styles.cleanFlowText}>✓ Natural conversational flow — minimal filler reliance</Text>
-                </View>
-              )}
-            </View>
-
-            {/* Sentence Restarts & False Starts */}
-            {assessmentResult.restarts_and_false_starts && assessmentResult.restarts_and_false_starts.length > 0 ? (
-              <View style={styles.restartsBlock}>
-                <Text style={styles.sectionHeaderTitle}>SENTENCE RESTARTS & FALSE STARTS</Text>
-                <Text style={styles.fillerSubtitle}>
-                  Hesitation restarts and mid-clause repairs observed in spoken evidence:
-                </Text>
-                <View style={styles.restartsList}>
-                  {assessmentResult.restarts_and_false_starts.map((restart, idx) => (
-                    <View key={idx} style={styles.restartItem}>
-                      <Text style={styles.restartQuoteText}>🔄 "{restart}"</Text>
-                    </View>
-                  ))}
-                </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyNotice}>None diagnosed</Text>
+                )}
               </View>
-            ) : null}
+            </View>
+          </View>
 
-            {/* Verbatim Grammatical Breakdown */}
-            {assessmentResult.grammatical_breakdowns && assessmentResult.grammatical_breakdowns.length > 0 ? (
-              <View style={styles.grammarBreakdownBlock}>
-                <Text style={styles.sectionHeaderTitle}>VERBATIM GRAMMATICAL BREAKDOWN</Text>
-                <Text style={styles.fillerSubtitle}>
-                  Exact learner speech errors diagnosed with native corrections and linguistic rules:
-                </Text>
-                {assessmentResult.grammatical_breakdowns.map((item, idx) => (
-                  <View key={idx} style={styles.grammarBreakdownCard}>
-                    <View style={styles.gbRow}>
-                      <Text style={styles.gbLabelError}>SPOKEN:</Text>
-                      <Text style={styles.gbTextError}>"{item.error}"</Text>
-                    </View>
-                    <View style={styles.gbRow}>
-                      <Text style={styles.gbLabelCorrection}>TARGET:</Text>
-                      <Text style={styles.gbTextCorrection}>"{item.correction}"</Text>
-                    </View>
-                    <View style={styles.gbExplanationBox}>
-                      <Text style={styles.gbExplanationText}>💡 {item.explanation}</Text>
-                    </View>
+          {/* Filler Words */}
+          {assessmentResult.filler_words_detected && assessmentResult.filler_words_detected.length > 0 ? (
+            <View style={styles.cardBox}>
+              <Text style={styles.cardBoxLabel}>SPEECH HESITATION & FILLER WORDS</Text>
+              <View style={styles.chipWrap}>
+                {assessmentResult.filler_words_detected.map((filler, idx) => (
+                  <View key={idx} style={styles.fillerChip}>
+                    <Text style={styles.fillerChipText}>💬 "{filler}"</Text>
                   </View>
                 ))}
               </View>
-            ) : null}
+            </View>
+          ) : null}
 
-            {/* Transcript & Telemetry Evidence Summary */}
-            <View style={styles.transcriptSummaryBlock}>
-              <Text style={styles.transcriptSummaryLabel}>SPOKEN TASK EVIDENCE & TELEMETRY</Text>
-              {taskEvidences.map((t, idx) => (
-                <View key={idx} style={styles.transcriptEntry}>
-                  <Text style={styles.transcriptQuestionText}>
-                    {t.task_title || `Task ${idx + 1}`}: {t.prompt}
+          {/* Daily Goal Commitment */}
+          <View style={styles.cardBox}>
+            <Text style={styles.cardBoxLabel}>SELECT DAILY PRACTICE GOAL</Text>
+            <View style={styles.goalChipsRow}>
+              {[15, 30, 60, 90].map((mins) => (
+                <Pressable
+                  key={mins}
+                  style={[styles.goalChip, selectedGoal === mins && styles.goalChipActive]}
+                  onPress={() => setSelectedGoal(mins)}
+                >
+                  <Text
+                    style={[
+                      styles.goalChipText,
+                      selectedGoal === mins && styles.goalChipTextActive,
+                    ]}
+                  >
+                    {mins}m / day
                   </Text>
-                  <Text style={styles.transcriptResponseText}>
-                    {t.transcript ? `"${t.transcript}"` : "(No speech detected)"}
-                  </Text>
-                  <Text style={styles.transcriptMetricsText}>
-                    Duration: {((t.duration_ms || 0) / 1000).toFixed(1)}s • Words: {t.word_count || 0} • Pauses: {t.pause_count || 0} (Long: {t.long_pause_count || 0}) • Restarts: {t.restart_count || 0}
-                  </Text>
-                </View>
+                </Pressable>
               ))}
             </View>
-
-            {/* Daily Practice Commitment */}
-            <View style={styles.goalSection}>
-              <Text style={styles.goalSectionTitle}>DAILY PRACTICE COMMITMENT</Text>
-              <View style={styles.goalChipsRow}>
-                {[15, 30, 60, 90].map((mins) => (
-                  <Pressable
-                    key={mins}
-                    style={[styles.goalChip, selectedGoal === mins && styles.goalChipActive]}
-                    onPress={() => setSelectedGoal(mins)}
-                  >
-                    <Text style={[styles.goalChipText, selectedGoal === mins && styles.goalChipTextActive]}>
-                      {mins} MIN / DAY
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <Pressable
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
-              onPress={handleFinishAndStartPlan}
-            >
-              <Text style={styles.primaryButtonText}>
-                Start Today's Practice Plan ({selectedGoal}m) →
-              </Text>
-            </Pressable>
           </View>
+
+          {/* Finish Button */}
+          <Pressable
+            style={({ pressed }) => [styles.finishBtn, pressed && styles.btnPressed]}
+            onPress={handleFinishAndStartPlan}
+          >
+            <Text style={styles.finishBtnText}>
+              Start Today's Practice Plan ({selectedGoal}m) →
+            </Text>
+          </Pressable>
         </ScrollView>
       </View>
     );
   }
 
-  // -------------------------------------------------------------------------
-  // IN-PROGRESS TASK VIEW
-  // -------------------------------------------------------------------------
+  // =========================================================================
+  // VIEW: IN-PROGRESS QUESTION STEP
+  // =========================================================================
   const displayTranscript = (currentTranscript + " " + liveInterim).trim();
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Top Bar */}
-        <View style={styles.topNav}>
-          <Pressable style={styles.exitButton} onPress={() => router.replace("/")}>
-            <Text style={styles.exitButtonText}>← Exit</Text>
-          </Pressable>
-          <Image
-            source={require("../assets/pravaah_navbar_logo.png")}
-            style={styles.topNavLogo}
-            resizeMode="contain"
-            accessibilityLabel="Pravaah"
-          />
-          <View style={styles.stepPill}>
-            <Text style={styles.stepPillText}>
-              TASK {currentStep + 1} OF {ASSESSMENT_QUESTIONS.length}
-            </Text>
-          </View>
+    <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) }]}>
+      {/* Top Mobile Stepper Bar */}
+      <View style={styles.assessmentHeader}>
+        <Pressable
+          style={({ pressed }) => [styles.exitBtn, pressed && styles.btnPressed]}
+          onPress={() => router.replace("/")}
+        >
+          <Ionicons name="close" size={20} color={theme.colors.pure} />
+        </Pressable>
+
+        {/* 4-Step Progress Indicator */}
+        <View style={styles.stepperContainer}>
+          {ASSESSMENT_QUESTIONS.map((q, idx) => (
+            <View
+              key={q.id}
+              style={[
+                styles.stepperBar,
+                idx <= currentStep && styles.stepperBarActive,
+                idx === currentStep && styles.stepperBarCurrent,
+              ]}
+            />
+          ))}
         </View>
 
-        {/* Question Card */}
-        <View style={styles.questionCard}>
-          <View style={styles.eyebrowContainer}>
-            <Text style={styles.eyebrowText}>{currentQ.stageTitle}</Text>
+        <View style={styles.stepNumPill}>
+          <Text style={styles.stepNumPillText}>{currentStep + 1}/4</Text>
+        </View>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={[
+          styles.assessmentScroll,
+          { paddingBottom: Math.max(insets.bottom + 20, 32) },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Stage Eyebrow */}
+        <View style={styles.stageEyebrow}>
+          <Text style={styles.stageEyebrowText}>{currentQ.stageTitle}</Text>
+        </View>
+
+        {/* Question Prompt */}
+        <Text style={styles.questionPrompt}>{currentQ.question}</Text>
+
+        {/* Hindi Guide Accordion */}
+        <Pressable
+          style={styles.hindiAccordionHeader}
+          onPress={() => setShowHindi(!showHindi)}
+        >
+          <Ionicons name="language" size={16} color={theme.colors.paleIris} />
+          <Text style={styles.hindiAccordionTitle}>
+            {showHindi ? "Hide Hindi Guide" : "View Hindi Translation"}
+          </Text>
+          <Ionicons
+            name={showHindi ? "chevron-up" : "chevron-down"}
+            size={16}
+            color={theme.colors.fog}
+          />
+        </Pressable>
+
+        {showHindi ? (
+          <View style={styles.hindiBodyCard}>
+            <Text style={styles.hindiBodyText}>{currentQ.hindiHint}</Text>
+          </View>
+        ) : null}
+
+        {/* Animated Waveform Visualizer */}
+        <View style={styles.waveVisualizerBox}>
+          <View style={styles.waveBarsRow}>
+            <Animated.View style={[styles.waveBar, { height: barAnim1 }]} />
+            <Animated.View style={[styles.waveBar, { height: barAnim2 }]} />
+            <Animated.View style={[styles.waveBar, { height: barAnim3 }]} />
+            <Animated.View style={[styles.waveBar, { height: barAnim4 }]} />
+            <Animated.View style={[styles.waveBar, { height: barAnim5 }]} />
           </View>
 
-          <Text style={styles.questionHeadline}>{currentQ.question}</Text>
+          <Text style={styles.timerOrHintText}>
+            {isRecording
+              ? `Recording: 0:${recordedSeconds < 10 ? `0${recordedSeconds}` : recordedSeconds}`
+              : "Tap microphone below to speak in English"}
+          </Text>
+        </View>
 
-          {/* Hindi Guide Accordion */}
-          {showHindi ? (
-            <View style={styles.hindiContainer}>
-              <Text style={styles.hindiLabel}>HINDI GUIDE</Text>
-              <Text style={styles.hindiText}>{currentQ.hindiHint}</Text>
-            </View>
-          ) : null}
+        {/* Live Verbatim Speech Preview */}
+        {displayTranscript ? (
+          <View style={styles.liveTranscriptCard}>
+            <Text style={styles.liveTranscriptLabel}>VERBATIM TRANSCRIPT</Text>
+            <Text style={styles.liveTranscriptText}>"{displayTranscript}"</Text>
+          </View>
+        ) : isRecording ? (
+          <View style={styles.liveTranscriptCard}>
+            <Text style={styles.liveTranscriptLabel}>LISTENING...</Text>
+            <Text style={styles.liveTranscriptText}>Speak naturally — speech will appear here.</Text>
+          </View>
+        ) : null}
 
-          <Pressable style={styles.toggleHintButton} onPress={() => setShowHindi(!showHindi)}>
-            <Text style={styles.toggleHintText}>
-              {showHindi ? "Hide Hindi Guide" : "Show Hindi Guide"}
+        {/* Action Controls */}
+        <View style={styles.bottomActions}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.recordActionBtn,
+              isRecording && styles.recordActionBtnActive,
+              pressed && styles.btnPressed,
+            ]}
+            onPress={handleToggleRecording}
+          >
+            <Ionicons
+              name={isRecording ? "stop" : "mic"}
+              size={22}
+              color={isRecording ? theme.colors.pure : theme.colors.void}
+            />
+            <Text
+              style={[
+                styles.recordActionBtnText,
+                isRecording && styles.recordActionBtnTextActive,
+              ]}
+            >
+              {isRecording ? "Finish Speaking →" : "Tap to Speak"}
             </Text>
           </Pressable>
 
-          {/* Waveform Visualizer */}
-          <View style={styles.waveformContainer}>
-            <View style={styles.barsRow}>
-              <Animated.View style={[styles.waveBar, { height: barAnim1 }]} />
-              <Animated.View style={[styles.waveBar, { height: barAnim2 }]} />
-              <Animated.View style={[styles.waveBar, { height: barAnim3 }]} />
-              <Animated.View style={[styles.waveBar, { height: barAnim4 }]} />
-              <Animated.View style={[styles.waveBar, { height: barAnim5 }]} />
-            </View>
-            <Text style={styles.recordingTimerText}>
-              {isRecording
-                ? `Recording speech: ${recordedSeconds < 10 ? `0:0${recordedSeconds}` : `0:${recordedSeconds}`}`
-                : livekitConnected
-                ? "LiveKit voice ready — tap below and speak in English"
-                : "Tap the button below and speak in English"}
+          <Pressable
+            style={styles.skipTaskBtn}
+            onPress={handleSkipQuestion}
+          >
+            <Text style={styles.skipTaskBtnText}>
+              {currentStep < ASSESSMENT_QUESTIONS.length - 1 ? "Skip to Next Task →" : "Finish Assessment →"}
             </Text>
-          </View>
-
-          {/* Live Verbatim Transcript Display */}
-          {displayTranscript ? (
-            <View style={styles.liveTranscriptBlock}>
-              <Text style={styles.liveTranscriptLabel}>VERBATIM TRANSCRIPT</Text>
-              <Text style={styles.liveTranscriptText}>"{displayTranscript}"</Text>
-            </View>
-          ) : isRecording ? (
-            <View style={styles.liveTranscriptBlock}>
-              <Text style={styles.liveTranscriptLabel}>LISTENING TO MICROPHONE...</Text>
-              <Text style={styles.liveTranscriptText}>Speak naturally — your speech is transcribed verbatim.</Text>
-            </View>
-          ) : null}
-
-          {/* Action Controls */}
-          {isAnalyzing ? (
-            <View style={styles.analyzingContainer}>
-              <ActivityIndicator size="small" color={theme.colors.irisGleam} />
-              <Text style={styles.analyzingText}>Evaluating speech evidence with AI...</Text>
-            </View>
-          ) : (
-            <View style={styles.actionRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.recordButton,
-                  isRecording && styles.recordButtonActive,
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={handleToggleRecording}
-              >
-                <Text style={[styles.recordButtonText, isRecording && styles.recordButtonTextActive]}>
-                  {isRecording ? "Finish Speaking →" : "Tap to Speak"}
-                </Text>
-              </Pressable>
-
-              <Pressable style={styles.skipButton} onPress={handleSkipQuestion}>
-                <Text style={styles.skipButtonText}>
-                  {currentStep < ASSESSMENT_QUESTIONS.length - 1 ? "Next Task →" : "Submit →"}
-                </Text>
-              </Pressable>
-            </View>
-          )}
+          </Pressable>
         </View>
       </ScrollView>
     </View>
@@ -943,567 +806,409 @@ export default function AssessmentScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
     backgroundColor: theme.colors.obsidian,
   },
-  scrollContent: {
-    flexGrow: 1,
+  centerView: {
+    alignItems: "center",
+    justifyContent: "center",
     padding: theme.spacing.xl,
-    maxWidth: 800,
-    alignSelf: "center",
-    width: "100%",
-    justifyContent: "center",
   },
-  resultScrollContent: {
-    flexGrow: 1,
+  analyzingCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.xl,
     padding: theme.spacing.xl,
-    maxWidth: 860,
-    alignSelf: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    maxWidth: 400,
     width: "100%",
-  },
-  ambientGlow: {
-    position: "absolute",
-    top: 20,
-    alignSelf: "center",
-    width: 400,
-    height: 220,
-    borderRadius: 200,
-    backgroundColor: "rgba(132, 125, 255, 0.08)",
-    ...Platform.select({ web: { filter: "blur(70px)" } }),
-  },
-  topNav: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: theme.spacing.xl,
-  },
-  topNavLogo: {
-    width: 100,
-    height: 32,
-  },
-  scorecardLogoWrapper: {
-    alignItems: "center",
-    marginBottom: theme.spacing.lg,
-  },
-  scorecardLogo: {
-    width: 130,
-    height: 40,
-  },
-  exitButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.glassFill,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
-  },
-  exitButtonText: { color: theme.colors.ash, fontSize: 13 },
-  stepPill: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  stepPillText: {
-    color: theme.colors.cloud,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "500",
-  },
-  questionCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.xxxl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  eyebrowContainer: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  eyebrowText: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "600",
-  },
-  errorEyebrowContainer: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(255, 82, 82, 0.12)",
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.3)",
-  },
-  errorEyebrowText: {
-    color: theme.colors.crimsonError,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "600",
-  },
-  questionHeadline: {
-    fontSize: 26,
-    lineHeight: 34,
-    fontWeight: "300",
-    color: theme.colors.pure,
-    fontFamily: theme.fonts.serif,
-    marginBottom: theme.spacing.xl,
-  },
-  hindiContainer: {
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.md,
-  },
-  hindiLabel: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  hindiText: { color: theme.colors.ash, fontSize: 14, lineHeight: 22 },
-  toggleHintButton: {
-    marginBottom: theme.spacing.xl,
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
-  },
-  toggleHintText: { color: theme.colors.cyanSignal, fontSize: 12, fontFamily: theme.fonts.mono },
-  waveformContainer: {
-    height: 120,
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: theme.spacing.lg,
-  },
-  barsRow: { flexDirection: "row", alignItems: "center", gap: 8, height: 60, marginBottom: 8 },
-  waveBar: { width: 6, backgroundColor: theme.colors.irisGleam, borderRadius: 3 },
-  recordingTimerText: { color: theme.colors.fog, fontSize: 12, fontFamily: theme.fonts.mono },
-
-  liveTranscriptBlock: {
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.xl,
-  },
-  liveTranscriptLabel: {
-    color: theme.colors.cyanSignal,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  liveTranscriptText: { color: theme.colors.pure, fontSize: 15, lineHeight: 22, fontStyle: "italic" },
-
-  actionRow: { flexDirection: "row", gap: 12 },
-  recordButton: {
-    flex: 1,
-    backgroundColor: theme.colors.pure,
-    borderRadius: theme.radii.sm,
-    height: 48,
-    justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
-  },
-  recordButtonActive: { backgroundColor: theme.colors.crimsonError },
-  recordButtonText: { color: theme.colors.void, fontSize: 15, fontWeight: "500" },
-  recordButtonTextActive: { color: theme.colors.pure },
-  skipButton: {
-    paddingHorizontal: 20,
-    height: 48,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderActive,
-    justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
-  },
-  skipButtonText: { color: theme.colors.cloud, fontSize: 13 },
-  analyzingContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
     gap: 12,
-    paddingVertical: 12,
   },
-  analyzingText: { color: theme.colors.ash, fontSize: 14 },
-  buttonPressed: { opacity: 0.85, transform: [{ scale: 0.99 }] },
-
-  // Results Styles
-  resultCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.xxxl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  resultTitle: {
-    fontSize: 32,
-    fontWeight: "300",
-    color: theme.colors.pure,
+  analyzingHeading: {
     fontFamily: theme.fonts.serif,
-    lineHeight: 38,
-    marginBottom: 4,
+    fontSize: theme.fontSizes.headingSm,
+    color: theme.colors.pure,
+    textAlign: "center",
   },
-  levelHighlight: { color: theme.colors.irisGleam, fontWeight: "400" },
-  cefrBadge: {
-    color: theme.colors.cyanSignal,
-    fontSize: 11,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    marginBottom: theme.spacing.lg,
-  },
-  resultSummaryText: {
+  analyzingDesc: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
     color: theme.colors.ash,
-    fontSize: 15,
-    lineHeight: 24,
-    marginBottom: theme.spacing.xxl,
-  },
-  analysisNotesBlock: {
-    backgroundColor: "rgba(132, 125, 255, 0.08)",
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: "rgba(132, 125, 255, 0.2)",
-    marginBottom: theme.spacing.xxl,
-  },
-  analysisNotesLabel: {
-    color: theme.colors.irisGleam,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  analysisNotesText: { color: theme.colors.cloud, fontSize: 14, lineHeight: 22 },
-  diagnosticsRow: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    gap: 16,
-    marginBottom: theme.spacing.xxl,
-  },
-  diagBlock: {
-    flex: 1,
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  diagBlockHeader: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: theme.spacing.md,
-  },
-  chipRow: { flexDirection: "column", gap: 8 },
-  strengthChip: {
-    backgroundColor: "rgba(56, 211, 159, 0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(56, 211, 159, 0.25)",
-    borderRadius: theme.radii.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  strengthChipText: { color: theme.colors.emeraldSuccess, fontSize: 12, fontWeight: "500" },
-  weaknessChip: {
-    backgroundColor: "rgba(255, 183, 77, 0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 183, 77, 0.25)",
-    borderRadius: theme.radii.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  weaknessChipText: { color: theme.colors.amberWarning, fontSize: 12, fontWeight: "500" },
-  emptyChipText: { color: theme.colors.fog, fontSize: 12, fontStyle: "italic" },
-
-  dimensionGridBlock: {
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.xl,
-  },
-  dimensionGridHeader: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: theme.spacing.md,
-  },
-  dimensionRow: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    gap: 12,
-    marginBottom: 8,
-  },
-  dimensionCol: {
-    flex: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.04)",
-  },
-  dimensionColLabel: {
-    color: theme.colors.ash,
-    fontSize: 12,
-    fontFamily: theme.fonts.mono,
-  },
-  dimensionColValue: {
-    color: theme.colors.irisGleam,
-    fontSize: 11,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "600",
-  },
-  sectionHeaderTitle: {
-    color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: 4,
-  },
-  fillerSubtitle: {
-    color: theme.colors.ash,
-    fontSize: 12,
+    textAlign: "center",
     lineHeight: 18,
-    marginBottom: theme.spacing.md,
   },
-  fillerWordsBlock: {
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.lg,
-  },
-  fillerChipRow: {
+  assessmentHeader: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: 12,
+    gap: 12,
   },
-  fillerChip: {
-    backgroundColor: "rgba(255, 107, 107, 0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 107, 107, 0.25)",
-    borderRadius: theme.radii.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  exitBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.surfaceElevated,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  fillerChipText: {
-    color: theme.colors.crimsonError,
-    fontSize: 12,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "500",
-  },
-  cleanFlowBadge: {
-    backgroundColor: "rgba(56, 211, 159, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(56, 211, 159, 0.2)",
-    borderRadius: theme.radii.sm,
-    padding: 10,
-  },
-  cleanFlowText: {
-    color: theme.colors.emeraldSuccess,
-    fontSize: 12,
-    fontWeight: "500",
-  },
-
-  restartsBlock: {
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.lg,
-  },
-  restartsList: {
+  stepperContainer: {
+    flex: 1,
+    flexDirection: "row",
     gap: 6,
   },
-  restartItem: {
-    backgroundColor: "rgba(255, 183, 77, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 183, 77, 0.2)",
-    borderRadius: theme.radii.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  stepperBar: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.colors.steel,
   },
-  restartQuoteText: {
-    color: theme.colors.amberWarning,
-    fontSize: 12,
-    fontStyle: "italic",
+  stepperBarActive: {
+    backgroundColor: theme.colors.irisGleam,
   },
-
-  grammarBreakdownBlock: {
-    backgroundColor: theme.colors.obsidian,
-    borderRadius: theme.radii.sm,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
+  stepperBarCurrent: {
+    backgroundColor: theme.colors.paleIris,
+  },
+  stepNumPill: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.full,
+  },
+  stepNumPillText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  assessmentScroll: {
+    flexGrow: 1,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    maxWidth: theme.mobile.maxContentWidth,
+    width: "100%",
+    alignSelf: "center",
+  },
+  stageEyebrow: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.xs,
+    marginBottom: 8,
+  },
+  stageEyebrowText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  questionPrompt: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingSm + 2,
+    color: theme.colors.cloud,
+    lineHeight: 28,
     marginBottom: theme.spacing.lg,
   },
-  grammarBreakdownCard: {
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.05)",
+  hindiAccordionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: theme.colors.graphiteCard,
     borderRadius: theme.radii.sm,
     padding: 12,
-    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    gap: 8,
+    marginBottom: theme.spacing.md,
   },
-  gbRow: {
+  hindiAccordionTitle: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.ash,
+    fontWeight: "600",
+  },
+  hindiBodyCard: {
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.md,
+  },
+  hindiBodyText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 13,
+    color: theme.colors.cloud,
+    lineHeight: 18,
+  },
+  waveVisualizerBox: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.xl,
+    padding: theme.spacing.lg,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    marginBottom: theme.spacing.md,
+    ...theme.shadows.card,
+  },
+  waveBarsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    height: 60,
+    marginBottom: 8,
+  },
+  waveBar: {
+    width: 5,
+    borderRadius: theme.radii.full,
+    backgroundColor: theme.colors.irisGleam,
+  },
+  timerOrHintText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.ash,
+  },
+  liveTranscriptCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    marginBottom: theme.spacing.lg,
+  },
+  liveTranscriptLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 9,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+    letterSpacing: 0.8,
     marginBottom: 4,
   },
-  gbLabelError: {
-    color: theme.colors.crimsonError,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "700",
-    letterSpacing: 1,
-    marginBottom: 2,
-  },
-  gbTextError: {
-    color: theme.colors.pure,
+  liveTranscriptText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 13,
-    lineHeight: 18,
+    color: theme.colors.pure,
     fontStyle: "italic",
-    textDecorationLine: "line-through",
-    opacity: 0.85,
-  },
-  gbLabelCorrection: {
-    color: theme.colors.emeraldSuccess,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    fontWeight: "700",
-    letterSpacing: 1,
-    marginTop: 4,
-    marginBottom: 2,
-  },
-  gbTextCorrection: {
-    color: theme.colors.pure,
-    fontSize: 13,
     lineHeight: 18,
-    fontWeight: "500",
   },
-  gbExplanationBox: {
-    backgroundColor: "rgba(132, 125, 255, 0.06)",
-    borderRadius: 4,
-    padding: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "rgba(132, 125, 255, 0.15)",
+  bottomActions: {
+    marginTop: "auto",
+    gap: 12,
+    paddingTop: theme.spacing.md,
   },
-  gbExplanationText: {
-    color: theme.colors.ash,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-
-  transcriptSummaryBlock: {
-    backgroundColor: theme.colors.obsidian,
+  recordActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 52,
     borderRadius: theme.radii.sm,
+    backgroundColor: theme.colors.pure,
+    gap: 8,
+  },
+  recordActionBtnActive: {
+    backgroundColor: theme.colors.crimsonError,
+  },
+  recordActionBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm + 1,
+    fontWeight: "700",
+    color: theme.colors.void,
+  },
+  recordActionBtnTextActive: {
+    color: theme.colors.pure,
+  },
+  skipTaskBtn: {
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  skipTaskBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.fog,
+  },
+  btnPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.98 }],
+  },
+  resultScroll: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    maxWidth: theme.mobile.maxContentWidth,
+    width: "100%",
+    alignSelf: "center",
+    gap: theme.spacing.md,
+  },
+  resultHeaderCard: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.xl,
+    padding: theme.spacing.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    alignItems: "center",
+    ...theme.shadows.card,
+  },
+  scorePill: {
+    backgroundColor: "rgba(132, 125, 255, 0.15)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: theme.radii.full,
+    marginBottom: theme.spacing.sm,
+  },
+  scorePillText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    fontWeight: "700",
+    color: theme.colors.paleIris,
+  },
+  resultHeadline: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingLg,
+    color: theme.colors.pure,
+    marginBottom: 4,
+  },
+  resultHeadlineSub: {
+    color: theme.colors.irisGleam,
+  },
+  cefrBadgeRow: {
+    backgroundColor: theme.colors.surfaceElevated,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: theme.radii.full,
+    marginBottom: theme.spacing.md,
+  },
+  cefrBadgeText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.ash,
+  },
+  resultOverviewText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  cardBox: {
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
     padding: theme.spacing.lg,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.xxl,
   },
-  transcriptSummaryLabel: {
-    color: theme.colors.fog,
-    fontSize: 10,
+  cardBoxLabel: {
     fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: theme.spacing.md,
+    fontSize: 10,
+    fontWeight: "700",
+    color: theme.colors.ash,
+    letterSpacing: 0.8,
+    marginBottom: 8,
   },
-  transcriptEntry: {
-    marginBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.05)",
-    paddingBottom: 10,
+  cardBoxText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.cloud,
+    lineHeight: 18,
   },
-  transcriptQuestionText: {
-    color: theme.colors.fog,
+  strengthsWeaknessesRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  halfCard: {
+    flex: 1,
+    backgroundColor: theme.colors.graphiteCard,
+    borderRadius: theme.radii.lg,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  chipWrap: {
+    gap: 6,
+  },
+  strengthChip: {
+    backgroundColor: "rgba(56, 211, 159, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radii.xs,
+  },
+  strengthChipText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 11,
-    fontFamily: theme.fonts.mono,
-    marginBottom: 3,
+    color: theme.colors.emeraldSuccess,
+    fontWeight: "600",
   },
-  transcriptResponseText: {
-    color: theme.colors.pure,
-    fontSize: 13,
-    lineHeight: 20,
-    fontStyle: "italic",
-    marginBottom: 4,
+  weaknessChip: {
+    backgroundColor: "rgba(255, 183, 77, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radii.xs,
   },
-  transcriptMetricsText: {
-    color: theme.colors.cyanSignal,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 0.5,
+  weaknessChipText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.amberWarning,
+    fontWeight: "600",
   },
-
-  goalSection: { marginBottom: theme.spacing.xxl },
-  goalSectionTitle: {
+  fillerChip: {
+    backgroundColor: theme.colors.surfaceElevated,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radii.xs,
+    alignSelf: "flex-start",
+  },
+  fillerChipText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.ash,
+  },
+  emptyNotice: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
     color: theme.colors.fog,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.2,
-    marginBottom: theme.spacing.md,
   },
-  goalChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  goalChipsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
   goalChip: {
     flex: 1,
-    minWidth: 100,
-    backgroundColor: theme.colors.obsidian,
+    paddingVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
     borderWidth: 1,
     borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    paddingVertical: 12,
-    alignItems: "center",
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
   },
-  goalChipActive: { borderColor: theme.colors.pure, backgroundColor: "rgba(255, 255, 255, 0.08)" },
-  goalChipText: { color: theme.colors.ash, fontSize: 12, fontFamily: theme.fonts.mono, letterSpacing: 1 },
-  goalChipTextActive: { color: theme.colors.pure, fontWeight: "600" },
-  primaryButton: {
+  goalChipActive: {
+    backgroundColor: theme.colors.surfaceElevated,
+    borderColor: theme.colors.irisGleam,
+  },
+  goalChipText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    color: theme.colors.ash,
+    fontWeight: "600",
+  },
+  goalChipTextActive: {
+    color: theme.colors.pure,
+  },
+  finishBtn: {
+    height: 50,
+    borderRadius: theme.radii.sm,
     backgroundColor: theme.colors.pure,
-    borderRadius: theme.radii.sm,
-    height: 52,
-    justifyContent: "center",
     alignItems: "center",
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
-  },
-  primaryButtonText: { color: theme.colors.void, fontSize: 15, fontWeight: "500", letterSpacing: 0.2 },
-  secondaryButton: {
-    backgroundColor: "transparent",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    borderRadius: theme.radii.sm,
-    height: 48,
     justifyContent: "center",
-    alignItems: "center",
-    ...Platform.select({ web: { cursor: "pointer" as any } }),
+    ...theme.shadows.glowIris,
   },
-  secondaryButtonText: { color: theme.colors.ash, fontSize: 14, fontWeight: "500" },
+  finishBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.body,
+    fontWeight: "700",
+    color: theme.colors.void,
+  },
 });

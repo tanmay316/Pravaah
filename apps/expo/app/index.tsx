@@ -723,12 +723,12 @@ export default function DashboardScreen() {
               <Text style={styles.sectionTitle}>PRACTICE MODES</Text>
             </View>
 
-            <View style={styles.modeGrid}>
-              {/* Tile 1: Grammar Drill */}
+            <View style={styles.categoryGrid}>
+              {/* Tile 1: Grammar */}
               <Pressable
                 style={({ pressed }) => [
-                  styles.modeGridCard,
-                  { borderColor: "rgba(132, 125, 255, 0.35)" },
+                  styles.categoryTile,
+                  { backgroundColor: theme.colors.irisGleam },
                   pressed && styles.btnPressed,
                 ]}
                 onPress={() =>
@@ -737,53 +737,24 @@ export default function DashboardScreen() {
                     params: {
                       mode: "grammar_practice",
                       target_skill: profile?.current_focus || "past_simple_auxiliary",
-                      activity_title: "Grammar Precision Drill",
+                      activity_title: "Targeted Grammar Practice",
                     },
                   })
                 }
               >
-                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(132, 125, 255, 0.15)" }]}>
-                  <Ionicons name="flash-outline" size={20} color={theme.colors.irisGleam} />
-                </View>
-                <Text style={styles.modeCardTitle}>Targeted Grammar</Text>
-                <Text style={styles.modeCardDesc}>
-                  Active speech drills to eliminate recurring errors in muscle memory.
+                <Text style={styles.categoryTileMono}>MODULE 01 • GRAMMAR</Text>
+                <Text style={styles.categoryTileHeading}>Targeted Grammar Precision</Text>
+                <Text style={styles.categoryTileDesc}>
+                  Eliminate recurring grammar errors through natural conversational drills.
                 </Text>
-                <Text style={[styles.modeCardAction, { color: theme.colors.paleIris }]}>Start Drill →</Text>
+                <Text style={styles.categoryTileCta}>Start Grammar Session →</Text>
               </Pressable>
 
-              {/* Tile 2: Free Spoken Flow */}
+              {/* Tile 2: Vocabulary */}
               <Pressable
                 style={({ pressed }) => [
-                  styles.modeGridCard,
-                  { borderColor: "rgba(0, 179, 221, 0.35)" },
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session",
-                    params: {
-                      mode: "free_conversation",
-                      activity_title: "Conversational Fluency Flow",
-                    },
-                  })
-                }
-              >
-                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(0, 179, 221, 0.15)" }]}>
-                  <Ionicons name="chatbubbles-outline" size={20} color={theme.colors.cyanSignal} />
-                </View>
-                <Text style={styles.modeCardTitle}>Conversational Flow</Text>
-                <Text style={styles.modeCardDesc}>
-                  Casual spontaneous speaking with real-time coach feedback.
-                </Text>
-                <Text style={[styles.modeCardAction, { color: theme.colors.cyanSignal }]}>Talk Now →</Text>
-              </Pressable>
-
-              {/* Tile 3: Collocations & Vocab */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.modeGridCard,
-                  { borderColor: "rgba(221, 144, 216, 0.35)" },
+                  styles.categoryTile,
+                  { backgroundColor: theme.colors.orchidBloom },
                   pressed && styles.btnPressed,
                 ]}
                 onPress={() =>
@@ -792,26 +763,49 @@ export default function DashboardScreen() {
                     params: {
                       mode: "vocabulary_practice",
                       target_skill: "collocations",
-                      activity_title: "Idioms & Collocations",
+                      activity_title: "Collocations & Phrasing",
                     },
                   })
                 }
               >
-                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(221, 144, 216, 0.15)" }]}>
-                  <Ionicons name="bulb-outline" size={20} color={theme.colors.orchidBloom} />
-                </View>
-                <Text style={styles.modeCardTitle}>Collocations</Text>
-                <Text style={styles.modeCardDesc}>
-                  Natural phrasing and high-frequency business expressions.
+                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 02 • VOCABULARY</Text>
+                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Collocations & Phrasing</Text>
+                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
+                  Learn and speak natural English collocations in context.
                 </Text>
-                <Text style={[styles.modeCardAction, { color: theme.colors.orchidBloom }]}>Expand Vocab →</Text>
+                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Vocabulary Session →</Text>
               </Pressable>
 
-              {/* Tile 4: Roleplay Simulation */}
+              {/* Tile 3: Fluency */}
               <Pressable
                 style={({ pressed }) => [
-                  styles.modeGridCard,
-                  { borderColor: "rgba(144, 184, 240, 0.35)" },
+                  styles.categoryTile,
+                  { backgroundColor: theme.colors.cyanSignal },
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/session",
+                    params: {
+                      mode: "free_conversation",
+                      activity_title: "Free Spoken Conversation",
+                    },
+                  })
+                }
+              >
+                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 03 • FLUENCY</Text>
+                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Free Spoken Conversation</Text>
+                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
+                  Speak freely on any topic with active real-time AI feedback.
+                </Text>
+                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Free Conversation →</Text>
+              </Pressable>
+
+              {/* Tile 4: Roleplay */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.categoryTile,
+                  { backgroundColor: theme.colors.periwinkle },
                   pressed && styles.btnPressed,
                 ]}
                 onPress={() =>
@@ -824,14 +818,12 @@ export default function DashboardScreen() {
                   })
                 }
               >
-                <View style={[styles.modeIconCircle, { backgroundColor: "rgba(144, 184, 240, 0.15)" }]}>
-                  <Ionicons name="briefcase-outline" size={20} color={theme.colors.periwinkle} />
-                </View>
-                <Text style={styles.modeCardTitle}>Roleplay Simulation</Text>
-                <Text style={styles.modeCardDesc}>
-                  Real workplace and social interviews under pressure.
+                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 04 • ROLEPLAY</Text>
+                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Situational Dialogue & Roleplay</Text>
+                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
+                  Apply your speech in real-world scenarios: workplace, interviews, and discussions.
                 </Text>
-                <Text style={[styles.modeCardAction, { color: theme.colors.periwinkle }]}>Enter Roleplay →</Text>
+                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Roleplay Session →</Text>
               </Pressable>
             </View>
           </View>
@@ -1759,46 +1751,49 @@ const styles = StyleSheet.create({
   activityCardRight: {
     marginLeft: 8,
   },
-  modeGrid: {
-    flexDirection: "row",
+  categoryGrid: {
+    flexDirection: Platform.OS === "web" ? "row" : "column",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 14,
   },
-  modeGridCard: {
-    width: "48.5%",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 14,
-    borderWidth: 1,
-    minHeight: 140,
+  categoryTile: {
+    flex: 1,
+    minWidth: 260,
+    borderRadius: theme.radii.tile,
+    padding: 24,
+    minHeight: 210,
     justifyContent: "space-between",
+    ...theme.shadows.card,
+    ...Platform.select({
+      web: { cursor: "pointer" as any },
+    }),
   },
-  modeIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-  },
-  modeCardTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-    marginBottom: 4,
-  },
-  modeCardDesc: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.ash,
-    lineHeight: 15,
-    marginBottom: 8,
-  },
-  modeCardAction: {
+  categoryTileMono: {
+    color: theme.colors.pure,
+    fontSize: 10,
     fontFamily: theme.fonts.mono,
-    fontSize: 11,
+    letterSpacing: 1.5,
     fontWeight: "700",
+  },
+  categoryTileHeading: {
+    fontSize: 22,
+    fontFamily: theme.fonts.serif,
+    color: theme.colors.pure,
+    lineHeight: 28,
+    marginVertical: 10,
+  },
+  categoryTileDesc: {
+    fontSize: 13,
+    fontFamily: theme.fonts.sans,
+    color: "rgba(255, 255, 255, 0.88)",
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  categoryTileCta: {
+    fontSize: 12,
+    fontWeight: "700",
+    fontFamily: theme.fonts.sans,
+    color: theme.colors.pure,
   },
   tabHeroSection: {
     marginBottom: 4,

@@ -225,9 +225,15 @@ export default function SessionScreen() {
         room.on(RoomEvent.TrackSubscribed, (track: Track) => {
           if (track.kind === Track.Kind.Audio) {
             if (Platform.OS === "web") {
+              if (audioElementRef.current) {
+                try {
+                  audioElementRef.current.remove();
+                } catch {}
+              }
               const audioElement = track.attach();
               audioElementRef.current = audioElement;
               audioElement.autoplay = true;
+              audioElement.style.display = "none";
               document.body.appendChild(audioElement);
               audioElement.play().catch((e) => console.debug("Audio play pending click gesture:", e));
             }
@@ -320,17 +326,20 @@ export default function SessionScreen() {
       try {
         await room.startAudio();
         if (audioElementRef.current) {
-          await audioElementRef.current.play();
+          await audioElementRef.current.play().catch(() => {});
         }
         if (Platform.OS === "web") {
           room.remoteParticipants.forEach((p) => {
             p.trackPublications.forEach((pub) => {
               if (pub.track && pub.track.kind === Track.Kind.Audio) {
-                const el = pub.track.attach();
-                audioElementRef.current = el;
-                el.autoplay = true;
-                document.body.appendChild(el);
-                el.play().catch((e) => console.debug("Audio play catch:", e));
+                if (!audioElementRef.current || !document.body.contains(audioElementRef.current)) {
+                  const el = pub.track.attach();
+                  audioElementRef.current = el;
+                  el.autoplay = true;
+                  el.style.display = "none";
+                  document.body.appendChild(el);
+                }
+                audioElementRef.current?.play().catch((e) => console.debug("Audio play catch:", e));
               }
             });
           });

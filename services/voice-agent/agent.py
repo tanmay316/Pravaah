@@ -668,11 +668,11 @@ async def entrypoint(ctx: JobContext):
     # Instant greeting audio & visual transcript: trigger as soon as learner is ready
     greeting_spoken = False
 
-    def speak_greeting():
+    def speak_greeting(force: bool = False):
         nonlocal greeting_spoken
-        if not greeting_spoken:
+        if not greeting_spoken or force:
             greeting_spoken = True
-            logger.info("Streaming instant greeting: %s", greeting_text)
+            logger.info("Streaming instant greeting (force=%s): %s", force, greeting_text)
             # 1. UI Transcript broadcast so user sees it in real time immediately
             asyncio.create_task(broadcast_ui_turn(room, "tutor", greeting_text))
             # 2. Audio track utterance
@@ -693,11 +693,11 @@ async def entrypoint(ctx: JobContext):
         logger.info("Learner connected (%s), speaking greeting.", p.identity)
         speak_greeting()
 
-    # 3. When learner publishes microphone audio track
+    # 3. When learner publishes microphone audio track (explicit user speaking start)
     @room.on("track_published")
     def on_track(pub, participant):
         logger.info("Learner audio track published by %s, speaking greeting.", participant.identity)
-        speak_greeting()
+        speak_greeting(force=True)
 
     # 4. When client sends start_conversation signal
     @room.on("data_received")
@@ -706,7 +706,7 @@ async def entrypoint(ctx: JobContext):
             data = json.loads(dp.data.decode("utf-8"))
             if data.get("type") == "start_conversation":
                 logger.info("Received start_conversation signal from learner! Speaking greeting.")
-                speak_greeting()
+                speak_greeting(force=True)
         except Exception:
             pass
 
@@ -742,9 +742,10 @@ if __name__ == "__main__":
     # Prevent telemetry loop monitor from performing expensive disk I/O stack inspections on Render shared CPU
     logging.getLogger("livekit.agents.telemetry").setLevel(logging.ERROR)
 
-    # Use JobExecutorType.PROCESS on Linux to isolate WebRTC FFI and avoid GIL event loop freezes
-    # Worker starts with 0 idle processes to keep memory minimal
-    executor_type = JobExecutorType.THREAD if sys.platform.startswith("win") else JobExecutorType.PROCESS
+    # Use JobExecutorType.THREAD unconditionally across all platforms.
+    # On Render (Linux 512MB RAM), JobExecutorType.PROCESS spawns a subprocess
+    # that duplicates PyTorch/LiveKit memory and triggers immediate OOM container termination.
+    executor_type = JobExecutorType.THREAD
 
     cli.run_app(
         WorkerOptions(

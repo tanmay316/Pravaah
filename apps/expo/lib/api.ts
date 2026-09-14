@@ -261,7 +261,7 @@ async function authHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: number = 28000): Promise<T> {
+async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: number = 60000): Promise<T> {
   const headers = await authHeaders();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

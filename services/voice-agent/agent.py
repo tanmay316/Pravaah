@@ -38,6 +38,7 @@ from livekit.agents import (
     cli,
 )
 from livekit.agents import llm as agent_llm
+from livekit.agents import tts as agent_tts
 from livekit.plugins import google, groq, openai, silero
 
 load_dotenv()
@@ -678,16 +679,33 @@ async def entrypoint(ctx: JobContext):
     logger.info("LLM chain: %s", [c.model for c in llm_candidates])
     llm = llm_candidates[0] if len(llm_candidates) == 1 else agent_llm.FallbackAdapter(llm_candidates)
 
-    # 4. TTS: Neural Indian English voice over an OpenAI-compatible /v1/audio/speech endpoint.
+    # 4. TTS: Neural Indian English voice over an OpenAI-compatible /v1/audio/speech endpoint,
+    # with Groq's hosted TTS behind it so a dead edge-tts host doesn't mute the coach.
     # TTS_BASE_URL must point at a host that is not competing with the agent for CPU.
     tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL") or "http://127.0.0.1:10000/v1"
-    logger.info("TTS endpoint: %s", tts_base_url)
-    tts = openai.TTS(
-        model="tts-1",
-        voice=os.getenv("TTS_VOICE", "en-IN-NeerjaNeural"),
-        api_key="not-needed",
-        base_url=tts_base_url,
-    )
+    logger.info("Primary TTS endpoint: %s", tts_base_url)
+    tts_candidates = [
+        openai.TTS(
+            model="tts-1",
+            voice=os.getenv("TTS_VOICE", "en-IN-NeerjaNeural"),
+            api_key="not-needed",
+            base_url=tts_base_url,
+        )
+    ]
+
+    if groq_key:
+        try:
+            tts_candidates.append(
+                groq.TTS(
+                    model=os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english"),
+                    voice=os.getenv("GROQ_TTS_VOICE", "autumn"),
+                    api_key=groq_key,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Groq TTS fallback unavailable: %s", exc)
+
+    tts = tts_candidates[0] if len(tts_candidates) == 1 else agent_tts.FallbackAdapter(tts_candidates)
 
     # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense
     session = AgentSession(

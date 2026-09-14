@@ -34,9 +34,15 @@ import {
   createSession,
   ConversationGoal,
 } from "../lib/api";
+import { speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
+
+/** How long a tutor turn waits for real agent audio before the device reads it aloud. */
+const DEVICE_SPEECH_GRACE_MS = 1800;
+
+type DeviceVoiceMode = "auto" | "on" | "off";
 
 /** Session goals the coach knows how to open on and steer towards. */
 const GOAL_OPTIONS: {
@@ -135,6 +141,8 @@ export default function SessionScreen() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
   const [coachJoined, setCoachJoined] = useState(false);
+  const [deviceVoiceMode, setDeviceVoiceMode] = useState<DeviceVoiceMode>("auto");
+  const [deviceVoiceActive, setDeviceVoiceActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // LiveKit Room ref
@@ -148,6 +156,13 @@ export default function SessionScreen() {
   const timerRef = useRef<any>(null);
   const coachWatchdogRef = useRef<any>(null);
   const transcriptScrollRef = useRef<ScrollView | null>(null);
+
+  // Device-speech fallback bookkeeping.
+  const hasRemoteAudioRef = useRef(false);
+  const deviceVoiceModeRef = useRef<DeviceVoiceMode>("auto");
+  const pendingSpeechRef = useRef<Map<string, any>>(new Map());
+  const isMutedRef = useRef(false);
+  const speakingOnDeviceRef = useRef(false);
 
   // Track whether we already pre-connected
   const preconnectedRef = useRef(false);
@@ -243,7 +258,9 @@ export default function SessionScreen() {
   };
 
   const attachAgentAudio = (track: Track) => {
-    if (Platform.OS !== "web" || track.kind !== Track.Kind.Audio) return;
+    if (track.kind !== Track.Kind.Audio) return;
+    hasRemoteAudioRef.current = true;
+    if (Platform.OS !== "web") return;
     if (audioElementRef.current) {
       try {
         audioElementRef.current.remove();
@@ -255,6 +272,61 @@ export default function SessionScreen() {
     audioElement.style.display = "none";
     document.body.appendChild(audioElement);
     audioElement.play().catch((e) => console.debug("Audio play pending gesture:", e));
+  };
+
+  /**
+   * Reads a coach turn aloud on the device and holds the microphone closed while it plays,
+   * so the phone's own speaker doesn't get transcribed back as learner speech.
+   */
+  const speakTurnOnDevice = async (text: string) => {
+    if (speakingOnDeviceRef.current) return;
+    speakingOnDeviceRef.current = true;
+    setDeviceVoiceActive(true);
+    setAgentSpeaking(true);
+    agentSpeakingRef.current = true;
+
+    const room = roomRef.current;
+    const shouldRestoreMic = !!room && !isMutedRef.current;
+    try {
+      if (shouldRestoreMic) {
+        await room!.localParticipant.setMicrophoneEnabled(false);
+      }
+      await speakOnDevice(text);
+    } catch (err) {
+      console.debug("Device speech note:", err);
+    } finally {
+      if (shouldRestoreMic && roomRef.current) {
+        await roomRef.current.localParticipant
+          .setMicrophoneEnabled(true)
+          .catch(() => {});
+      }
+      speakingOnDeviceRef.current = false;
+      setDeviceVoiceActive(false);
+      setAgentSpeaking(false);
+      agentSpeakingRef.current = false;
+    }
+  };
+
+  /** Queues a coach turn, cancelled if real agent audio starts within the grace period. */
+  const queueDeviceSpeech = (id: string, text: string) => {
+    const mode = deviceVoiceModeRef.current;
+    if (mode === "off") return;
+    if (mode === "auto" && hasRemoteAudioRef.current && agentSpeakingRef.current) return;
+
+    const delay = mode === "on" ? 150 : DEVICE_SPEECH_GRACE_MS;
+    const handle = setTimeout(() => {
+      pendingSpeechRef.current.delete(id);
+      if (deviceVoiceModeRef.current === "off") return;
+      // The agent found its voice in the meantime; let it speak.
+      if (deviceVoiceModeRef.current === "auto" && agentSpeakingRef.current) return;
+      speakTurnOnDevice(text);
+    }, delay);
+    pendingSpeechRef.current.set(id, handle);
+  };
+
+  const cancelPendingDeviceSpeech = () => {
+    pendingSpeechRef.current.forEach((handle) => clearTimeout(handle));
+    pendingSpeechRef.current.clear();
   };
 
   // Create the session and join. Driven by an explicit tap so the browser lets us play
@@ -312,6 +384,11 @@ export default function SessionScreen() {
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const remoteSpeaking = speakers.some((s) => !s.isLocal);
+        if (remoteSpeaking) {
+          // Real coach audio wins over the device fallback.
+          cancelPendingDeviceSpeech();
+        }
+        if (speakingOnDeviceRef.current) return;
         agentSpeakingRef.current = remoteSpeaking;
         setAgentSpeaking(remoteSpeaking);
         if (remoteSpeaking) {
@@ -345,10 +422,14 @@ export default function SessionScreen() {
               setTimeout(() => {
                 transcriptScrollRef.current?.scrollToEnd({ animated: true });
               }, 100);
+              const id = `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+              if (spk === "tutor") {
+                queueDeviceSpeech(id, data.text);
+              }
               return [
                 ...prev,
                 {
-                  id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  id,
                   speaker: spk,
                   text: data.text,
                   timestamp:
@@ -408,8 +489,8 @@ export default function SessionScreen() {
       coachWatchdogRef.current = setTimeout(() => {
         if (!roomRef.current || roomRef.current.remoteParticipants.size > 0) return;
         setErrorMessage(
-          "Coach Pravaah hasn't joined this room. The voice agent may not be running — " +
-            "check that the agent worker is deployed and registered with LiveKit."
+          "Coach Pravaah hasn't joined this room, so there's nothing to speak or transcribe. " +
+            "Check that the voice agent worker is deployed and registered with LiveKit."
         );
       }, 15000);
 
@@ -442,6 +523,8 @@ export default function SessionScreen() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
+      cancelPendingDeviceSpeech();
+      stopDeviceSpeech();
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (audioContextRef.current) {
         try {
@@ -462,12 +545,24 @@ export default function SessionScreen() {
       try {
         const nextMute = !isMuted;
         await roomRef.current.localParticipant.setMicrophoneEnabled(!nextMute);
+        isMutedRef.current = nextMute;
         setIsMuted(nextMute);
       } catch (err) {
         console.warn("Mute error:", err);
       }
     } else {
+      isMutedRef.current = !isMuted;
       setIsMuted(!isMuted);
+    }
+  };
+
+  const handleToggleDeviceVoice = () => {
+    const next: DeviceVoiceMode = deviceVoiceMode === "on" ? "auto" : "on";
+    deviceVoiceModeRef.current = next;
+    setDeviceVoiceMode(next);
+    if (next === "auto") {
+      cancelPendingDeviceSpeech();
+      stopDeviceSpeech();
     }
   };
 
@@ -476,6 +571,9 @@ export default function SessionScreen() {
       document.activeElement.blur();
     }
     if (timerRef.current) clearInterval(timerRef.current);
+    if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
+    cancelPendingDeviceSpeech();
+    stopDeviceSpeech();
     if (roomRef.current) {
       roomRef.current.disconnect();
     }
@@ -527,6 +625,7 @@ export default function SessionScreen() {
     if (reconnecting) return "RECONNECTING...";
     if (sessionStatus === "starting") return "CONNECTING...";
     if (sessionStatus === "ended") return "SESSION ENDED";
+    if (deviceVoiceActive) return "COACH SPEAKING (DEVICE)";
     if (!coachJoined) return "WAITING FOR COACH...";
     if (agentSpeaking) return "COACH SPEAKING";
     if (learnerSpeaking) return "YOU ARE SPEAKING";
@@ -924,6 +1023,26 @@ export default function SessionScreen() {
             color={isMuted ? theme.colors.crimsonError : theme.colors.pure}
           />
           <Text style={styles.roundCallBtnLabel}>{isMuted ? "Unmute" : "Mute"}</Text>
+        </Pressable>
+
+        {/* Device voice fallback. Auto kicks in only when no coach audio arrives. */}
+        <Pressable
+          style={({ pressed }) => [
+            styles.roundCallBtn,
+            deviceVoiceMode === "on" && styles.roundCallBtnOn,
+            pressed && styles.btnPressed,
+          ]}
+          onPress={handleToggleDeviceVoice}
+          accessibilityLabel="Read the coach's replies using the device voice"
+        >
+          <Ionicons
+            name={deviceVoiceMode === "on" ? "volume-high" : "phone-portrait-outline"}
+            size={22}
+            color={deviceVoiceMode === "on" ? theme.colors.emeraldSuccess : theme.colors.pure}
+          />
+          <Text style={styles.roundCallBtnLabel}>
+            {deviceVoiceMode === "on" ? "Device" : "Auto"}
+          </Text>
         </Pressable>
 
         {/* End Call Button */}
@@ -1563,6 +1682,9 @@ const styles = StyleSheet.create({
   },
   roundCallBtnActive: {
     opacity: 0.9,
+  },
+  roundCallBtnOn: {
+    opacity: 1,
   },
   roundCallBtnLabel: {
     fontFamily: theme.fonts.sans,

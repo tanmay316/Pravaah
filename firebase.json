@@ -9,6 +9,21 @@
       "firebase.json",
       "**/.*"
     ],
+    "headers": [
+      {
+        "source": "**/*.@(ttf|woff|woff2|eot)",
+        "headers": [
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000, immutable"
+          }
+        ]
+      }
+    ],
     "rewrites": [
       {
         "source": "**",

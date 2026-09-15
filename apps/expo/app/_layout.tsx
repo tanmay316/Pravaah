@@ -9,6 +9,8 @@ import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { useFonts } from "expo-font";
+import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/firebase";
 import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
@@ -17,6 +19,15 @@ export default function RootLayout() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  // @expo/vector-icons renders nothing until its font finishes downloading (see
+  // createIconSet.js: it returns an empty <Text /> until Font.isLoaded() is true). On a
+  // fast local dev server that window is imperceptible; over a real network it can leave
+  // every icon in the app invisible for a beat right after load. Loading it here, gated by
+  // the same spinner already used for auth, means icons are either ready or not shown yet
+  // — never present-but-blank.
+  const [iconsLoaded, iconsError] = useFonts(Ionicons.font);
+  const iconsReady = iconsLoaded || !!iconsError;
 
   // Inject Mobile Web meta tags, Google Fonts, Favicon, and PWA setup
   useEffect(() => {
@@ -145,7 +156,7 @@ export default function RootLayout() {
     }
   }, [user, loading, segments, router]);
 
-  if (loading) {
+  if (loading || !iconsReady) {
     return (
       <SafeAreaProvider>
         <StatusBar style="light" backgroundColor={theme.colors.obsidian} />

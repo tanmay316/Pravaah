@@ -15,6 +15,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   signInWithPopup,
   GoogleAuthProvider,
   updateProfile,
@@ -107,6 +108,15 @@ export async function signUpWithEmail(email: string, password: string, displayNa
     await updateProfile(credential.user, { displayName: displayName.trim() });
   }
   return credential;
+}
+
+/**
+ * Send a password reset email. Firebase always resolves successfully even for an
+ * unregistered address, so the UI can show one neutral message regardless and avoid
+ * leaking which emails have accounts.
+ */
+export async function sendPasswordReset(email: string) {
+  return sendPasswordResetEmail(requireAuth(), email);
 }
 
 export async function signInWithGoogle() {

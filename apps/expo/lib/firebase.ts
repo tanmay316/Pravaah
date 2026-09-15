@@ -68,6 +68,15 @@ export async function signUpWithEmail(email: string, password: string, displayNa
 }
 
 /**
+ * Send a password reset email. Firebase always resolves successfully even for an
+ * unregistered address, so the UI can show one neutral message regardless and avoid
+ * leaking which emails have accounts.
+ */
+export async function sendPasswordReset(email: string) {
+  return auth().sendPasswordResetEmail(email);
+}
+
+/**
  * Sign in with Google Auth provider.
  */
 export async function signInWithGoogle() {

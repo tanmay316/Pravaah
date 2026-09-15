@@ -21,7 +21,7 @@ import {
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { signInWithEmail, signUpWithEmail, signInWithGoogle } from "../lib/firebase";
+import { signInWithEmail, signUpWithEmail, signInWithGoogle, sendPasswordReset } from "../lib/firebase";
 import { theme } from "../lib/theme";
 
 export default function AuthScreen() {
@@ -34,6 +34,13 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Forgot-password panel replaces the sign-in/sign-up form in place; it does not navigate.
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetSent, setResetSent] = useState(false);
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
@@ -70,6 +77,37 @@ export default function AuthScreen() {
       setError(err.message || "Google sign-in was cancelled or encountered an issue.");
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  const openForgotPassword = () => {
+    setResetEmail(email.trim());
+    setResetError("");
+    setResetSent(false);
+    setShowForgotPassword(true);
+  };
+
+  const closeForgotPassword = () => {
+    setShowForgotPassword(false);
+    setResetError("");
+    setResetSent(false);
+  };
+
+  const handleSendResetEmail = async () => {
+    const target = resetEmail.trim();
+    if (!target) {
+      setResetError("Enter your email address.");
+      return;
+    }
+    setResetLoading(true);
+    setResetError("");
+    try {
+      await sendPasswordReset(target);
+      setResetSent(true);
+    } catch (err: any) {
+      setResetError(err.message || "Could not send the reset email. Please try again.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -116,6 +154,78 @@ export default function AuthScreen() {
 
           {/* Form Container Card */}
           <View style={styles.formCard}>
+            {showForgotPassword ? (
+              <>
+                <Pressable style={styles.backToSignInRow} onPress={closeForgotPassword} hitSlop={8}>
+                  <Ionicons name="arrow-back" size={16} color={theme.colors.ash} />
+                  <Text style={styles.backToSignInText}>Back to sign in</Text>
+                </Pressable>
+
+                <Text style={styles.forgotPasswordTitle}>Reset your password</Text>
+
+                {resetSent ? (
+                  <View style={styles.resetSentBox}>
+                    <Ionicons name="mail-open-outline" size={22} color={theme.colors.emeraldSuccess} />
+                    <Text style={styles.resetSentText}>
+                      If an account exists for {resetEmail.trim()}, a reset link is on its way.
+                      Check your inbox (and spam folder).
+                    </Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={styles.forgotPasswordSubtext}>
+                      Enter the email address on your account and we'll send a link to reset your
+                      password.
+                    </Text>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
+                      <View style={styles.inputWrapper}>
+                        <Ionicons name="mail-outline" size={18} color={theme.colors.fog} style={styles.inputIcon} />
+                        <TextInput
+                          style={styles.textInput}
+                          placeholder="name@domain.com"
+                          placeholderTextColor={theme.colors.steel}
+                          keyboardType="email-address"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          value={resetEmail}
+                          onChangeText={setResetEmail}
+                          autoFocus
+                        />
+                      </View>
+                    </View>
+
+                    {resetError ? (
+                      <View style={styles.errorBanner}>
+                        <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
+                        <Text style={styles.errorText}>{resetError}</Text>
+                      </View>
+                    ) : null}
+
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.primarySubmitBtn,
+                        pressed && styles.buttonPressed,
+                        resetLoading && styles.buttonDisabled,
+                      ]}
+                      onPress={handleSendResetEmail}
+                      disabled={resetLoading}
+                    >
+                      {resetLoading ? (
+                        <ActivityIndicator color={theme.colors.void} size="small" />
+                      ) : (
+                        <View style={styles.primaryBtnContent}>
+                          <Text style={styles.primaryBtnText}>Send Reset Link</Text>
+                          <Ionicons name="arrow-forward" size={18} color={theme.colors.void} />
+                        </View>
+                      )}
+                    </Pressable>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
             {/* Segmented Tab Pill: Sign In / Sign Up */}
             <View style={styles.segmentedContainer}>
               <Pressable
@@ -238,6 +348,16 @@ export default function AuthScreen() {
               </View>
             </View>
 
+            {!isSignUp ? (
+              <Pressable
+                style={styles.forgotPasswordLink}
+                onPress={openForgotPassword}
+                hitSlop={8}
+              >
+                <Text style={styles.forgotPasswordLinkText}>Forgot password?</Text>
+              </Pressable>
+            ) : null}
+
             {/* Error Banner */}
             {error ? (
               <View style={styles.errorBanner}>
@@ -267,6 +387,8 @@ export default function AuthScreen() {
                 </View>
               )}
             </Pressable>
+              </>
+            )}
           </View>
 
           {/* Privacy & Terms Note */}
@@ -488,6 +610,54 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 12,
     padding: 4,
+  },
+  forgotPasswordLink: {
+    alignSelf: "flex-end",
+    paddingVertical: 4,
+    marginBottom: theme.spacing.md,
+  },
+  forgotPasswordLinkText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.paleIris,
+    fontWeight: "600",
+  },
+  backToSignInRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: theme.spacing.lg,
+  },
+  backToSignInText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+  },
+  forgotPasswordTitle: {
+    fontFamily: theme.fonts.serif,
+    fontSize: theme.fontSizes.headingSm,
+    color: theme.colors.pure,
+    marginBottom: 8,
+  },
+  forgotPasswordSubtext: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.ash,
+    lineHeight: 20,
+    marginBottom: theme.spacing.lg,
+  },
+  resetSentBox: {
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.md,
+  },
+  resetSentText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.cloud,
+    textAlign: "center",
+    lineHeight: 20,
   },
   errorBanner: {
     flexDirection: "row",

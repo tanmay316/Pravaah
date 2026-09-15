@@ -6,10 +6,10 @@ const CACHE_NAME = "pravaah-cache-v1";
 const STATIC_ASSETS = [
   "/",
   "/manifest.json",
-  "/assets/favicon.png",
-  "/assets/favicon-192.png",
-  "/assets/favicon-512.png",
-  "/assets/pravaah_navbar_logo.png"
+  "/favicon.png",
+  "/favicon-192.png",
+  "/favicon-512.png",
+  "/pravaah_navbar_logo.png"
 ];
 
 // Install: Cache core static assets
@@ -55,8 +55,8 @@ self.addEventListener("push", (event) => {
   let data = {
     title: "Pravaah — Daily Practice Reminder",
     body: "Your 30-minute English speaking session is ready for today!",
-    icon: "/assets/favicon-192.png",
-    badge: "/assets/favicon.png",
+    icon: "/favicon-192.png",
+    badge: "/favicon.png",
     tag: "pravaah-daily-reminder",
     data: { url: "/" }
   };

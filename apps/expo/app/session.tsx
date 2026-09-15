@@ -35,6 +35,7 @@ import {
   ConversationGoal,
 } from "../lib/api";
 import { speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
+import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
@@ -70,13 +71,34 @@ const TOPIC_SUGGESTIONS = [
   "Weekend plans",
 ];
 
-const ROLEPLAY_SCENARIOS = [
+/** Who Coach Pravaah plays opposite the learner in a roleplay session. */
+const ROLEPLAY_ROLES = [
+  "Hiring manager",
+  "Client",
+  "Team lead",
+  "Hotel receptionist",
+  "Waiter",
+  "Customer support agent",
+  "Shopkeeper",
+  "Doctor",
+  "Immigration officer",
+  "College professor",
+];
+
+/** Situational topic suggestions shown instead of TOPIC_SUGGESTIONS while roleplay is selected. */
+const ROLEPLAY_SITUATIONS = [
   "a job interview",
   "a client call",
   "a team standup",
   "ordering at a restaurant",
   "checking into a hotel",
   "a customer support call",
+  "negotiating a price at a market",
+  "a doctor's appointment",
+  "asking for directions",
+  "a college admission interview",
+  "returning a faulty product",
+  "a visa interview",
 ];
 
 function defaultGoalForMode(mode?: string): ConversationGoal {
@@ -90,6 +112,42 @@ function defaultGoalForMode(mode?: string): ConversationGoal {
     default:
       return "intro";
   }
+}
+
+/**
+ * The daily plan (services/learning-engine/curriculum.py) labels its activities "vocabulary"
+ * and "review", neither of which the backend's SessionMode enum accepts (it only knows
+ * free_conversation / grammar_practice / vocabulary_practice / roleplay / assessment) —
+ * launching one of those activities as-is 422s. Map them onto a mode the API understands
+ * before it's used for anything.
+ */
+function normalizeSessionMode(mode?: string, targetSkill?: string): string {
+  if (mode === "vocabulary") return "vocabulary_practice";
+  if (mode === "review") return targetSkill === "collocations" ? "vocabulary_practice" : "grammar_practice";
+  return mode || "free_conversation";
+}
+
+/**
+ * The learner already chose a specific skill or lesson to open this session, so the topic
+ * step should reflect that instead of asking them to pick a subject a second time. Free
+ * conversation and roleplay have no single skill behind them, so they stay blank for the
+ * learner to fill in.
+ */
+function defaultTopicFor(mode?: string, targetSkill?: string): string {
+  if ((mode === "grammar_practice" || mode === "vocabulary_practice") && targetSkill) {
+    return skillLabel(targetSkill);
+  }
+  return "";
+}
+
+/** Combines the chosen role and situation into the single scenario string the agent reads. */
+function buildRoleplayScenario(topic: string, role: string): string | undefined {
+  const t = topic.trim();
+  const r = role.trim();
+  if (r && t) return `${t} — you play the ${r}`;
+  if (r) return `a roleplay where you play the ${r}`;
+  if (t) return t;
+  return undefined;
 }
 
 interface TranscriptTurn {
@@ -121,12 +179,13 @@ export default function SessionScreen() {
 
   // The learner chooses a topic and a goal before we create the session, because both are
   // baked into the LiveKit token the coach reads to build its opening line.
+  const sessionMode = normalizeSessionMode(params.mode, params.target_skill);
   const [sessionStatus, setSessionStatus] = useState<
     "choosing" | "starting" | "active" | "ended"
   >("choosing");
-  const [topic, setTopic] = useState("");
-  const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(params.mode));
-  const [roleplayScenario, setRoleplayScenario] = useState("");
+  const [topic, setTopic] = useState(() => defaultTopicFor(sessionMode, params.target_skill));
+  const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(sessionMode));
+  const [roleplayRole, setRoleplayRole] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
@@ -351,12 +410,12 @@ export default function SessionScreen() {
       }
 
       const sessionRes = await createSession({
-        mode: params.mode || "free_conversation",
+        mode: sessionMode,
         targetSkill: params.target_skill,
         lessonId: params.lesson_id,
         topic,
         conversationGoal: goal,
-        roleplayScenario: goal === "roleplay" ? roleplayScenario : undefined,
+        roleplayScenario: goal === "roleplay" ? buildRoleplayScenario(topic, roleplayRole) : undefined,
       });
       setSessionId(sessionRes.session_id);
 
@@ -647,7 +706,9 @@ export default function SessionScreen() {
   // =========================================================================
   if (sessionStatus === "choosing" || sessionStatus === "starting") {
     const isStarting = sessionStatus === "starting";
-    const readyToStart = goal !== "roleplay" || !!(roleplayScenario.trim() || topic.trim());
+    const readyToStart = goal !== "roleplay" || !!(roleplayRole.trim() || topic.trim());
+    const isRoleplay = goal === "roleplay";
+    const topicSuggestions = isRoleplay ? ROLEPLAY_SITUATIONS : TOPIC_SUGGESTIONS;
 
     return (
       <View style={[styles.screen, { paddingTop: Math.max(insets.top, 16) }]}>
@@ -690,10 +751,16 @@ export default function SessionScreen() {
 
           {/* Step 1 — Topic */}
           <View style={styles.setupCard}>
-            <Text style={styles.setupStepLabel}>1 · YOUR TOPIC</Text>
+            <Text style={styles.setupStepLabel}>
+              1 · {isRoleplay ? "THE SITUATION" : "YOUR TOPIC"}
+            </Text>
             <TextInput
               style={styles.topicInput}
-              placeholder="e.g. my new job, last weekend, cricket…"
+              placeholder={
+                isRoleplay
+                  ? "e.g. a job interview, hotel check-in…"
+                  : "e.g. my new job, last weekend, cricket…"
+              }
               placeholderTextColor={theme.colors.steel}
               value={topic}
               onChangeText={setTopic}
@@ -701,7 +768,7 @@ export default function SessionScreen() {
               returnKeyType="done"
             />
             <View style={styles.chipWrap}>
-              {TOPIC_SUGGESTIONS.map((t) => {
+              {topicSuggestions.map((t) => {
                 const selected = topic.trim().toLowerCase() === t.toLowerCase();
                 return (
                   <Pressable
@@ -757,20 +824,20 @@ export default function SessionScreen() {
 
             {goal === "roleplay" ? (
               <View style={styles.scenarioBlock}>
-                <Text style={styles.scenarioLabel}>Which scenario?</Text>
+                <Text style={styles.scenarioLabel}>Who should Coach Pravaah play?</Text>
                 <View style={styles.chipWrap}>
-                  {ROLEPLAY_SCENARIOS.map((s) => {
-                    const selected = roleplayScenario === s;
+                  {ROLEPLAY_ROLES.map((r) => {
+                    const selected = roleplayRole === r;
                     return (
                       <Pressable
-                        key={s}
+                        key={r}
                         style={[styles.suggestChip, selected && styles.suggestChipActive]}
-                        onPress={() => setRoleplayScenario(selected ? "" : s)}
+                        onPress={() => setRoleplayRole(selected ? "" : r)}
                       >
                         <Text
                           style={[styles.suggestChipText, selected && styles.suggestChipTextActive]}
                         >
-                          {s}
+                          {r}
                         </Text>
                       </Pressable>
                     );
@@ -783,9 +850,7 @@ export default function SessionScreen() {
           {params.target_skill ? (
             <View style={styles.focusCard}>
               <Text style={styles.focusCardEyebrow}>TODAY'S TARGET SKILL</Text>
-              <Text style={styles.focusCardTitle}>
-                {params.target_skill.replace(/_/g, " ").toUpperCase()}
-              </Text>
+              <Text style={styles.focusCardTitle}>{skillLabel(params.target_skill)}</Text>
             </View>
           ) : null}
 
@@ -828,7 +893,11 @@ export default function SessionScreen() {
                 <View style={styles.btnLoadingRow}>
                   <Ionicons name="call" size={20} color={theme.colors.void} />
                   <Text style={styles.startCallBtnText}>
-                    {topic.trim() ? `Start talking about ${topic.trim()}` : "Start conversation"}
+                    {topic.trim()
+                      ? `Start talking about ${topic.trim()}`
+                      : isRoleplay && roleplayRole.trim()
+                      ? `Start roleplay with the ${roleplayRole}`
+                      : "Start conversation"}
                   </Text>
                 </View>
               )}

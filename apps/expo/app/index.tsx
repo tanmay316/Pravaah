@@ -50,6 +50,7 @@ import {
   PRAVAAH_LEVEL_NAMES,
 } from "../lib/api";
 import { signOut } from "../lib/firebase";
+import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 import {
   getNotificationPermissionStatus,
@@ -60,18 +61,6 @@ import {
 
 type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
 
-const SKILL_LABELS: Record<string, string> = {
-  past_simple_auxiliary: "Past Simple (did/didn't)",
-  past_simple: "Past Simple",
-  stative_verbs: "Stative Verbs",
-  subject_verb_agreement: "Subject-Verb Agreement",
-  be_verb_misuse: "Be-Verb Usage",
-  prepositions: "Prepositions",
-  articles: "Articles",
-  collocations: "Collocations",
-  sentence_structure: "Sentence Structure",
-};
-
 const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
   recent_mistakes: "RECENT MISTAKES",
   failed_repetitions: "KEEPS SLIPPING",
@@ -79,11 +68,6 @@ const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
   developing: "DEVELOPING",
   mastered: "MASTERED",
 };
-
-function skillLabel(id?: string | null): string {
-  if (!id) return "General";
-  return SKILL_LABELS[id] || id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 function formatDayLabel(iso?: string): string {
   if (!iso) return "Earlier";

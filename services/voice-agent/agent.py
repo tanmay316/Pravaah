@@ -65,6 +65,10 @@ def _model_chain(env_var: str, default: str) -> list[str]:
 
 # Conversation LLM fallbacks, used only when Groq is unavailable.
 GEMINI_CHAIN = _model_chain("GEMINI_MODEL_CHAIN", DEFAULT_GEMINI_CHAIN)
+# Every extra fallback instance is a live LLM client held for the whole session. Groq (tried
+# first, and very reliable) covers the common case, so the conversational path only keeps the
+# top two Gemini models by quota as a safety net rather than constructing all four.
+GEMINI_VOICE_CHAIN = _model_chain("GEMINI_VOICE_MODEL_CHAIN", ",".join(GEMINI_CHAIN[:2]))
 # The correction/translation card prompt is tiny, so the high-RPD small-context models suit it.
 GEMINI_CARD_CHAIN = _model_chain("GEMINI_CARD_MODEL_CHAIN", "gemma-4-31b," + DEFAULT_GEMINI_CHAIN)
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", GEMINI_CHAIN[0])
@@ -659,7 +663,7 @@ async def entrypoint(ctx: JobContext):
                 logger.warning("Groq LLM %s unavailable: %s", groq_model, exc)
 
     if gemini_key:
-        for gemini_model in GEMINI_CHAIN:
+        for gemini_model in GEMINI_VOICE_CHAIN:
             try:
                 llm_candidates.append(
                     google.LLM(model=gemini_model, api_key=gemini_key, temperature=0.25)

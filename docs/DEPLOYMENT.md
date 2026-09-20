@@ -18,14 +18,26 @@ WARNING:livekit:livekit_api::signal_client - dropping pass-through signal — no
 `cpu_time` being near zero while `duration` is seconds means the process was *descheduled*, not
 busy: the host took the CPU away. The learner hears silence and sees no transcript.
 
+### Confirmed in production: co-hosting also OOM-kills the whole container
+
+Render's free plan is 512MB. A live call runs Silero VAD, an STT stream, an LLM stream and TTS
+synthesis all at once; production logs show `VAD inference is slower than realtime` delays
+climbing from 0.2s to nearly 6s over a few seconds, then the container is gone and restarts from
+scratch (Firebase credentials rewritten, uvicorn and the agent worker both re-registering). This
+is Render's OOM killer, and it takes the **REST API down with the agent**, since they're the same
+container. Any dashboard fetch during that restart window fails, which is exactly the "Could not
+reach the coaching service" error a learner sees if they end a call while the container is mid
+-restart. This is not a transient bug to retry around — it's the direct consequence of the two
+workloads sharing 512MB, and it recurs under real voice-call load, not just at high concurrency.
+
 So:
 
 | Component | Where | Why |
 |---|---|---|
 | REST API + embedded TTS (`Dockerfile`) | Render free web service | Request/response, tolerates a slow CPU |
-| Voice agent (`services/voice-agent/Dockerfile`) | LiveKit Cloud Agents, or an Oracle Cloud Always-Free VM | Needs a dedicated core |
+| Voice agent (`services/voice-agent/Dockerfile`) | LiveKit Cloud Agents, or an Oracle Cloud Always-Free VM | Needs a dedicated core and its own memory budget |
 
-`RUN_VOICE_AGENT=false` is the default and should stay false on Render.
+`RUN_VOICE_AGENT=false` is the default and must stay false on Render.
 
 ### Deploy the API to Render
 
@@ -64,6 +76,13 @@ The API image installs only `services/api` + `services/learning-engine` requirem
 unused `langgraph` dependency is gone. Expect the API container to sit well under the 512 MB free
 tier limit. The agent image drops the `turn-detector` extra (which pulls `transformers` and an
 ONNX model) and keeps only VAD-based endpointing.
+
+The agent also holds one live LLM client per entry in its fallback chain for the whole session.
+The conversational chain constructs Groq's 2 models plus only the top 2 Gemini models by quota
+(`GEMINI_VOICE_MODEL_CHAIN`, defaults to the first two entries of `GEMINI_MODEL_CHAIN`) rather
+than all 4 Gemini models — Groq is tried first and is reliable, so the extra Gemini fallbacks
+were rarely-used dead weight. Even with this and a dedicated host, budget for Silero VAD +
+PyTorch (~150-300 MB baseline) plus per-call STT/LLM/TTS streaming buffers when sizing a VM.
 
 ## Deployment philosophy
 

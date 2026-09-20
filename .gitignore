@@ -65,3 +65,6 @@ env/
 .DS_Store
 Thumbs.db
 
+
+# graphify-axet
+.graphify/

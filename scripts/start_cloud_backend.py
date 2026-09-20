@@ -4,10 +4,12 @@ Pravaah — Cloud Backend Launcher
 Starts the FastAPI REST API (plus the embedded neural TTS route) on $PORT.
 
 The LiveKit voice agent is NOT started here by default. A realtime agent needs a CPU core
-it does not have to share; co-hosting it with the API on a 0.1-vCPU box starves both and
-produces the "job executor is unresponsive" / no-audio failure mode. Deploy the agent
-separately (see docs/DEPLOYMENT.md), or set RUN_VOICE_AGENT=true on a host with >=1 vCPU
-and >=1GB RAM to run both in one container.
+it does not have to share; co-hosting it with the API on a 0.1-vCPU / 512MB box starves both
+and has been observed in production to OOM-kill the *entire container* mid-call (Render's
+"exceeded memory limit" alert), taking the REST API down with it until the container finishes
+restarting - which is what turns into "Could not reach the coaching service" on the dashboard
+right after a call ends. Deploy the agent separately (see docs/DEPLOYMENT.md), or set
+RUN_VOICE_AGENT=true on a host with >=1 vCPU and >=1GB RAM to run both in one container.
 """
 
 import logging
@@ -35,7 +37,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 port = int(os.environ.get("PORT", "10000"))
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "true").lower() in {"1", "true", "yes"}
+RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "false").lower() in {"1", "true", "yes"}
 
 # Credentials come from the environment only. Never commit keys to the repo: anything
 # checked in is public to everyone who can read it and must be treated as compromised.

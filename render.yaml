@@ -1,9 +1,11 @@
 services:
-  # REST API + embedded neural TTS, co-hosting the realtime voice agent.
-  #
-  # Co-hosting is the simplest free single-service setup, but 0.1 vCPU is genuinely tight for
-  # a realtime agent. If the logs show "job executor is unresponsive" or audio breaks up,
-  # move the agent to LiveKit Cloud Agents (livekit.toml) and set RUN_VOICE_AGENT=false.
+  # REST API + embedded neural TTS ONLY. RUN_VOICE_AGENT stays false: co-hosting the realtime
+  # agent here was tried and confirmed in production logs to OOM-kill the whole container mid
+  # -call (Render's "exceeded memory limit" alert), which also took the REST API down with it
+  # until Render finished restarting - the cause of "Could not reach the coaching service" on
+  # the dashboard right after a call. Deploy the agent separately: LiveKit Cloud Agents
+  # (livekit.toml) or an Oracle Cloud Always-Free VM (scripts/oracle_setup.sh). See
+  # docs/DEPLOYMENT.md.
   - type: web
     name: pravaah-backend
     env: docker
@@ -24,9 +26,6 @@ services:
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: RUN_VOICE_AGENT
-        value: "true"
-      # A second interpreter per job does not fit in 512MB, so run jobs as threads here.
-      - key: JOB_EXECUTOR
-        value: thread
+        value: "false"
       - key: ALLOW_DEMO_AUTH
         value: "false"

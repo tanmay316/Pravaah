@@ -89,8 +89,10 @@ def main():
     if RUN_VOICE_AGENT:
         if os.environ.get("LIVEKIT_URL"):
             logger.info("Starting co-hosted LiveKit Voice Agent Worker (%s)...", os.environ["LIVEKIT_URL"])
-            # The co-hosted agent talks to this same container's TTS route.
+            # The co-hosted agent talks to this same container's TTS route with male Indian English voice.
             os.environ.setdefault("TTS_BASE_URL", f"http://127.0.0.1:{port}/v1")
+            os.environ.setdefault("TTS_VOICE", "en-IN-PrabhatNeural")
+            os.environ.setdefault("GROQ_TTS_VOICE", "troy")
             processes.append(
                 subprocess.Popen(
                     [sys.executable, "agent.py", "start"],

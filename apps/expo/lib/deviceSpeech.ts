@@ -15,24 +15,60 @@ import * as Speech from "expo-speech";
 /** Preferred voice languages, best first. Indian English keeps the coach's accent consistent. */
 const PREFERRED_LANGUAGES = ["en-IN", "en-GB", "en-US", "en"];
 
-let cachedLanguage: string | null | undefined;
+interface VoiceMatch {
+  language?: string;
+  voice?: string;
+}
 
-async function resolveLanguage(): Promise<string | undefined> {
-  if (cachedLanguage !== undefined) return cachedLanguage ?? undefined;
+let cachedVoice: VoiceMatch | null | undefined;
+
+async function resolveVoice(): Promise<VoiceMatch> {
+  if (cachedVoice !== undefined) return cachedVoice ?? {};
   try {
     const voices = await Speech.getAvailableVoicesAsync();
+    // 1. Prefer Indian English Male voice
+    const inMale = voices.find(
+      (v) =>
+        v.language?.toLowerCase().startsWith("en-in") &&
+        (v.name?.toLowerCase().includes("male") ||
+          v.name?.toLowerCase().includes("prabhat") ||
+          v.name?.toLowerCase().includes("ravi") ||
+          (v as any).gender === "male")
+    );
+    if (inMale) {
+      cachedVoice = { language: inMale.language, voice: inMale.identifier };
+      return cachedVoice;
+    }
+
+    // 2. Prefer any English Male voice
+    const enMale = voices.find(
+      (v) =>
+        v.language?.toLowerCase().startsWith("en") &&
+        (v.name?.toLowerCase().includes("male") ||
+          v.name?.toLowerCase().includes("david") ||
+          v.name?.toLowerCase().includes("george") ||
+          v.name?.toLowerCase().includes("mark") ||
+          v.name?.toLowerCase().includes("guy") ||
+          (v as any).gender === "male")
+    );
+    if (enMale) {
+      cachedVoice = { language: enMale.language, voice: enMale.identifier };
+      return cachedVoice;
+    }
+
+    // 3. Fallback to language matching
     for (const lang of PREFERRED_LANGUAGES) {
       const match = voices.find((v) => v.language?.toLowerCase().startsWith(lang.toLowerCase()));
       if (match) {
-        cachedLanguage = match.language;
-        return cachedLanguage;
+        cachedVoice = { language: match.language, voice: match.identifier };
+        return cachedVoice;
       }
     }
-    cachedLanguage = null;
+    cachedVoice = null;
   } catch {
-    cachedLanguage = null;
+    cachedVoice = null;
   }
-  return cachedLanguage ?? undefined;
+  return cachedVoice ?? {};
 }
 
 export async function isDeviceSpeechAvailable(): Promise<boolean> {
@@ -61,10 +97,11 @@ export function speakOnDevice(text: string): Promise<void> {
       resolve();
     };
 
-    resolveLanguage()
-      .then((language) => {
+    resolveVoice()
+      .then((voiceMatch) => {
         Speech.speak(clean, {
-          language,
+          language: voiceMatch.language,
+          voice: voiceMatch.voice,
           rate: 0.95,
           pitch: 1.0,
           onDone: finish,

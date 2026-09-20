@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -71,7 +72,7 @@ from curriculum import (
     cefr_reference_for_pravaah_level,
     determine_lesson_stage,
     get_varied_practice_activity,
-    select_next_adaptive_skill,
+    priority_practice_prompt,
     map_to_curriculum_skill,
     generate_personalized_lesson,
     calculate_mastery_update,
@@ -334,6 +335,7 @@ Your role is to analyze learner utterances from a spoken English conversation an
 - **DO NOT Over-Complicate**: Do NOT rewrite simple, clear sentences into unnecessarily complex vocabulary.
 - **Preserve Learner Wording**: In 'original', quote the exact words used by the learner.
 - **No Pronunciation Guessing**: Do not guess pronunciation from text.
+- **Hindi is not an English error**: Hindi/Hinglish and translation requests are not mistakes. Only quote a genuinely incorrect English phrase, never penalize language choice.
 - **Confidence Scoring**: Assign confidence (0.0 to 1.0). If uncertain, assign confidence < 0.7.
 
 Return a valid JSON object matching this exact schema:
@@ -386,6 +388,15 @@ async def analyze_session_messages(
         logger.info("No user utterances to analyze for session %s", session_id)
         return SessionAnalysisResult(mistakes=[], vocabulary=[])
 
+    session_ref = None
+    saved_analysis = {}
+    if user_id:
+        session_ref = get_firestore_client().collection("users").document(user_id).collection("sessions").document(session_id)
+        saved_analysis = _snapshot_data(session_ref.get())
+    cached_result = saved_analysis.get("analysis_result")
+    if saved_analysis.get("analysis_status") == "completed" and isinstance(cached_result, dict):
+        return SessionAnalysisResult.model_validate(cached_result)
+
     # Format transcript for model
     transcript_lines = []
     for turn in user_turns:
@@ -398,12 +409,15 @@ async def analyze_session_messages(
     logger.info("Running session analysis for user=%s session=%s (turns=%d)", user_id, session_id, len(user_turns))
 
     # 2. Call Groq Cloud / Gemini / LiteLLM with structured JSON output and safe retry
-    parsed_result = SessionAnalysisResult(mistakes=[], vocabulary=[])
+    # Persisted facts let a retry resume writes without reclassifying the same
+    # learner turns (or treating a provider failure as a clean session).
+    analysis_succeeded = isinstance(cached_result, dict)
+    parsed_result = SessionAnalysisResult.model_validate(cached_result) if analysis_succeeded else SessionAnalysisResult()
     max_retries = 2
     groq_key = os.getenv("GROQ_API_KEY")
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 
-    if groq_key:
+    if groq_key and not analysis_succeeded:
         try:
             from groq import Groq
             gclient = Groq(api_key=groq_key)
@@ -445,13 +459,15 @@ async def analyze_session_messages(
                     v["fact_type"] = "natural_alternative"
 
             parsed_result = SessionAnalysisResult.model_validate(raw_json)
+            analysis_succeeded = True
         except Exception as groq_err:
             logger.warning("Groq session analysis notice: %s; trying Gemini fallback", groq_err)
 
-    if not parsed_result.mistakes and not parsed_result.vocabulary and api_key:
-        genai.configure(api_key=api_key)
+    if not analysis_succeeded and api_key:
         for genai_model_name in _gemini_chain_for(model, GEMINI_CHAIN):
             try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
                 gmodel = genai.GenerativeModel(genai_model_name, system_instruction=ANALYSIS_SYSTEM_PROMPT)
                 resp = await asyncio.to_thread(gmodel.generate_content, user_prompt)
                 raw_text = resp.text.strip()
@@ -485,12 +501,13 @@ async def analyze_session_messages(
                         v["fact_type"] = "natural_alternative"
 
                 parsed_result = SessionAnalysisResult.model_validate(raw_json)
+                analysis_succeeded = True
                 logger.info("Session analysis succeeded via Gemini %s", genai_model_name)
                 break
             except Exception as e:
                 logger.warning("Gemini %s session analysis failed: %s; trying next model", genai_model_name, e)
 
-    if not parsed_result.mistakes and not parsed_result.vocabulary:
+    if not analysis_succeeded:
         litellm = _get_litellm()
         if litellm is None:
             logger.warning("litellm is not installed; skipping the provider-fallback analysis path.")
@@ -550,24 +567,33 @@ async def analyze_session_messages(
                         v["fact_type"] = "natural_alternative"
 
                 parsed_result = SessionAnalysisResult.model_validate(raw_json)
+                analysis_succeeded = True
                 break
             except Exception as e:
                 logger.warning("Session analysis attempt %d failed: %s", attempt, e)
                 if attempt == max_retries:
                     logger.error("Failed to parse analysis output after %d attempts.", max_retries)
-                    return SessionAnalysisResult(mistakes=[], vocabulary=[])
+
+    if not analysis_succeeded:
+        raise RuntimeError("Session analysis providers unavailable; retry completion later.")
 
     # 3. Filter high-confidence items only
     filtered_mistakes = [
         m for m in parsed_result.mistakes
         if m.confidence >= confidence_threshold and m.original.strip().lower() != m.corrected.strip().lower()
+        and (m.fact_type not in ("grammar_error", "vocabulary_error")
+             or _validated_learning_error(m.model_dump(), "mistakes", messages, session_id))
     ]
     filtered_vocab = [
         v for v in parsed_result.vocabulary
         if v.confidence >= confidence_threshold and v.original_usage.strip()
+           and (v.fact_type != "vocabulary_error"
+               or _validated_learning_error(v.model_dump(), "vocabulary", messages, session_id))
     ]
 
     final_result = SessionAnalysisResult(mistakes=filtered_mistakes, vocabulary=filtered_vocab)
+    if session_ref is not None and not isinstance(cached_result, dict):
+        session_ref.set({"analysis_result": final_result.model_dump(), "analysis_status": "pending"}, merge=True)
 
     # 4. Idempotently write to Firestore & Update Learner Mastery (Phase 3C)
     if user_id:
@@ -580,6 +606,9 @@ async def analyze_session_messages(
             for idx, mistake in enumerate(final_result.mistakes, 1):
                 if mistake.fact_type in ("grammar_error", "vocabulary_error"):
                     mistake_id = make_deterministic_id(session_id, mistake.message_id, f"m_{idx:02d}")
+                    mistake_ref = user_ref.collection("mistakes").document(mistake_id)
+                    previous = _snapshot_data(mistake_ref.get())
+                    admitted = _validated_learning_error(mistake.model_dump(), "mistakes", messages, session_id) or {}
                     doc_data = {
                         "mistake_id": mistake_id,
                         "session_id": session_id,
@@ -593,10 +622,12 @@ async def analyze_session_messages(
                         "confidence": mistake.confidence,
                         "explanation": mistake.short_explanation,
                         "short_explanation": mistake.short_explanation,
-                        "created_at": now,
+                        **admitted,
+                        "learner_verified": True,
+                        "created_at": previous.get("created_at") or now,
                         "updated_at": firestore.SERVER_TIMESTAMP,
                     }
-                    user_ref.collection("mistakes").document(mistake_id).set(doc_data, merge=True)
+                    mistake_ref.set(doc_data, merge=True)
                 elif mistake.fact_type == "natural_alternative":
                     # Store as positive suggestion
                     suggestion_id = make_deterministic_id(session_id, mistake.message_id, f"s_{idx:02d}")
@@ -613,11 +644,14 @@ async def analyze_session_messages(
             # Write vocabulary facts (both errors & natural alternative collocations)
             for idx, vocab in enumerate(final_result.vocabulary, 1):
                 vocab_id = make_deterministic_id(session_id, vocab.message_id, f"v_{idx:02d}")
+                vocab_ref = user_ref.collection("vocabulary").document(vocab_id)
+                previous = _snapshot_data(vocab_ref.get())
+                admitted = _validated_learning_error(vocab.model_dump(), "vocabulary", messages, session_id) or {}
                 term = vocab.suggested_alternative or vocab.original_usage
                 doc_data = {
                     "vocabulary_id": vocab_id,
                     "session_id": session_id,
-                    "message_id": vocab.message_id,
+                    "message_id": admitted.get("message_id", vocab.message_id),
                     "term": term,
                     "word": term,
                     "original_usage": vocab.original_usage,
@@ -630,13 +664,14 @@ async def analyze_session_messages(
                     "meaning": vocab.explanation,
                     "natural_usage_tip": vocab.explanation,
                     "confidence": vocab.confidence,
-                    "created_at": now,
+                    "created_at": previous.get("created_at") or now,
                     "updated_at": firestore.SERVER_TIMESTAMP,
                 }
-                user_ref.collection("vocabulary").document(vocab_id).set(doc_data, merge=True)
+                vocab_ref.set(doc_data, merge=True)
 
             # 5. Update skill-level mastery & learner profile (Phase 3C)
             await update_learner_mastery(user_id, session_id, final_result, messages)
+            session_ref.set({"analysis_status": "completed"}, merge=True)
 
             logger.info(
                 "Session %s analysis persisted: %d mistakes recorded, mastery updated.",
@@ -644,6 +679,9 @@ async def analyze_session_messages(
             )
         except Exception as e:
             logger.error("Failed to persist analysis to Firestore: %s", e)
+            # Completion must remain retryable until mastery AND recommendations
+            # are durable. Logging and returning would incorrectly report success.
+            raise
 
     return final_result
 
@@ -654,6 +692,101 @@ async def analyze_session_messages(
 
 def _normalise(text: str) -> str:
     return re.sub(r"[^a-z0-9\s]", "", text.lower()).strip()
+
+
+def _is_hindi_evidence(text: str, data: Optional[dict] = None) -> bool:
+    """Conservative language guard, not a language detector. Mixed English fragments
+    remain usable when the *quoted error itself* is English. Never score translations.
+    """
+    data = data or {}
+    if any(str(data.get(key, "")).lower() in {"hi", "hi-in", "hindi", "hinglish", "translation"}
+           for key in ("language", "source_language", "detected_language", "card_type", "type", "category")):
+        return True
+    if re.search(r"[\u0900-\u097f]", text):
+        return True
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    if words and words <= {"haan", "han", "nahi", "nahin", "namaste", "shukriya", "theek", "hai"}:
+        return True
+    # Avoid single ambiguous words such as English 'main' or 'to'.
+    return len(words & {"mujhe", "mujhko", "mera", "meri", "aap", "aapko", "tum", "kya",
+                        "nahi", "nahin", "hai", "hain", "hoon", "hu", "chahta", "chahti",
+                        "kaise", "seekhna", "seekhni", "bolna", "samajh", "aaj", "kal",
+                        "gaya", "gayi", "tha", "thi", "raha", "rahi", "rahe"}) >= 2
+
+
+def _validated_learning_error(
+    data: dict, source: str, messages: Optional[list[dict]] = None, session_id: Optional[str] = None,
+) -> Optional[dict]:
+    """One admission gate for ranking, mastery and retry evidence.
+
+    Stored records must carry explicit type/confidence/attribution. Newly analyzed
+    facts additionally have to quote an actual learner turn, not a tutor utterance.
+    """
+    if not isinstance(data, dict) or data.get("fact_type") not in {"grammar_error", "vocabulary_error"}:
+        return None
+    if data.get("role", "user") not in {"user", "learner"} or data.get("learner_verified") is False:
+        return None
+    try:
+        confidence = float(data["confidence"])
+        if not math.isfinite(confidence) or not max(0.75, CONFIDENCE_THRESHOLD) <= confidence <= 1:
+            return None
+        if source == "vocabulary":
+            fact = VocabularyOpportunityFact.model_validate(data)
+            original, corrected = fact.original_usage, fact.suggested_alternative or ""
+            category, explanation = "vocabulary", fact.explanation
+        else:
+            fact = GrammarMistakeFact.model_validate(data)
+            original, corrected = fact.original, fact.corrected
+            category, explanation = fact.category, fact.short_explanation
+        if not original.strip() or not corrected.strip() or _normalise(original) == _normalise(corrected):
+            return None
+        if _is_hindi_evidence(original, data) or not fact.session_id.strip() or not fact.message_id.strip():
+            return None
+        if session_id is not None and fact.session_id != session_id:
+            return None
+        message_id = fact.message_id
+        if messages is not None:
+            candidates = [m for m in messages if m.get("role", "user") in {"user", "learner"}
+                          and _normalise(original) in _normalise(m.get("text", ""))]
+            match = next((m for m in candidates if m.get("message_id") == message_id), None)
+            # Recover a missing model-supplied id only from an unambiguous learner quote.
+            if match is None and len(candidates) == 1:
+                match = candidates[0]
+            if match is None:
+                return None
+            message_id = match.get("message_id") or message_id
+        skill_id = fact.curriculum_skill_id
+        if skill_id not in CURRICULUM_SKILLS:
+            skill_id = map_to_curriculum_skill(category, original, explanation)
+        return {
+            "original": original.strip(), "corrected": corrected.strip(),
+            "curriculum_skill_id": skill_id, "category": category,
+            "fact_type": fact.fact_type, "confidence": confidence,
+            "severity": data.get("severity", "medium"), "short_explanation": explanation,
+            "session_id": fact.session_id, "message_id": message_id,
+            "source_collection": source,
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _analysis_errors(analysis: SessionAnalysisResult, messages: list[dict]) -> list[GrammarMistakeFact]:
+    errors = []
+    seen = set()
+    for source, facts in (("mistakes", analysis.mistakes), ("vocabulary", analysis.vocabulary)):
+        for fact in facts:
+            error = _validated_learning_error(fact.model_dump(), source, messages)
+            if error:
+                key = _error_key(error)
+                if key not in seen:
+                    seen.add(key)
+                    errors.append(GrammarMistakeFact.model_validate(error))
+    return errors
+
+
+def _error_key(error: dict) -> tuple:
+    return (error["session_id"], error["message_id"], error["curriculum_skill_id"],
+            _normalise(error["original"]), _normalise(error["corrected"]))
 
 
 def _repetition_evidence(
@@ -667,9 +800,7 @@ def _repetition_evidence(
     ordered = sorted(messages, key=lambda item: item.get("sequence", 0))
     successes: dict[str, int] = {}
     failures: dict[str, int] = {}
-    for fact in analysis.mistakes:
-        if fact.fact_type not in ("grammar_error", "vocabulary_error", "natural_alternative"):
-            continue
+    for fact in _analysis_errors(analysis, messages):
         source_index = next((i for i, item in enumerate(ordered) if item.get("message_id") == fact.message_id), -1)
         # Models occasionally omit or alter the supplied message id. Fall
         # back to the learner utterance containing the observed original so a
@@ -682,15 +813,17 @@ def _repetition_evidence(
             ), -1)
         if source_index < 0:
             continue
+        corrected = _normalise(fact.corrected)
         prompt_index = next((
             i for i in range(source_index + 1, len(ordered))
             if ordered[i].get("role") == "assistant"
             and any(token in ordered[i].get("text", "").lower() for token in ("repeat", "try saying", "say ", "say'", "correction"))
+            and corrected in _normalise(ordered[i].get("text", ""))
         ), -1)
         if prompt_index < 0:
             continue
         reply = next((item for item in ordered[prompt_index + 1:] if item.get("role") == "user"), None)
-        if not reply:
+        if not reply or not _normalise(reply.get("text", "")) or _is_hindi_evidence(reply.get("text", ""), reply):
             continue
         skill_id = fact.curriculum_skill_id or map_to_curriculum_skill(fact.category, fact.original, fact.short_explanation)
         corrected = _normalise(fact.corrected)
@@ -757,18 +890,39 @@ async def update_learner_mastery(
     user_ref = db.collection("users").document(user_id)
     now = datetime.now(timezone.utc)
 
-    # 1. Group mistakes by curriculum skill ID (only genuine errors)
+    session_ref = user_ref.collection("sessions").document(session_id)
+    session_data = _snapshot_data(session_ref.get())
+    if isinstance(session_data.get("learning_result"), dict):
+        return session_data["learning_result"]
+
+    # 1. Persist admitted evidence before ranking, including direct updater callers.
+    # Reuse analysis document IDs; never refresh an old error's recency on replay.
+    for source, facts, prefix in (("mistakes", analysis.mistakes, "m"), ("vocabulary", analysis.vocabulary, "v")):
+        for index, fact in enumerate(facts, 1):
+            error = _validated_learning_error(fact.model_dump(), source, messages, session_id)
+            if not error:
+                continue
+            doc_id = make_deterministic_id(session_id, fact.message_id, f"{prefix}_{index:02d}")
+            ref = user_ref.collection(source).document(doc_id)
+            if not _snapshot_data(ref.get()):
+                ref.set({**fact.model_dump(), "curriculum_skill_id": error["curriculum_skill_id"],
+                         "message_id": error["message_id"], "learner_verified": True,
+                         "created_at": now, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
+
+    # Group validated grammar AND vocabulary errors, counting cross-list duplicates once.
     skill_errors: dict[str, list[GrammarMistakeFact]] = {}
-    for m in analysis.mistakes:
-        if m.fact_type in ("grammar_error", "vocabulary_error"):
+    for m in _analysis_errors(analysis, messages):
+        if m.session_id == session_id:
             skill_id = m.curriculum_skill_id or map_to_curriculum_skill(m.category, m.original, m.short_explanation)
             if skill_id not in skill_errors:
                 skill_errors[skill_id] = []
             skill_errors[skill_id].append(m)
 
     # 2. Correct repetitions require an actual tutor prompt followed by learner evidence.
-    skill_corrections, skill_failed_repetitions = _repetition_evidence(analysis, messages)
-    learner_turns = [turn for turn in messages if turn.get("role", "user") == "user"]
+    admitted_analysis = SessionAnalysisResult(mistakes=[m for errors in skill_errors.values() for m in errors])
+    skill_corrections, skill_failed_repetitions = _repetition_evidence(admitted_analysis, messages)
+    learner_turns = [turn for turn in messages if turn.get("role", "user") in {"user", "learner"}
+                     and _normalise(turn.get("text", "")) and not _is_hindi_evidence(turn.get("text", ""), turn)]
 
     # 3. Determine active skills in this session
     active_skills = set(skill_errors.keys()) | set(skill_corrections.keys()) | set(skill_failed_repetitions.keys())
@@ -799,6 +953,7 @@ async def update_learner_mastery(
         errors = int(skill_doc_data.get("errors", 0))
         successful_repetitions = int(skill_doc_data.get("successful_repetitions") or skill_doc_data.get("successful_corrections", 0))
         failed_repetitions = int(skill_doc_data.get("failed_repetitions") or skill_doc_data.get("failed_corrections", 0))
+        unresolved_repetitions = max(0, int(skill_doc_data.get("unresolved_repetitions", max(0, failed_repetitions - successful_repetitions))))
         first_seen = skill_doc_data.get("first_seen", now)
         last_seen = skill_doc_data.get("last_seen", now)
         last_meaningful_evidence_at = skill_doc_data.get("last_meaningful_evidence_at") or last_seen
@@ -811,6 +966,9 @@ async def update_learner_mastery(
             err_count = len(skill_errors.get(skill_id, []))
             corr_count = skill_corrections.get(skill_id, 0)
             failed_count = skill_failed_repetitions.get(skill_id, 0)
+            # Old successful practice must not hide a new failed retry. Legacy
+            # records fall back to aggregate counts until new evidence is saved.
+            unresolved_repetitions = max(0, unresolved_repetitions - corr_count) + failed_count
 
             # Calculate days elapsed since last meaningful learner evidence
             delta_days = 0.0
@@ -851,6 +1009,7 @@ async def update_learner_mastery(
                 attempts += failed_count
                 correction_attempts += failed_count
                 failed_repetitions += failed_count
+                meaningful_evidence_present = True
 
             if err_count == 0 and corr_count == 0 and failed_count == 0:
                 # Clean learner session contributes verified target skill usage (+0.05)
@@ -884,6 +1043,7 @@ async def update_learner_mastery(
                 "errors": errors,
                 "successful_repetitions": successful_repetitions,
                 "failed_repetitions": failed_repetitions,
+                "unresolved_repetitions": unresolved_repetitions,
                 "first_seen": first_seen,
                 "last_seen": now,
                 "last_meaningful_evidence_at": last_meaningful_evidence_at,
@@ -916,16 +1076,33 @@ async def update_learner_mastery(
     strengths = [s for s, m in all_skill_mastery.items() if m >= 0.75 and updated_skill_stats.get(s, {}).get("attempts", 0) >= 1]
 
     # 6. Check for active targeted lesson attached to this session (Phase 4 & 5)
-    session_doc = user_ref.collection("sessions").document(session_id).get()
-    session_data = session_doc.to_dict() if session_doc.exists else {}
     active_target_skill = session_data.get("target_skill") or (list(skill_errors.keys())[0] if skill_errors else None)
     active_lesson_id = session_data.get("lesson_id")
+    plan_date = session_data.get("daily_plan_date") or (
+        _evidence_time(session_data.get("start_time")) or now
+    ).strftime("%Y-%m-%d")
+    linked_id = (session_data.get("daily_activity_id") or session_data.get("daily_plan_activity_id")
+                 or session_data.get("activity_id"))
+    # Old sessions used lesson_id for activities. Only infer that link when an
+    # activity actually exists and the saved context is not explicitly a lesson.
+    candidate_id = linked_id or (active_lesson_id if session_data.get("context_source") not in {"lesson", "skill", "ranked_focus"} else None)
+    daily_plan = _snapshot_data(user_ref.collection("daily_plans").document(plan_date).get()) if candidate_id else {}
+    activity = next((a for a in daily_plan.get("activities", []) if a.get("activity_id") == candidate_id), None)
+    if activity or session_data.get("context_source") == "daily_plan":
+        linked_id = candidate_id
+    if linked_id:
+        # Activity IDs identify slots, not lessons. Keep per-session practice
+        # history under its own stable ID, including the original activity link.
+        active_lesson_id = make_deterministic_id("activity_lesson", session_id, active_target_skill or "practice")
 
     duration_sec = int(session_data.get("duration_seconds", 0))
     if not active_lesson_id and active_target_skill:
         active_lesson_id = make_deterministic_id("lesson", session_id, active_target_skill)
 
-    if active_target_skill and active_lesson_id:
+    previous_lesson = _snapshot_data(user_ref.collection("lessons").document(active_lesson_id).get()) if active_lesson_id else {}
+    lesson_already_saved = (previous_lesson.get("session_id") == session_id
+                            and previous_lesson.get("completion_status") in {"completed", "abandoned"})
+    if active_target_skill and active_lesson_id and not lesson_already_saved:
         mastery_before = existing_skills.get(active_target_skill, {}).get("mastery", 0.50)
         mastery_after = all_skill_mastery.get(active_target_skill, mastery_before)
         target_attempts = updated_skill_stats.get(active_target_skill, {}).get("attempts", 0)
@@ -959,22 +1136,16 @@ async def update_learner_mastery(
             created_at=now,
             updated_at=now,
         )
-        user_ref.collection("lessons").document(active_lesson_id).set(lesson_record.model_dump(), merge=True)
+        record = lesson_record.model_dump()
+        if linked_id:
+            record.update(daily_activity_id=linked_id, daily_plan_date=plan_date)
+        user_ref.collection("lessons").document(active_lesson_id).set(record, merge=True)
 
-    # 7. Adaptive Skill & Lesson Selection (Phase 5)
-    # Estimate total session count from user skills processed sessions
-    all_sess = set()
-    for s_data in updated_skill_stats.values():
-        all_sess.update(s_data.get("processed_sessions", []))
-    session_count = max(len(all_sess), 1)
-
-    # Run deterministic adaptive selector
-    next_skill, next_stage, next_reason = select_next_adaptive_skill(
-        all_skill_mastery,
-        skill_stats=updated_skill_stats,
-        just_completed_skill=active_target_skill,
-        session_count=session_count,
-    )
+    # 7. Use the SAME ranking as the daily plan, after evidence/skills/lesson writes.
+    ranking = compute_focus_ranking(user_id, db=db)
+    priority = ranking[0]
+    next_skill, next_stage, next_reason = priority["skill_id"], priority["stage"], priority["reason"]
+    weaknesses.sort(key=lambda skill: next(i for i, r in enumerate(ranking) if r["skill_id"] == skill))
 
     focus_score = all_skill_mastery.get(next_skill, 0.42)
     next_lesson_id = make_deterministic_id("next_lesson", session_id, next_skill)
@@ -1002,6 +1173,8 @@ async def update_learner_mastery(
         lesson_id=next_lesson_id,
         memory_hook_eligible=target_hook_eligible,
     )
+    if priority["recent_examples"] or priority["unresolved_repetitions"]:
+        next_lesson.practice_activity = priority_practice_prompt(priority)
 
     # Persist recommended next lesson document
     user_ref.collection("lessons").document(next_lesson_id).set({
@@ -1087,28 +1260,15 @@ async def update_learner_mastery(
         "updated_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
 
-    # Phase 6: Auto-update today's active daily plan if session practiced an activity
-    try:
-        today_str = now.strftime("%Y-%m-%d")
-        daily_plan_doc = user_ref.collection("daily_plans").document(today_str).get()
-        if daily_plan_doc.exists:
-            dp_data = daily_plan_doc.to_dict() or {}
-            curr_idx = dp_data.get("current_activity_index", 0)
-            acts = dp_data.get("activities", [])
-            if 0 <= curr_idx < len(acts):
-                curr_act = acts[curr_idx]
-                if not curr_act.get("is_completed"):
-                    complete_daily_plan_activity(
-                        user_id=user_id,
-                        date_str=today_str,
-                        activity_id=curr_act.get("activity_id"),
-                        session_id=session_id,
-                        duration_minutes=int(round(duration_sec / 60)) or curr_act.get("duration_minutes", 10),
-                    )
-    except Exception as e:
-        logger.warning("Could not auto-advance daily plan: %s", e)
+    # Complete only the saved activity on its original day, including sessions
+    # ending after midnight. API completion may already have advanced it.
+    if linked_id and activity and not activity.get("is_completed"):
+        complete_daily_plan_activity(
+            user_id=user_id, date_str=plan_date, activity_id=linked_id, session_id=session_id,
+            duration_minutes=session_data.get("duration_minutes") or max(1, duration_sec // 60),
+        )
 
-    return {
+    result = {
         "pravaah_level": pravaah_level,
         "cefr_reference": cefr_reference,
         "cefr_level": cefr_reference,  # internal/legacy compatibility only
@@ -1121,6 +1281,10 @@ async def update_learner_mastery(
         "skill_mastery": all_skill_mastery,
         "recommended_lesson": next_lesson.model_dump(),
     }
+    # This checkpoint is deliberately last: failed writes can be retried using
+    # skill processed_sessions, while a completed replay must not rotate lessons.
+    session_ref.set({"learning_result": result}, merge=True)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1735,13 +1899,19 @@ async def apply_proficiency_assessment(
         logger.warning("Skill batch initialization notice: %s", batch_err)
 
 
-    # 3. Generate initial personalized lesson for initial focus
+    # 3. Assessment supplies baselines; the canonical evidence ranking still owns
+    # lesson/plan selection (important when an existing learner reassesses).
+    user_ref.set({"skill_mastery": initial_mastery, "current_focus": initial_focus}, merge=True)
+    priority = compute_focus_ranking(user_id, db=db)[0]
+    initial_focus = priority["skill_id"]
     initial_lesson = generate_personalized_lesson(
         skill_id=initial_focus,
-        mastery=initial_mastery.get(initial_focus, 0.35),
-        stage="guided_practice",
-        selection_reason="initial_assessment_diagnosis",
+        mastery=priority["mastery"],
+        stage=priority["stage"],
+        selection_reason=priority["reason"],
     )
+    if priority["recent_examples"] or priority["unresolved_repetitions"]:
+        initial_lesson.practice_activity = priority_practice_prompt(priority)
     user_ref.collection("lessons").document(initial_lesson.lesson_id).set({
         "lesson_id": initial_lesson.lesson_id,
         "source_skill_id": initial_focus,
@@ -1756,16 +1926,11 @@ async def apply_proficiency_assessment(
 
     # 4. Generate structured Daily Learning Plan for today
     goal_minutes = int(input_dict.get("goal_minutes", 30))
-    daily_plan = generate_daily_plan(
+    daily_plan = get_or_create_daily_plan(
         user_id=user_id,
         goal_minutes=goal_minutes,
-        weaknesses=weaknesses,
-        current_focus=initial_focus,
-        skill_mastery=initial_mastery,
         date_str=today_str,
-    )
-    user_ref.collection("daily_plans").document(today_str).set(
-        daily_plan.model_dump(), merge=True
+        force_regenerate=True,
     )
 
     # 5. Update user profile document with assessment observations and current focus
@@ -1783,7 +1948,7 @@ async def apply_proficiency_assessment(
         "assessment_observations": assessment_observations,
         "skill_mastery": initial_mastery,
         "daily_goal_minutes": goal_minutes,
-        "today_plan_id": daily_plan.plan_id,
+        "today_plan_id": daily_plan["plan_id"],
         "recommended_lesson": initial_lesson.model_dump(),
         "recommended_lesson_id": initial_lesson.lesson_id,
         "last_assessment_id": assessment_id,
@@ -1812,121 +1977,209 @@ async def apply_proficiency_assessment(
         "weaknesses": weaknesses,
         "current_focus": initial_focus,
         "recommended_lesson": initial_lesson.model_dump(),
-        "daily_plan": daily_plan.model_dump(),
+        "daily_plan": daily_plan,
     }
 
 
+def _snapshot_data(snapshot) -> dict:
+    """Tolerate missing docs and legacy MagicMock-based callers without fake evidence."""
+    data = snapshot.to_dict() if snapshot.exists else None
+    return data if isinstance(data, dict) else {}
+
+
+def _finite_number(value, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _evidence_time(value) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00") if isinstance(value, str) else value.isoformat())
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _unfinished_lessons(user_ref, user_data: dict) -> list[dict]:
+    # Ignore the historical backlog of old recommendations. Only a pointed current
+    # lesson or an explicitly started lesson can represent an unfinished deficit.
+    records = {}
+    for doc in user_ref.collection("lessons").where("completion_status", "==", "in_progress").limit(20).stream():
+        data = _snapshot_data(doc)
+        if data:
+            records[doc.id] = dict(data, lesson_id=doc.id)
+    for key in ("current_lesson_id", "recommended_lesson_id"):
+        lesson_id = user_data.get(key)
+        if isinstance(lesson_id, str) and lesson_id:
+            data = _snapshot_data(user_ref.collection("lessons").document(lesson_id).get())
+            if data.get("completion_status", data.get("status")) in {"recommended", "in_progress"}:
+                records[lesson_id] = dict(data, lesson_id=lesson_id)
+    return list(records.values())
+
+
 def compute_focus_ranking(user_id: str, db=None, mistake_limit: int = 200) -> list[dict]:
-    """
-    Ranks curriculum skills by how much practice the learner actually needs, newest evidence
-    first. Mastery alone is too slow to react — a learner who made the same error twice this
-    morning should see it in today's plan, not three sessions later.
+    """Canonical priority for lessons AND plans, using admitted learner evidence only.
 
-    Score = recency-weighted mistake count + severity + failed repetitions + (1 - mastery).
-    Returns one entry per skill with evidence, ordered most-urgent first.
+    Recency/severity-weighted unique grammar/vocabulary errors + failed retries +
+    current unfinished lesson deficits + mastery gap. Score age changes daily,
+    not per request; timestamps may be Firestore datetimes or ISO strings.
     """
-    db = db or get_firestore_client()
+    db = db if db is not None else get_firestore_client()
     user_ref = db.collection("users").document(user_id)
+    user_data = _snapshot_data(user_ref.get())
+    mastery_map = dict(user_data.get("skill_mastery") or {})
+    stats = {}
+    for doc in user_ref.collection("skills").stream():
+        data = _snapshot_data(doc)
+        if data and doc.id in CURRICULUM_SKILLS:
+            stats[doc.id] = data
+            # Skill writes precede the aggregate profile update: these are fresher.
+            if data.get("mastery") is not None:
+                mastery_map[doc.id] = data["mastery"]
 
-    user_doc = user_ref.get()
-    user_data = user_doc.to_dict() if user_doc.exists else {}
-    mastery_map = user_data.get("skill_mastery", {}) or {}
+    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    unique = {}
+    for source in ("mistakes", "vocabulary"):
+        collection = user_ref.collection(source)
+        try:
+            docs = list(collection.order_by("created_at", direction=firestore.Query.DESCENDING).limit(mistake_limit).stream())
+        except Exception:
+            docs = list(collection.limit(mistake_limit).stream())
+        for doc in docs:
+            data = _snapshot_data(doc)
+            error = _validated_learning_error(data, source)
+            if not error:
+                continue
+            created = _evidence_time(data.get("created_at"))
+            error["created_at"] = created.isoformat() if created else None
+            key = _error_key(error)
+            prior = unique.get(key)
+            # A fact copied into both collections is a single learner error.
+            if prior is None or (error["created_at"] or "") > (prior["created_at"] or ""):
+                unique[key] = error
 
-    stats: dict[str, dict] = {}
-    try:
-        for doc in user_ref.collection("skills").stream():
-            d = doc.to_dict() or {}
-            stats[doc.id] = d
-            if doc.id not in mastery_map and "mastery" in d:
-                mastery_map[doc.id] = d["mastery"]
-    except Exception as exc:
-        logger.warning("Skill stats read failed for %s: %s", user_id, exc)
+    evidence = {}
+    severity_weights = {"high": 1.6, "medium": 1.0, "low": 0.6}
+    for error in sorted(unique.values(), key=lambda e: (e["created_at"] or "", _error_key(e)), reverse=True):
+        created = _evidence_time(error["created_at"])
+        # Unknown age is not brand-new evidence.
+        days = max(0.0, (now - created).total_seconds() / 86400) if created else 30.0
+        bucket = evidence.setdefault(error["curriculum_skill_id"], {"weighted": 0.0, "errors": []})
+        bucket["weighted"] += (0.5 ** (days / 7)) * severity_weights.get(str(error["severity"]).lower(), 1.0)
+        bucket["errors"].append(error)
 
-    now = datetime.now(timezone.utc)
-    evidence: dict[str, dict] = {}
-
-    try:
-        mistakes_q = (
-            user_ref.collection("mistakes")
-            .order_by("created_at", direction=firestore.Query.DESCENDING)
-            .limit(mistake_limit)
-        )
-        mistake_docs = list(mistakes_q.stream())
-    except Exception:
-        mistake_docs = list(user_ref.collection("mistakes").limit(mistake_limit).stream())
-
-    severity_weight = {"high": 1.6, "medium": 1.0, "low": 0.6}
-
-    for doc in mistake_docs:
-        m = doc.to_dict() or {}
-        skill_id = m.get("curriculum_skill_id") or map_to_curriculum_skill(
-            m.get("category", ""), m.get("original", ""), m.get("explanation", "")
-        )
-        created = m.get("created_at")
-        age_days = 0.0
-        if hasattr(created, "timestamp"):
-            age_days = max(0.0, (now.timestamp() - created.timestamp()) / 86400.0)
-        # Halve the weight of evidence every 7 days.
-        recency = 0.5 ** (age_days / 7.0)
-
-        bucket = evidence.setdefault(
-            skill_id, {"count": 0, "weighted": 0.0, "last_seen": None, "examples": []}
-        )
-        bucket["count"] += 1
-        bucket["weighted"] += recency * severity_weight.get(str(m.get("severity", "medium")).lower(), 1.0)
-        if bucket["last_seen"] is None and created is not None:
-            bucket["last_seen"] = created
-        if len(bucket["examples"]) < 3 and m.get("original"):
-            bucket["examples"].append({
-                "original": m.get("original"),
-                "corrected": m.get("corrected"),
-            })
-
+    unfinished = _unfinished_lessons(user_ref, user_data)
     ranked = []
     for skill_id, meta in CURRICULUM_SKILLS.items():
-        ev = evidence.get(skill_id, {})
-        s_stats = stats.get(skill_id, {})
-        mastery = float(mastery_map.get(skill_id, 0.5))
-        failed_reps = int(s_stats.get("failed_repetitions", 0) or 0)
-
-        score = (
-            10.0 * float(ev.get("weighted", 0.0))
-            + 6.0 * min(failed_reps, 3)
-            + 12.0 * max(0.0, 1.0 - mastery)
-        )
-        if ev.get("count"):
-            reason = "recent_mistakes"
-        elif failed_reps:
+        ev = evidence.get(skill_id, {"weighted": 0.0, "errors": []})
+        skill_stats = stats.get(skill_id, {})
+        mastery = min(1.0, max(0.0, _finite_number(mastery_map.get(skill_id), 0.5)))
+        failures = max(0, int(_finite_number(skill_stats.get("failed_repetitions"))))
+        successes = max(0, int(_finite_number(skill_stats.get("successful_repetitions"))))
+        unresolved = max(0, int(_finite_number(skill_stats.get("unresolved_repetitions"), max(0, failures - successes))))
+        attempts = max(0, int(_finite_number(skill_stats.get("attempts"))))
+        deficits = []
+        for lesson in unfinished:
+            if (lesson.get("source_skill_id") or lesson.get("target_skill_id")) != skill_id:
+                continue
+            # Merely generating a recommendation must not change the next ranking.
+            started = lesson.get("completion_status", lesson.get("status")) == "in_progress"
+            lesson_failures = max(0, int(_finite_number(lesson.get("failed_repetitions"))))
+            if started or lesson_failures or _finite_number(lesson.get("attempts")) > 0:
+                deficit = max(0.0, MASTERY_BANDS["developing"] - mastery)
+                if deficit or lesson_failures:
+                    deficits.append({"lesson_id": lesson["lesson_id"], "mastery_gap": round(deficit, 4),
+                                     "failed_repetitions": lesson_failures})
+        lesson_gap = max((d["mastery_gap"] for d in deficits), default=0.0)
+        unresolved = max(unresolved, max((d["failed_repetitions"] for d in deficits), default=0))
+        score = 10 * ev["weighted"] + 6 * min(unresolved, 3) + 12 * (1 - mastery) + 8 * lesson_gap
+        if ev["weighted"] >= 0.25:
+            reason = "recent_vocabulary_errors" if all(e["fact_type"] == "vocabulary_error" for e in ev["errors"]) else "recent_mistakes"
+        elif unresolved:
             reason = "failed_repetitions"
+        elif deficits:
+            reason = "unfinished_lesson"
         elif mastery < MASTERY_BANDS["weakness"]:
             reason = "low_mastery"
-        elif mastery >= 0.85:
-            reason = "mastered"
         else:
-            reason = "developing"
-
-        last_seen = ev.get("last_seen")
+            reason = "mastered" if mastery >= 0.85 else "developing"
+        stage = "guided_practice" if ev["weighted"] >= 0.25 or unresolved else determine_lesson_stage(mastery, attempts)
+        # Fingerprint all admitted evidence, not only the three displayed examples.
+        signature = {"errors": ev["errors"], "mastery": mastery, "attempts": attempts,
+                     "failures": failures, "successes": successes, "unresolved": unresolved,
+                     "deficits": sorted(deficits, key=lambda d: d["lesson_id"]),
+                     "sessions": sorted(skill_stats.get("processed_sessions") or [])}
         ranked.append({
-            "skill_id": skill_id,
-            "title": meta.get("title", skill_id),
-            "category": meta.get("category", "grammar"),
-            "cefr_level": meta.get("cefr_level", "A2"),
-            "rule_summary": meta.get("rule_summary", ""),
-            "memory_hook": meta.get("memory_hook", ""),
-            "practice_activity": meta.get("practice_activity", ""),
-            "mastery": round(mastery, 3),
-            "mistake_count": int(ev.get("count", 0)),
-            "failed_repetitions": failed_reps,
-            "attempts": int(s_stats.get("attempts", 0) or 0),
-            "stage": determine_lesson_stage(mastery, attempts=int(s_stats.get("attempts", 0) or 0)),
-            "priority_score": round(score, 3),
-            "reason": reason,
-            "last_mistake_at": last_seen.isoformat() if hasattr(last_seen, "isoformat") else None,
-            "recent_examples": ev.get("examples", []),
+            "skill_id": skill_id, "title": meta["title"], "category": meta["category"],
+            "cefr_level": meta["cefr_level"], "rule_summary": meta["rule_summary"],
+            "memory_hook": meta["memory_hook"], "practice_activity": meta["practice_activity"],
+            "mastery": round(mastery, 3), "mistake_count": len(ev["errors"]),
+            "failed_repetitions": failures, "unresolved_repetitions": unresolved, "attempts": attempts,
+            "stage": stage, "priority_score": round(score, 3), "reason": reason,
+            "last_mistake_at": ev["errors"][0]["created_at"] if ev["errors"] else None,
+            "recent_examples": ev["errors"][:3], "unfinished_lessons": deficits,
+            "evidence_fingerprint": hashlib.sha256(json.dumps(signature, sort_keys=True, default=str).encode()).hexdigest(),
         })
-
-    ranked.sort(key=lambda r: r["priority_score"], reverse=True)
+    # Stable curriculum order resolves ties; assessment focus only breaks exact ties.
+    ranked.sort(key=lambda r: (-r["priority_score"], r["skill_id"] != user_data.get("current_focus")))
+    for index, entry in enumerate(ranked, 1):
+        entry["priority_rank"] = index
     return ranked
+
+
+def _refresh_plan_slots(existing: dict, generated: dict, locked_ids: set[str]) -> dict:
+    """Keep every issued ID. Completed/started records are immutable; repurpose only
+    pending slot content, assigning correction/retry to the first available slot.
+
+    A client that did not record a start may hold old content but its completion ID
+    still works. Do not drop slots on goal reduction; redistribute remaining minutes.
+    If locked work leaves no room for all issued slots, retain the old time budget.
+    """
+    old_activities = existing.get("activities") or []
+    if not old_activities:
+        return generated
+    templates = generated["activities"]
+    all_done = all(a.get("is_completed") for a in old_activities)
+    slot_count = len(old_activities) if all_done else max(len(old_activities), len(templates))
+    activities = []
+    pending = []
+    for index in range(slot_count):
+        old = old_activities[index] if index < len(old_activities) else {}
+        if old.get("is_completed") or old.get("activity_id") in locked_ids:
+            activities.append(dict(old))
+            continue
+        template = dict(templates[min(len(pending), len(templates) - 1)])
+        template["activity_id"] = old.get("activity_id") or f"{existing['plan_id']}_act_{index + 1}"
+        activities.append({**old, **template})
+        pending.append(index)
+    if pending:
+        locked_minutes = sum(a.get("duration_minutes", 0) for i, a in enumerate(activities) if i not in pending)
+        budget = generated["planned_minutes"] - locked_minutes
+        if budget < len(pending):
+            budget = max(len(pending), existing.get("planned_minutes", 0) - locked_minutes)
+        # Positive integer allocation, exact total when the requested budget is feasible.
+        weight = sum(activities[i]["duration_minutes"] for i in pending)
+        available = budget - len(pending)
+        allocations = [1 + int(available * activities[i]["duration_minutes"] / weight) for i in pending]
+        for offset in range(budget - sum(allocations)):
+            allocations[offset % len(allocations)] += 1
+        for index, duration in zip(pending, allocations):
+            activities[index]["duration_minutes"] = duration
+    result = {**existing, **generated, "plan_id": existing["plan_id"], "activities": activities}
+    for field in ("completed_minutes", "total_learner_speaking_seconds", "total_idle_seconds"):
+        if field in existing:
+            result[field] = existing[field]
+    result["planned_minutes"] = sum(a.get("duration_minutes", 0) for a in activities)
+    result["completed_activities_count"] = sum(bool(a.get("is_completed")) for a in activities)
+    result["current_activity_index"] = next((i for i, a in enumerate(activities) if not a.get("is_completed")), len(activities))
+    result["completion_status"] = "completed" if all_done else (
+        "in_progress" if result["completed_activities_count"] or locked_ids else "not_started"
+    )
+    result["target_skills"] = list(dict.fromkeys(a["target_skill"] for a in activities if a.get("target_skill")))
+    return result
 
 
 def get_or_create_daily_plan(
@@ -1937,37 +2190,43 @@ def get_or_create_daily_plan(
 ) -> dict:
     """
     Retrieves the daily plan for date_str (defaulting to today).
-    If no plan exists, generates a fresh plan ordered by what the learner actually got wrong.
+    Refresh pending work when admitted evidence changes, including on forced refresh.
+    Issued IDs and completed/explicitly started records survive all regenerations.
     """
     db = get_firestore_client()
     user_ref = db.collection("users").document(user_id)
     today_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     plan_ref = user_ref.collection("daily_plans").document(today_str)
-    plan_doc = plan_ref.get()
+    existing_data = _snapshot_data(plan_ref.get())
 
-    user_doc = user_ref.get()
-    user_data = user_doc.to_dict() if user_doc.exists else {}
+    user_data = _snapshot_data(user_ref.get())
 
     target_goal = goal_minutes or user_data.get("daily_goal_minutes", 30)
 
-    if plan_doc.exists and not force_regenerate:
-        existing_data = plan_doc.to_dict()
-        if not goal_minutes or existing_data.get("goal_minutes") == target_goal:
-            return existing_data
-
     # Order today's work by live evidence, falling back to the assessment diagnosis.
+    ranking = None
     try:
         ranking = compute_focus_ranking(user_id, db=db)
-        practice_worthy = [r for r in ranking if r["reason"] != "mastered"]
-        weaknesses = [r["skill_id"] for r in (practice_worthy or ranking)][:4]
+        weaknesses = [r["skill_id"] for r in ranking][:4]
         mastery = {r["skill_id"]: r["mastery"] for r in ranking}
         current_focus = weaknesses[0] if weaknesses else None
     except Exception as exc:
         logger.warning("Focus ranking failed for %s (%s); using stored weaknesses.", user_id, exc)
+        if existing_data:
+            # A partial read is not new learning evidence; don't erase a useful plan.
+            return existing_data
         weaknesses = user_data.get("weaknesses") or ["past_simple_auxiliary", "be_verb_misuse"]
         mastery = user_data.get("skill_mastery", {})
         current_focus = user_data.get("current_focus")
+
+    fingerprint = hashlib.sha256(json.dumps({
+        "version": 1, "goal": target_goal, "date": today_str,
+        "ranking": ranking, "fallback_focus": current_focus if ranking is None else None,
+        "fallback_mastery": mastery if ranking is None else None,
+    }, sort_keys=True, default=str).encode()).hexdigest()
+    if existing_data and not force_regenerate and existing_data.get("evidence_fingerprint") == fingerprint:
+        return existing_data
 
     new_plan = generate_daily_plan(
         user_id=user_id,
@@ -1976,10 +2235,34 @@ def get_or_create_daily_plan(
         current_focus=current_focus,
         skill_mastery=mastery,
         date_str=today_str,
+        priority_focus=ranking,
     )
-    plan_ref.set(new_plan.model_dump(), merge=True)
-    user_ref.set({"daily_goal_minutes": target_goal, "today_plan_id": new_plan.plan_id}, merge=True)
-    return new_plan.model_dump()
+
+    @firestore.transactional
+    def save(transaction):
+        data = new_plan.model_dump()
+        # A transactional re-read prevents refresh from overwriting a start or
+        # completion committed after ranking/generation (or during this write).
+        latest = _snapshot_data(plan_ref.get(transaction=transaction))
+        if latest:
+            locked_ids = set()
+            for activity in latest.get("activities", []):
+                activity_id = activity.get("activity_id")
+                if not activity_id or activity.get("is_completed"):
+                    continue
+                # Honor legacy starts stored as lessons as well as actual slots.
+                lesson = _snapshot_data(user_ref.collection("lessons").document(activity_id).get(transaction=transaction))
+                if (activity.get("status") == "in_progress" or activity.get("completion_status") == "in_progress"
+                        or activity.get("is_in_progress") or activity.get("started_at") or activity.get("session_id")
+                        or lesson.get("completion_status", lesson.get("status")) == "in_progress"):
+                    locked_ids.add(activity_id)
+            data = _refresh_plan_slots(latest, data, locked_ids)
+        data["evidence_fingerprint"] = fingerprint
+        transaction.set(plan_ref, data, merge=True)
+        transaction.set(user_ref, {"daily_goal_minutes": target_goal, "today_plan_id": data["plan_id"]}, merge=True)
+        return data
+
+    return save(db.transaction())
 
 
 def complete_daily_plan_activity(
@@ -2009,51 +2292,35 @@ def complete_daily_plan_activity(
     plan_doc = plan_ref.get()
 
     if not plan_doc.exists:
-        plan_data = get_or_create_daily_plan(user_id, date_str=target_date_str)
-    else:
-        plan_data = plan_doc.to_dict()
+        get_or_create_daily_plan(user_id, date_str=target_date_str)
 
-    activities = plan_data.get("activities", [])
-    now_iso = datetime.now(timezone.utc).isoformat()
+    @firestore.transactional
+    def complete(transaction):
+        plan_data = _snapshot_data(plan_ref.get(transaction=transaction))
+        activities = plan_data.get("activities", [])
+        act = next((a for a in activities if a.get("activity_id") == target_activity_id), None)
+        if not act or act.get("is_completed"):
+            return plan_data
+        act.update(is_completed=True, status="completed", completion_status="completed", is_in_progress=False,
+                   session_id=session_id or act.get("session_id"), completed_at=datetime.now(timezone.utc).isoformat())
+        act_dur = duration_minutes or act.get("duration_minutes", 10)
+        plan_data["completed_minutes"] = plan_data.get("completed_minutes", 0) + act_dur
+        plan_data["completed_activities_count"] = sum(bool(a.get("is_completed")) for a in activities)
 
-    updated = False
-    for act in activities:
-        if act.get("activity_id") == target_activity_id:
-            if not act.get("is_completed"):
-                act["is_completed"] = True
-                act["session_id"] = session_id or act.get("session_id")
-                act["completed_at"] = now_iso
-                act_dur = duration_minutes or act.get("duration_minutes", 10)
-                plan_data["completed_minutes"] = plan_data.get("completed_minutes", 0) + act_dur
-                plan_data["completed_activities_count"] = plan_data.get("completed_activities_count", 0) + 1
+        for field, total in (("learner_speaking_time_seconds", "total_learner_speaking_seconds"),
+                             ("idle_time_seconds", "total_idle_seconds")):
+            value = kwargs.get(field)
+            if value is not None:
+                act[field] = value
+                plan_data[total] = (plan_data.get(total) or 0) + value
 
-                learner_speaking_time_seconds = kwargs.get("learner_speaking_time_seconds")
-                idle_time_seconds = kwargs.get("idle_time_seconds")
-                if learner_speaking_time_seconds is not None:
-                    act["learner_speaking_time_seconds"] = learner_speaking_time_seconds
-                    plan_data["total_learner_speaking_seconds"] = (plan_data.get("total_learner_speaking_seconds") or 0) + learner_speaking_time_seconds
-                if idle_time_seconds is not None:
-                    act["idle_time_seconds"] = idle_time_seconds
-                    plan_data["total_idle_seconds"] = (plan_data.get("total_idle_seconds") or 0) + idle_time_seconds
+        next_idx = next((i for i, a in enumerate(activities) if not a.get("is_completed")), len(activities))
+        plan_data["current_activity_index"] = next_idx
+        plan_data["completion_status"] = "completed" if next_idx == len(activities) else "in_progress"
+        transaction.set(plan_ref, plan_data, merge=True)
+        return plan_data
 
-                updated = True
-            break
-
-    # Calculate next uncompleted activity index
-    next_idx = len(activities)
-    for i, act in enumerate(activities):
-        if not act.get("is_completed"):
-            next_idx = i
-            break
-
-    plan_data["current_activity_index"] = next_idx
-    if next_idx >= len(activities):
-        plan_data["completion_status"] = "completed"
-    elif plan_data.get("completed_activities_count", 0) > 0:
-        plan_data["completion_status"] = "in_progress"
-
-    plan_ref.set(plan_data, merge=True)
-    return plan_data
+    return complete(db.transaction())
 
 
 

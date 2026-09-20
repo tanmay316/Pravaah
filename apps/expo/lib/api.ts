@@ -198,6 +198,9 @@ export interface DailyPlanActivity {
   stage: string;
   objective: string;
   prompt_activity: string;
+  priority_reason?: string | null;
+  source_examples?: { original: string; corrected: string; explanation?: string | null }[];
+  priority_rank?: number | null;
   is_completed: boolean;
   session_id?: string | null;
   completed_at?: string | null;
@@ -253,7 +256,9 @@ export interface FocusSkill {
   priority_score: number;
   reason:
     | "recent_mistakes"
+    | "recent_vocabulary_errors"
     | "failed_repetitions"
+    | "unfinished_lesson"
     | "low_mastery"
     | "developing"
     | "mastered";
@@ -321,7 +326,10 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: n
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => null);
-      const message = errorBody?.error?.message || `API Error (${response.status}): ${response.statusText}`;
+      const detail = errorBody?.detail;
+      const message = errorBody?.error?.message || detail?.error?.message ||
+        (typeof detail === "string" ? detail : null) ||
+        `API Error (${response.status}): ${response.statusText}`;
       throw new Error(message);
     }
 
@@ -431,6 +439,8 @@ export type ConversationGoal =
   | "fluency"
   | "assessment";
 
+export type SpeechLanguage = "auto" | "hi" | "en";
+
 export interface CreateSessionOptions {
   mode?: string;
   targetSkill?: string;
@@ -438,6 +448,7 @@ export interface CreateSessionOptions {
   topic?: string;
   conversationGoal?: ConversationGoal;
   roleplayScenario?: string;
+  speechLanguage?: SpeechLanguage;
 }
 
 export async function createSession(
@@ -452,6 +463,7 @@ export async function createSession(
       topic: options.topic?.trim() || null,
       conversation_goal: options.conversationGoal || null,
       roleplay_scenario: options.roleplayScenario?.trim() || null,
+      speech_language: options.speechLanguage || "auto",
     }),
   });
 }
@@ -462,14 +474,22 @@ export async function refreshSessionToken(sessionId: string): Promise<RefreshTok
   });
 }
 
+export interface CompleteSessionResponse {
+  status: string;
+  session_id: string;
+  duration_minutes: number;
+  analysis_status?: "completed" | "pending" | "failed" | "not_needed";
+  retryable?: boolean;
+}
+
 export async function completeSession(
   sessionId: string,
   durationSeconds: number,
   lessonId?: string,
   targetSkill?: string,
   messages?: any[]
-): Promise<{ status: string; session_id: string; duration_minutes: number }> {
-  return apiFetch<{ status: string; session_id: string; duration_minutes: number }>(
+): Promise<CompleteSessionResponse> {
+  return apiFetch<CompleteSessionResponse>(
     `/api/sessions/${sessionId}/complete`,
     {
       method: "POST",

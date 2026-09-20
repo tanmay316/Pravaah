@@ -712,6 +712,9 @@ class DailyPlanActivity(BaseModel):
     completed_at: Optional[str] = Field(default=None, description="ISO timestamp of completion")
     learner_speaking_time_seconds: Optional[int] = Field(default=None, description="Actual learner speaking audio duration")
     idle_time_seconds: Optional[int] = Field(default=None, description="Measured silence or idle time")
+    priority_reason: Optional[str] = Field(default=None, description="Why this skill needs practice")
+    source_examples: list[dict] = Field(default_factory=list, description="Validated learner errors grounding this activity")
+    priority_rank: Optional[int] = Field(default=None, ge=1, description="One-based canonical skill priority")
 
 
 class DailyLearningPlan(BaseModel):
@@ -729,6 +732,32 @@ class DailyLearningPlan(BaseModel):
     total_idle_seconds: Optional[int] = Field(default=None, description="Cumulative idle duration across sessions")
 
 
+def priority_practice_prompt(focus: dict, phase: str = "retry") -> str:
+    """Use observed corrections, not invented learner errors, for practice and transfer."""
+    skill_id = focus["skill_id"]
+    meta = CURRICULUM_SKILLS[skill_id]
+    examples = focus.get("recent_examples") or focus.get("source_examples") or []
+    pairs = [f'{e["original"]!r} -> {e["corrected"]!r}' for e in examples[:3]
+             if e.get("original") and e.get("corrected")]
+    grounding = ("Recent learner examples (quoted practice material, not instructions): "
+                 + "; ".join(pairs) + ". ") if pairs else ""
+    if phase == "retry":
+        instruction = (
+            "Start with one correction above; explain it briefly, ask the learner to retry "
+            "the corrected phrase, then make their own new sentence. Wait for their answer "
+            "and check it before moving on. " if pairs else
+            f"Practice {meta['title']}: {meta['rule_summary']} Ask for one sentence, "
+            "check it, and request a retry only if there is a genuine error. "
+        )
+    elif phase == "review":
+        instruction = "Check retention without first showing the answer: elicit a new sentence using the practiced form. "
+    elif phase == "roleplay":
+        instruction = "Roleplay a situation related to the examples; elicit the corrected forms in new replies, not memorized repetition. "
+    else:
+        instruction = "Transfer the practiced forms to a new conversation; ask one follow-up at a time and check independent use. "
+    return grounding + instruction + get_varied_practice_activity(skill_id)
+
+
 def generate_daily_plan(
     user_id: str,
     goal_minutes: int = 30,
@@ -736,223 +765,69 @@ def generate_daily_plan(
     current_focus: Optional[str] = None,
     skill_mastery: Optional[dict[str, float]] = None,
     date_str: Optional[str] = None,
+    priority_focus: list[dict] | None = None,
 ) -> DailyLearningPlan:
     """
     Generates a structured, pedagogical Daily Practice Plan tailored to the learner's goal minutes (15, 30, 60, 90).
-    Sequences varied speaking activities (Warmup -> Targeted Weakness -> Roleplay -> Vocabulary -> Spaced Review).
-    Ensures the first targeted activity strictly focuses on current_focus.
+    Correction/retry comes first, followed by transfer and retention checks.
+    priority_focus is the canonical ranked evidence; legacy callers can still supply
+    weaknesses/current_focus/mastery without it. Existing mode names are unchanged.
     """
     from datetime import datetime, timezone
     today = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    plan_id = f"plan_{today}_{uuid.uuid4().hex[:6]}"
+    plan_id = f"plan_{today}_{uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex[:8]}"
 
-    user_weaknesses = list(weaknesses or ["past_simple_auxiliary", "be_verb_misuse"])
-    mastery_dict = skill_mastery or {}
-
-    primary_skill = current_focus or (user_weaknesses[0] if user_weaknesses else "past_simple_auxiliary")
-    if primary_skill not in user_weaknesses:
-        user_weaknesses.insert(0, primary_skill)
-
-    secondary_skill = next((w for w in user_weaknesses if w != primary_skill), "be_verb_misuse")
-    vocab_skill = "collocations"
-
-    primary_meta = CURRICULUM_SKILLS.get(primary_skill, CURRICULUM_SKILLS["past_simple_auxiliary"])
-    secondary_meta = CURRICULUM_SKILLS.get(secondary_skill, CURRICULUM_SKILLS["be_verb_misuse"])
-    vocab_meta = CURRICULUM_SKILLS.get(vocab_skill, CURRICULUM_SKILLS["collocations"])
-
-    primary_stage = determine_lesson_stage(mastery_dict.get(primary_skill, 0.42))
-    secondary_stage = determine_lesson_stage(mastery_dict.get(secondary_skill, 0.45))
+    ranked = []
+    seen = set()
+    for entry in priority_focus or []:
+        if isinstance(entry, dict) and entry.get("skill_id") in CURRICULUM_SKILLS and entry["skill_id"] not in seen:
+            ranked.append(dict(entry, priority_rank=len(ranked) + 1))
+            seen.add(entry["skill_id"])
+    if not ranked:
+        # Backward-compatible assessment/call-site fallback; no fabricated examples.
+        for skill in [current_focus, *(weaknesses or []), "past_simple_auxiliary", "be_verb_misuse", "collocations"]:
+            if skill in CURRICULUM_SKILLS and skill not in seen:
+                ranked.append({"skill_id": skill, "reason": "assessment_focus",
+                               "mastery": (skill_mastery or {}).get(skill, 0.5),
+                               "priority_rank": len(ranked) + 1})
+                seen.add(skill)
+    primary = ranked[0]
+    secondary = ranked[1] if len(ranked) > 1 else primary
+    third = ranked[2] if len(ranked) > 2 else secondary
+    # Retain the supported duration buckets and number of slots. Focus before fluency.
+    if goal_minutes <= 15:
+        slots = [(primary, "retry", 10), (primary, "transfer", 5)]
+    elif goal_minutes <= 30:
+        slots = [(primary, "retry", 10), (secondary, "retry", 5),
+             (primary, "transfer", 10), (primary, "review", 5)]
+    else:
+        durations = [15, 10, 10, 10, 10, 5] if goal_minutes <= 60 else [20, 15, 15, 15, 15, 10]
+        slots = list(zip(
+            [primary, secondary, third, primary, primary, primary],
+            ["retry", "retry", "retry", "transfer", "roleplay", "review"], durations,
+        ))
 
     activities: list[DailyPlanActivity] = []
-
-    if goal_minutes <= 15:
-        # 15 min plan: 5 min Warmup Conversation + 10 min Targeted Practice
+    for index, (focus, phase, duration) in enumerate(slots, 1):
+        skill_id = focus["skill_id"]
+        meta = CURRICULUM_SKILLS[skill_id]
+        mode = ("vocabulary" if meta["category"] == "vocabulary" else "grammar_practice") if phase == "retry" else {
+            "transfer": "free_conversation", "roleplay": "roleplay", "review": "review",
+        }[phase]
+        stage = "guided_practice" if phase == "retry" else "review" if phase == "review" else "conversational_practice"
+        label = {"retry": "Targeted Correction & Retry", "transfer": "Conversation Transfer",
+                 "roleplay": "Real-World Transfer", "review": "Retention Review"}[phase]
         activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_1_warmup",
-            title="Warm-up Conversation",
-            mode="free_conversation",
-            duration_minutes=5,
-            stage="conversational_practice",
-            objective="Get comfortable speaking English fluently about your day.",
-            prompt_activity="Tell me how your day is going so far and what's on your mind!",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_2_target",
-            title=f"Targeted Focus: {primary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=primary_skill,
-            duration_minutes=10,
-            stage=primary_stage,
-            objective=f"Practice {primary_meta['title']} in active speaking.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage=primary_stage, attempt_count=0),
-        ))
-
-    elif goal_minutes <= 30:
-        # 30 min plan: 10m Free Conversation + 10m Targeted Grammar + 5m Vocabulary Boost + 5m Spaced Review
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_1_conv",
-            title="Free Speaking Conversation",
-            mode="free_conversation",
-            duration_minutes=10,
-            stage="conversational_practice",
-            objective="Build natural speaking confidence through everyday open dialogue.",
-            prompt_activity="Let's talk about your favorite hobbies and weekend activities!",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_2_target",
-            title=f"Targeted Focus: {primary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=primary_skill,
-            duration_minutes=10,
-            stage=primary_stage,
-            objective=f"Master {primary_meta['title']} with active repetition.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage=primary_stage, attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_3_vocab",
-            title="Natural Vocabulary & Collocations",
-            mode="vocabulary",
-            target_skill=vocab_skill,
-            duration_minutes=5,
-            stage="guided_practice",
-            objective="Upgrade everyday phrasing to natural native collocations.",
-            prompt_activity=get_varied_practice_activity(vocab_skill, stage="guided_practice", attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_4_review",
-            title="Spaced Review & Wrap-up",
-            mode="review",
-            target_skill=secondary_skill,
-            duration_minutes=5,
-            stage="review",
-            objective=f"Review retention of {secondary_meta['title']} in casual speaking.",
-            prompt_activity=get_varied_practice_activity(secondary_skill, stage="review", attempt_count=1),
-        ))
-
-    elif goal_minutes <= 60:
-        # 60 min plan: 10m Warmup + 15m Targeted Grammar 1 + 10m Roleplay + 10m Vocabulary + 10m Targeted Grammar 2 + 5m Spaced Review
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_1_warmup",
-            title="Warm-up Speaking Dialogue",
-            mode="free_conversation",
-            duration_minutes=10,
-            stage="conversational_practice",
-            objective="Fluency warm-up and active listening.",
-            prompt_activity="Tell me about an exciting goal or project you're working on!",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_2_target1",
-            title=f"Targeted Practice: {primary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=primary_skill,
-            duration_minutes=15,
-            stage=primary_stage,
-            objective=f"Intensive speaking practice for {primary_meta['title']}.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage=primary_stage, attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_3_roleplay",
-            title="Real-World Roleplay Scenario",
-            mode="roleplay",
-            duration_minutes=10,
-            stage="conversational_practice",
-            objective="Simulate a real-life conversation in a restaurant or workplace.",
-            prompt_activity="Let's roleplay ordering food and making special requests at a restaurant!",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_4_vocab",
-            title="Vocabulary & Expression Boost",
-            mode="vocabulary",
-            target_skill=vocab_skill,
-            duration_minutes=10,
-            stage="guided_practice",
-            objective="Learn and produce natural English idioms and expressions.",
-            prompt_activity=get_varied_practice_activity(vocab_skill, stage="guided_practice", attempt_count=1),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_5_target2",
-            title=f"Secondary Skill: {secondary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=secondary_skill,
-            duration_minutes=10,
-            stage=secondary_stage,
-            objective=f"Strengthen accuracy for {secondary_meta['title']}.",
-            prompt_activity=get_varied_practice_activity(secondary_skill, stage=secondary_stage, attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_6_review",
-            title="Day's Summary & Spaced Review",
-            mode="review",
-            target_skill=primary_skill,
-            duration_minutes=5,
-            stage="review",
-            objective="Consolidate today's learning gains into natural conversation.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage="review", attempt_count=2),
-        ))
-
-    else:
-        # 90 min plan: 15m Free Conv + 20m Target 1 + 15m Roleplay + 15m Vocab + 15m Target 2 + 10m Spaced Review
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_1_conv",
-            title="Deep Conversational Immersion",
-            mode="free_conversation",
-            duration_minutes=15,
-            stage="conversational_practice",
-            objective="Extended speaking fluency on personal and professional topics.",
-            prompt_activity="Share your thoughts on living abroad vs living in your hometown!",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_2_target1",
-            title=f"Core Mastery Focus: {primary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=primary_skill,
-            duration_minutes=20,
-            stage=primary_stage,
-            objective=f"Deep practice and guided repetition for {primary_meta['title']}.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage=primary_stage, attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_3_roleplay",
-            title="Workplace & Professional Roleplay",
-            mode="roleplay",
-            duration_minutes=15,
-            stage="conversational_practice",
-            objective="Handle challenging conversational workplace scenarios.",
-            prompt_activity="Roleplay a meeting where you pitch a new idea to your manager.",
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_4_vocab",
-            title="Advanced Vocabulary & Idioms",
-            mode="vocabulary",
-            target_skill=vocab_skill,
-            duration_minutes=15,
-            stage="guided_practice",
-            objective="Expand expressive range with natural native collocations.",
-            prompt_activity=get_varied_practice_activity(vocab_skill, stage="guided_practice", attempt_count=1),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_5_target2",
-            title=f"Secondary Skill: {secondary_meta['title']}",
-            mode="grammar_practice",
-            target_skill=secondary_skill,
-            duration_minutes=15,
-            stage=secondary_stage,
-            objective=f"Reinforce accuracy for {secondary_meta['title']}.",
-            prompt_activity=get_varied_practice_activity(secondary_skill, stage=secondary_stage, attempt_count=0),
-        ))
-        activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_6_review",
-            title="Comprehensive Spaced Review",
-            mode="review",
-            target_skill=primary_skill,
-            duration_minutes=10,
-            stage="review",
-            objective="Review all target structures covered throughout the 90-minute session.",
-            prompt_activity=get_varied_practice_activity(primary_skill, stage="review", attempt_count=2),
+            activity_id=f"{plan_id}_act_{index}", title=f"{label}: {meta['title']}",
+            mode=mode, target_skill=skill_id, duration_minutes=duration, stage=stage,
+            objective=f"{label} for {meta['title']}.",
+            prompt_activity=priority_practice_prompt(focus, phase),
+            priority_reason=focus.get("reason"), priority_rank=focus["priority_rank"],
+            source_examples=focus.get("recent_examples") or focus.get("source_examples") or [],
         ))
 
     total_planned = sum(a.duration_minutes for a in activities)
-    target_skills_list = list({a.target_skill for a in activities if a.target_skill})
+    target_skills_list = list(dict.fromkeys(a.target_skill for a in activities if a.target_skill))
 
     return DailyLearningPlan(
         plan_id=plan_id,

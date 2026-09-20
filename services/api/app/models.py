@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +62,13 @@ class ConversationGoal(str, Enum):
 
 
 class CreateSessionRequest(BaseModel):
+    # Lesson instructions and identity are resolved by the server, never supplied by clients.
+    model_config = ConfigDict(extra="forbid")
+
     mode: SessionMode = SessionMode.free_conversation
-    target_skill: Optional[str] = None
-    lesson_id: Optional[str] = None
+    target_skill: Optional[str] = Field(default=None, min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    lesson_id: Optional[str] = Field(default=None, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    speech_language: Literal["auto", "en", "hi"] = "auto"
     topic: Optional[str] = Field(
         default=None, max_length=120,
         description="Learner-chosen subject, e.g. 'job interview', 'cricket', 'my daily routine'.",
@@ -233,6 +237,13 @@ class ProficiencyAssessmentRecord(BaseModel):
     tasks_evidence: Optional[list[dict]] = None
 
 
+class LearningExample(BaseModel):
+    """Public correction evidence; internal confidence/provenance may carry other types."""
+    original: str
+    corrected: str
+    explanation: Optional[str] = None
+
+
 class DailyPlanActivityModel(BaseModel):
     activity_id: str
     title: str
@@ -242,6 +253,9 @@ class DailyPlanActivityModel(BaseModel):
     stage: str = "guided_practice"
     objective: str
     prompt_activity: str
+    priority_reason: Optional[str] = None
+    source_examples: list[LearningExample] = Field(default_factory=list)
+    priority_rank: Optional[int] = Field(default=None, ge=1)
     is_completed: bool = False
     session_id: Optional[str] = None
     completed_at: Optional[str] = None

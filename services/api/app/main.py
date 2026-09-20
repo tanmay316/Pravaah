@@ -69,10 +69,14 @@ try:
         get_or_create_daily_plan,
         complete_daily_plan_activity,
         compute_focus_ranking,
-        process_event,
         analyze_session_messages,
     )
-    from curriculum import evaluate_assessment_rubric, generate_daily_plan
+    from curriculum import (
+        CURRICULUM_SKILLS,
+        evaluate_assessment_rubric,
+        generate_daily_plan,
+        generate_personalized_lesson,
+    )
 except ImportError as _le_import_error:
     # Swallowing this silently used to turn every learning-engine endpoint into an
     # opaque 500 (NameError) at request time, so make the cause obvious at boot.
@@ -121,7 +125,7 @@ def _mint_livekit_token(
     if participant_name:
         token = token.with_name(participant_name)
     if metadata:
-        token = token.with_metadata(json.dumps(metadata))
+        token = token.with_metadata(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=LIVEKIT_TOKEN_TTL_SECONDS)
     return token.to_jwt(), expires_at
 
@@ -556,6 +560,156 @@ async def delete_my_account(user: CurrentUser, req_id: RequestId, response: Resp
     return {"message": "Account deleted.", "deleted": True, "request_id": req_id}
 
 
+def _compact_text(value, limit: int) -> str:
+    return " ".join(value.split())[:limit] if isinstance(value, str) else ""
+
+
+def _compact_examples(examples) -> list[dict[str, str]]:
+    """Include evidence only, not arbitrary fields from stored learner utterances."""
+    result = []
+    for example in examples if isinstance(examples, list) else []:
+        if not isinstance(example, dict):
+            continue
+        original = _compact_text(example.get("original"), 240)
+        corrected = _compact_text(example.get("corrected"), 240)
+        if original and corrected:
+            result.append({"original": original, "corrected": corrected})
+        if len(result) == 3:
+            break
+    return result
+
+
+def _resolve_tutor_context(body: CreateSessionRequest, user_ref, profile: dict, db, uid: str) -> dict:
+    """Resolve owned curriculum content once at setup, never during a spoken turn."""
+    context = {
+        "target_skill": None, "lesson_id": None, "lesson_title": "",
+        "rule_summary": "", "practice_activity": "", "recent_examples": [],
+        "context_source": None, "daily_activity_id": None, "daily_plan_date": None,
+    }
+    if body.mode.value == "assessment" or body.conversation_goal == "assessment":
+        # A diagnostic must not be primed by weaknesses, examples or lesson instructions.
+        if body.target_skill or body.lesson_id:
+            raise HTTPException(status_code=422, detail="Assessment cannot include lesson coaching context.")
+        return context
+
+    skill = body.target_skill
+    if skill and skill not in CURRICULUM_SKILLS:
+        raise HTTPException(status_code=422, detail="Unknown curriculum skill.")
+
+    source = {}
+    lesson_id = body.lesson_id
+    if lesson_id:
+        # Activities reuse lesson_id on the wire, but must not create phantom lessons.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        plan_doc = user_ref.collection("daily_plans").document(today).get()
+        plan = (plan_doc.to_dict() or {}) if plan_doc.exists else {}
+        source = next((a for a in plan.get("activities", []) if a.get("activity_id") == lesson_id), {})
+        if source:
+            context.update(context_source="daily_plan", daily_activity_id=lesson_id, daily_plan_date=today)
+            source_skill = source.get("target_skill")
+        else:
+            lesson_doc = user_ref.collection("lessons").document(lesson_id).get()
+            source = (lesson_doc.to_dict() or {}) if lesson_doc.exists else {}
+            recommended = profile.get("recommended_lesson") or {}
+            if recommended.get("lesson_id") == lesson_id:
+                # History records may omit the actual prompt; the owned recommendation has it.
+                source = {**recommended, **source}
+            if not source:
+                raise HTTPException(status_code=404, detail="Lesson or today's activity not found.")
+            context["context_source"] = "lesson"
+            source_skill = source.get("source_skill_id") or source.get("target_skill_id")
+        if source_skill and source_skill not in CURRICULUM_SKILLS:
+            raise HTTPException(status_code=422, detail="Saved lesson has an unknown curriculum skill.")
+        if skill and source_skill and skill != source_skill:
+            raise HTTPException(status_code=422, detail="Requested skill does not match the lesson or activity.")
+        skill = skill or source_skill
+
+    try:
+        ranking = compute_focus_ranking(uid, db=db)
+    except Exception as exc:
+        logging.getLogger("api").warning("Session focus ranking unavailable: %s", exc)
+        ranking = []
+    if not skill and body.mode.value == "free_conversation":
+        top = next((r for r in ranking if r.get("reason") != "mastered" and r.get("skill_id") in CURRICULUM_SKILLS), {})
+        skill = top.get("skill_id")
+        if skill:
+            context["context_source"] = context["context_source"] or "ranked_focus"
+
+    ranked = next((r for r in ranking if r.get("skill_id") == skill), {})
+    generated = {}
+    if skill:
+        generated = generate_personalized_lesson(
+            skill_id=skill, mastery=ranked.get("mastery", 0.5),
+            stage=source.get("stage") or ranked.get("stage"), lesson_id=lesson_id,
+        ).model_dump()
+        # Reuse the requested ID; free coaching also gets a real curriculum-backed lesson.
+        lesson_id = lesson_id or generated["lesson_id"]
+        context["context_source"] = context["context_source"] or "skill"
+
+    context.update({
+        "target_skill": skill,
+        "lesson_id": lesson_id,
+        "lesson_title": _compact_text(source.get("lesson_title") or source.get("title") or generated.get("lesson_title"), 160),
+        "rule_summary": _compact_text(source.get("rule_summary") or generated.get("rule_summary"), 700),
+        "practice_activity": _compact_text(source.get("prompt_activity") or source.get("practice_activity") or generated.get("practice_activity"), 700),
+        "recent_examples": _compact_examples(source.get("source_examples") or ranked.get("recent_examples")),
+    })
+    return context
+
+
+def _session_token_metadata(session_data: dict, uid: str, session_id: str) -> dict:
+    """Use the saved snapshot on refresh; never re-rank an ongoing conversation."""
+    saved = session_data.get("session_context") or session_data
+    keys = (
+        "learner_name", "mode", "target_skill", "lesson_id", "topic", "conversation_goal",
+        "roleplay_scenario", "pravaah_level", "hindi_support", "speech_language",
+        "lesson_title", "rule_summary", "practice_activity", "recent_examples",
+    )
+    metadata = {key: saved.get(key) for key in keys}
+    metadata.update(user_id=uid, session_id=session_id)
+    metadata["speech_language"] = saved.get("speech_language") or "auto"
+    metadata["hindi_support"] = saved.get("hindi_support") or "high"
+    if metadata["speech_language"] not in {"auto", "en", "hi"}:
+        metadata["speech_language"] = "auto"
+    if metadata["hindi_support"] not in {"high", "occasional", "minimal", "off"}:
+        metadata["hindi_support"] = "high"
+    metadata["recent_examples"] = _compact_examples(saved.get("recent_examples"))
+    if metadata.get("mode") == "assessment" or metadata.get("conversation_goal") == "assessment":
+        metadata.update(mode="assessment", conversation_goal="assessment", target_skill=None,
+                        lesson_id=None, lesson_title="", rule_summary="", practice_activity="",
+                        recent_examples=[], topic=None, roleplay_scenario=None)
+    return metadata
+
+
+def _save_started_session(db, user_ref, session_id: str, session_data: dict) -> None:
+    """Commit an activity's start and its session together; never create a lesson stub."""
+    session_ref = user_ref.collection("sessions").document(session_id)
+    if session_data.get("context_source") != "daily_plan":
+        session_ref.set(session_data)
+        return
+
+    plan_ref = user_ref.collection("daily_plans").document(session_data["daily_plan_date"])
+
+    @firestore.transactional
+    def save(transaction):
+        plan = plan_ref.get(transaction=transaction).to_dict() or {}
+        activities = plan.get("activities", [])
+        activity = next((a for a in activities if a.get("activity_id") == session_data["daily_activity_id"]), None)
+        # A refresh may have changed this slot since context resolution. Do not pin
+        # new content while minting a token carrying the previous target/prompt.
+        if (not activity or activity.get("is_completed")
+                or (activity.get("session_id") and activity["session_id"] != session_id)
+                or (activity.get("target_skill") and activity["target_skill"] != session_data["target_skill"])
+                or _compact_text(activity.get("prompt_activity"), 700) != session_data["practice_activity"]):
+            raise HTTPException(status_code=409, detail="Daily activity changed or already started; refresh the plan.")
+        activity.update(status="in_progress", completion_status="in_progress", session_id=session_id,
+                        started_at=session_data["start_time"].isoformat())
+        transaction.set(plan_ref, {"activities": activities, "completion_status": "in_progress"}, merge=True)
+        transaction.set(session_ref, session_data)
+
+    save(db.transaction())
+
+
 @app.post("/api/sessions", response_model=CreateSessionResponse)
 async def create_session(
     body: CreateSessionRequest,
@@ -569,68 +723,73 @@ async def create_session(
     room_name = f"session_{session_id}"
     now = datetime.now(timezone.utc)
 
-    # Determine lesson ID if targeted skill practice
-    lesson_id = body.lesson_id
-    if not lesson_id and body.target_skill:
-        lesson_id = f"lsn_{body.target_skill}_{uuid.uuid4().hex[:6]}"
-
     db = get_firestore_client()
+    user_ref = db.collection("users").document(uid)
 
     # Resolve the learner's display name so the coach can greet them personally.
     learner_name = user.get("name") or user.get("display_name")
-    profile_snapshot = db.collection("users").document(uid).get()
+    profile_snapshot = user_ref.get()
     profile_data = profile_snapshot.to_dict() or {} if profile_snapshot.exists else {}
     learner_name = profile_data.get("display_name") or learner_name
     if not learner_name and user.get("email"):
         learner_name = user["email"].split("@")[0]
 
     conversation_goal = body.conversation_goal.value if body.conversation_goal else None
+    mode = body.mode.value
+    if mode == "assessment" or conversation_goal == "assessment":
+        mode, conversation_goal = "assessment", "assessment"
     if conversation_goal is None:
         conversation_goal = {
             "grammar_practice": "grammar",
             "vocabulary_practice": "vocabulary",
             "roleplay": "roleplay",
-        }.get(body.mode.value, "intro")
+        }.get(mode, "intro")
 
     topic = (body.topic or "").strip() or None
     roleplay_scenario = (body.roleplay_scenario or "").strip() or None
+    context = await asyncio.to_thread(_resolve_tutor_context, body, user_ref, profile_data, db, uid)
+    lesson_id = context["lesson_id"]
+    target_skill = context["target_skill"]
+    metadata = _session_token_metadata({
+        **context,
+        "learner_name": _compact_text(learner_name, 80) or None,
+        "mode": mode, "topic": topic, "conversation_goal": conversation_goal,
+        "roleplay_scenario": roleplay_scenario,
+        "pravaah_level": profile_data.get("pravaah_level", "unassessed"),
+        "hindi_support": profile_data.get("hindi_support", "high"),
+        "speech_language": body.speech_language,
+    }, uid, session_id)
 
     session_data = {
+        **context,
+        **metadata,
+        "session_context": metadata,
         "session_id": session_id,
         "user_id": uid,
-        "mode": body.mode.value,
         "start_time": now,
         "end_time": None,
         "summary": None,
         "metrics": {},
         "state": "CREATED",
-        "target_skill": body.target_skill,
-        "lesson_id": lesson_id,
-        "topic": topic,
-        "conversation_goal": conversation_goal,
-        "roleplay_scenario": roleplay_scenario,
     }
-    db.collection("users").document(uid).collection("sessions").document(session_id).set(session_data)
+    await asyncio.to_thread(_save_started_session, db, user_ref, session_id, session_data)
     try:
         db.collection("sessions").document(session_id).set({
-            "session_id": session_id,
-            "user_id": uid,
-            "mode": body.mode.value,
-            "target_skill": body.target_skill,
-            "lesson_id": lesson_id,
-            "topic": topic,
-            "conversation_goal": conversation_goal,
-            "roleplay_scenario": roleplay_scenario,
+            **metadata,
+            "session_context": metadata,
             "created_at": now,
         })
     except Exception as exc:
         logging.getLogger("api").warning("Top-level session mirror failed for %s: %s", session_id, exc)
 
     # If launching a targeted lesson, transition lesson to in_progress state
-    if lesson_id and body.target_skill:
+    if lesson_id and target_skill and context["context_source"] != "daily_plan":
         db.collection("users").document(uid).collection("lessons").document(lesson_id).set({
             "lesson_id": lesson_id,
-            "source_skill_id": body.target_skill,
+            "source_skill_id": target_skill,
+            "lesson_title": context["lesson_title"],
+            "rule_summary": context["rule_summary"],
+            "practice_activity": context["practice_activity"],
             "session_id": session_id,
             "start_time": now,
             "completion_status": "in_progress",
@@ -642,20 +801,8 @@ async def create_session(
     token, _ = _mint_livekit_token(
         room_name,
         participant_identity=uid,
-        participant_name=learner_name,
-        metadata={
-            "session_id": session_id,
-            "user_id": uid,
-            "learner_name": learner_name,
-            "mode": body.mode.value,
-            "target_skill": body.target_skill,
-            "lesson_id": lesson_id,
-            "topic": topic,
-            "conversation_goal": conversation_goal,
-            "roleplay_scenario": roleplay_scenario,
-            "pravaah_level": profile_data.get("pravaah_level", "unassessed"),
-            "hindi_support": profile_data.get("hindi_support", "high"),
-        },
+        participant_name=metadata.get("learner_name"),
+        metadata=metadata,
     )
 
     return CreateSessionResponse(
@@ -749,7 +896,11 @@ async def refresh_session_token(
         )
 
     room_name = f"session_{session_id}"
-    token, expires_at = _mint_livekit_token(room_name, participant_identity=uid)
+    metadata = _session_token_metadata(session_data, uid, session_id)
+    token, expires_at = _mint_livekit_token(
+        room_name, participant_identity=uid,
+        participant_name=metadata.get("learner_name"), metadata=metadata,
+    )
 
     # Update heartbeat for usage accounting
     session_ref.update({"last_heartbeat": datetime.now(timezone.utc)})
@@ -784,6 +935,47 @@ async def get_session(
     return SessionSummary(**data)
 
 
+def _finalize_session(db, uid: str, session_id: str, duration_seconds: int, now: datetime) -> dict:
+    """Finalize accounting once, independently of retryable downstream analysis."""
+    user_ref = db.collection("users").document(uid)
+    session_ref = user_ref.collection("sessions").document(session_id)
+
+    @firestore.transactional
+    def finalize(transaction):
+        snapshot = session_ref.get(transaction=transaction)
+        if not snapshot.exists:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        session_data = snapshot.to_dict() or {}
+        if session_data.get("state") == "COMPLETED":
+            return session_data
+        profile = user_ref.get(transaction=transaction).to_dict() or {}
+        stats = profile.get("statistics") or {}
+        today = now.strftime("%Y-%m-%d")
+        prior_streak = int(stats.get("streak_days", 0) or 0)
+        last_practice = stats.get("last_practice_date")
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        streak = max(prior_streak, 1) if last_practice == today else (prior_streak + 1 if last_practice == yesterday else 1)
+        minutes = max(1, duration_seconds // 60)
+        saved = _session_token_metadata(session_data, uid, session_id)
+        changes = {
+            "state": "COMPLETED", "end_time": now, "duration_seconds": duration_seconds,
+            "duration_minutes": minutes, "lesson_id": saved.get("lesson_id"),
+            "target_skill": saved.get("target_skill"), "completion_reason": "user_ended",
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }
+        transaction.set(session_ref, changes, merge=True)
+        transaction.set(user_ref, {
+            "statistics": {
+                "total_sessions": firestore.Increment(1),
+                "total_practice_minutes": firestore.Increment(minutes),
+                "last_practice_date": today, "streak_days": streak,
+            }, "updated_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        return {**session_data, **changes}
+
+    return finalize(db.transaction())
+
+
 @app.post("/api/sessions/{session_id}/complete", status_code=200)
 async def complete_session(
     session_id: str,
@@ -800,77 +992,54 @@ async def complete_session(
     uid = user["uid"]
     db = get_firestore_client()
     now = datetime.now(timezone.utc)
-    duration_seconds = max(0, body.duration_seconds)
-    duration_minutes = max(1, duration_seconds // 60) if duration_seconds >= 30 else 1
-
     session_ref = db.collection("users").document(uid).collection("sessions").document(session_id)
-    session_ref.set({
-        "state": "COMPLETED",
-        "end_time": now,
-        "duration_seconds": duration_seconds,
-        "completion_reason": "user_ended",
-        "updated_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
+    session_data = await asyncio.to_thread(_finalize_session, db, uid, session_id, max(0, body.duration_seconds), now)
+    duration_seconds = session_data.get("duration_seconds", 0)
+    duration_minutes = session_data.get("duration_minutes", max(1, duration_seconds // 60))
+    # The setup snapshot is authoritative; old clients can still send stale IDs but
+    # cannot redirect completion to another lesson, skill or plan activity.
+    saved_context = _session_token_metadata(session_data, uid, session_id)
+    is_assessment = saved_context.get("mode") == "assessment"
 
-    # Increment user profile statistics and roll the practice streak forward
-    user_doc_ref = db.collection("users").document(uid)
-    today_str = now.strftime("%Y-%m-%d")
-    existing_stats = {}
-    snapshot = user_doc_ref.get()
-    if snapshot.exists:
-        existing_stats = (snapshot.to_dict() or {}).get("statistics") or {}
-
-    last_practice_date = existing_stats.get("last_practice_date")
-    prior_streak = int(existing_stats.get("streak_days", 0) or 0)
-    if last_practice_date == today_str:
-        streak_days = max(prior_streak, 1)
-    else:
-        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        streak_days = prior_streak + 1 if last_practice_date == yesterday else 1
-
-    user_doc_ref.set({
-        "statistics": {
-            "total_sessions": firestore.Increment(1),
-            "total_practice_minutes": firestore.Increment(duration_minutes),
-            "last_practice_date": today_str,
-            "streak_days": streak_days,
-        },
-        "updated_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-
-    # Complete daily plan activity if lesson_id passed
-    if body.lesson_id:
+    # Only a resolved activity is a daily-plan completion, not every lesson ID.
+    activity_id = session_data.get("daily_activity_id")
+    plan_retry_needed = False
+    if activity_id and not is_assessment and not session_data.get("daily_activity_completed"):
         try:
             complete_daily_plan_activity(
                 user_id=uid,
-                activity_id=body.lesson_id,
+                date_str=session_data.get("daily_plan_date"),
+                activity_id=activity_id,
                 session_id=session_id,
                 duration_minutes=duration_minutes,
             )
+            session_ref.set({"daily_activity_completed": True}, merge=True)
         except Exception as exc:
-            logging.getLogger("api").warning("Daily plan activity completion failed for %s: %s", body.lesson_id, exc)
+            plan_retry_needed = True
+            logging.getLogger("api").warning("Daily plan activity completion failed for %s: %s", activity_id, exc)
 
-    # Process session analysis for mistakes & vocabulary
-    event_payload = {
-        "duration_seconds": duration_seconds,
-        "lesson_id": body.lesson_id,
-        "target_skill": body.target_skill,
-        "messages": body.messages or [],
-    }
-    event = {
-        "event_id": str(uuid.uuid4()),
-        "event_type": "SESSION_ENDED",
-        "user_id": uid,
-        "session_id": session_id,
-        "sequence": 9999,
-        "timestamp": now.isoformat(),
-        "payload": event_payload,
-    }
-
+    # This route already finalized stats and the plan. Calling SESSION_ENDED again
+    # would count the session twice and complete the activity against today's date.
+    # Prefer agent-persisted turns, falling back to the client's captured transcript.
+    analysis_status = session_data.get("analysis_status") or "not_needed"
     try:
-        if "process_event" in globals():
-            await process_event(event)
+        messages = [doc.to_dict() for doc in session_ref.collection("messages").order_by("sequence").stream()]
+        if not messages:
+            messages = [
+                {"role": m["role"], "text": m["text"], "sequence": i}
+                for i, m in enumerate(body.messages or [])
+                if m.get("role") in {"user", "assistant"} and isinstance(m.get("text"), str) and m["text"].strip()
+            ]
+            for message in messages:
+                session_ref.collection("messages").document(f"client_{message['sequence']:04d}").set(message)
+        if messages and not is_assessment and session_data.get("analysis_status") != "completed":
+            session_ref.set({"analysis_status": "pending"}, merge=True)
+            await analyze_session_messages(uid, session_id, messages)
+            session_ref.set({"analysis_status": "completed"}, merge=True)
+            analysis_status = "completed"
     except Exception as exc:
+        session_ref.set({"analysis_status": "failed"}, merge=True)
+        analysis_status = "failed"
         logging.getLogger("api").warning("Session analysis failed for %s: %s", session_id, exc)
 
     return {
@@ -878,6 +1047,8 @@ async def complete_session(
         "session_id": session_id,
         "duration_seconds": duration_seconds,
         "duration_minutes": duration_minutes,
+        "analysis_status": analysis_status,
+        "retryable": plan_retry_needed or analysis_status in {"pending", "failed"},
     }
 
 

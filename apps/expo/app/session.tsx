@@ -28,17 +28,26 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Room, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } from "livekit-client";
+import type { AudioCaptureOptions } from "livekit-client";
 import {
-  completeDailyActivity,
   completeSession,
   createSession,
   ConversationGoal,
+  SpeechLanguage,
 } from "../lib/api";
 import { speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
 import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
+
+// LiveKit AudioCaptureOptions map to browser media constraints (best effort per device).
+const MICROPHONE_OPTIONS: AudioCaptureOptions = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1,
+};
 
 /** How long a tutor turn waits for real agent audio before the device reads it aloud. */
 const DEVICE_SPEECH_GRACE_MS = 1800;
@@ -52,11 +61,11 @@ const GOAL_OPTIONS: {
   blurb: string;
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
-  { goal: "intro", label: "Friendly chat", blurb: "Relaxed conversation to warm up", icon: "cafe-outline" },
+  { goal: "intro", label: "Coached conversation", blurb: "Speak, learn a correction, then retry", icon: "cafe-outline" },
   { goal: "grammar", label: "Grammar focus", blurb: "Polish tenses and sentence shape", icon: "construct-outline" },
   { goal: "vocabulary", label: "Vocabulary", blurb: "Natural expressions and collocations", icon: "book-outline" },
   { goal: "roleplay", label: "Roleplay", blurb: "Interview, meeting, client call", icon: "people-outline" },
-  { goal: "fluency", label: "Speaking time", blurb: "You talk, I mostly listen", icon: "mic-outline" },
+  { goal: "fluency", label: "Speaking time", blurb: "Longer turns with focused feedback", icon: "mic-outline" },
 ];
 
 const TOPIC_SUGGESTIONS = [
@@ -199,6 +208,7 @@ export default function SessionScreen() {
     defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id)
   );
   const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(sessionMode));
+  const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
 
   // Sync topic whenever incoming params update or load
   useEffect(() => {
@@ -218,7 +228,6 @@ export default function SessionScreen() {
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [activeCorrection, setActiveCorrection] = useState<InSessionCorrection | null>(null);
   const [correctionCount, setCorrectionCount] = useState(0);
-  const [repetitionCount, setRepetitionCount] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
   const [coachJoined, setCoachJoined] = useState(false);
@@ -383,7 +392,7 @@ export default function SessionScreen() {
     } finally {
       if (shouldRestoreMic && roomRef.current) {
         await roomRef.current.localParticipant
-          .setMicrophoneEnabled(true)
+          .setMicrophoneEnabled(true, MICROPHONE_OPTIONS)
           .catch(() => {});
       }
       speakingOnDeviceRef.current = false;
@@ -444,18 +453,14 @@ export default function SessionScreen() {
         topic,
         conversationGoal: goal,
         roleplayScenario: goal === "roleplay" ? buildRoleplayScenario(topic, roleplayRole) : undefined,
+        speechLanguage,
       });
       setSessionId(sessionRes.session_id);
 
       const room = new Room({
         adaptiveStream: true,
         dynacast: true,
-        audioCaptureDefaults: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
+        audioCaptureDefaults: MICROPHONE_OPTIONS,
       });
       roomRef.current = room;
 
@@ -546,12 +551,7 @@ export default function SessionScreen() {
         console.debug("Audio unlock note:", e);
       }
 
-      await room.localParticipant.setMicrophoneEnabled(true, {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-      });
+      await room.localParticipant.setMicrophoneEnabled(true, MICROPHONE_OPTIONS);
 
       room.localParticipant.audioTrackPublications.forEach((pub) => {
         if (pub.track?.mediaStream) {
@@ -632,7 +632,7 @@ export default function SessionScreen() {
     if (roomRef.current) {
       try {
         const nextMute = !isMuted;
-        await roomRef.current.localParticipant.setMicrophoneEnabled(!nextMute);
+        await roomRef.current.localParticipant.setMicrophoneEnabled(!nextMute, MICROPHONE_OPTIONS);
         isMutedRef.current = nextMute;
         setIsMuted(nextMute);
       } catch (err) {
@@ -670,36 +670,32 @@ export default function SessionScreen() {
   };
 
   const handleAdvanceAndReturn = async () => {
+    if (savingSummary) return;
     setSavingSummary(true);
+    setErrorMessage(null);
     try {
-      const durMins = Math.max(1, Math.round(sessionSeconds / 60));
-
       if (sessionId) {
-        await completeSession(
+        const result = await completeSession(
           sessionId,
           sessionSeconds,
-          params.lesson_id,
-          params.target_skill,
+          undefined, // The server uses the saved lesson/activity and target skill.
+          undefined,
           transcript.map((t) => ({
             role: t.speaker === "learner" ? "user" : "assistant",
             text: t.text,
             timestamp: t.timestamp,
           }))
-        ).catch((err) => console.warn("completeSession notice:", err));
+        );
+        if (result.retryable) {
+          setErrorMessage("Your session is saved, but learning analysis or plan updates could not finish. Tap the save button again to retry without counting the session twice.");
+          return;
+        }
       }
-
-      if (params.lesson_id) {
-        await completeDailyActivity(
-          params.lesson_id,
-          sessionId || "sess_active",
-          durMins
-        ).catch((err) => console.warn("completeDailyActivity notice:", err));
-      }
-    } catch (err) {
-      console.warn("Complete activity error:", err);
+      router.replace("/");
+    } catch (err: any) {
+      setErrorMessage(err?.message || "Could not save this session. Please retry.");
     } finally {
       setSavingSummary(false);
-      router.replace("/");
     }
   };
 
@@ -773,8 +769,8 @@ export default function SessionScreen() {
               {params.activity_title || "What shall we talk about?"}
             </Text>
             <Text style={styles.preSessionSubhead}>
-              Pick a subject and a goal. Coach Pravaah opens on your topic and keeps the
-              conversation there.
+              Pick a subject and a goal. Practise your English with corrections,
+              short explanations and a chance to try again.
             </Text>
           </View>
 
@@ -883,6 +879,34 @@ export default function SessionScreen() {
             </View>
           ) : null}
 
+          <View style={styles.setupCard}>
+            <Text style={styles.setupStepLabel}>3 · SPEECH RECOGNITION LANGUAGE</Text>
+            <View style={styles.chipWrap}>
+              {([
+                { value: "auto", label: "Auto · Hindi / English" },
+                { value: "hi", label: "Hindi" },
+                { value: "en", label: "English" },
+              ] as const).map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={[styles.suggestChip, speechLanguage === option.value && styles.suggestChipActive]}
+                  onPress={() => setSpeechLanguage(option.value)}
+                  disabled={isStarting}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: speechLanguage === option.value }}
+                >
+                  <Text style={[styles.suggestChipText, speechLanguage === option.value && styles.suggestChipTextActive]}>
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.goalCardBlurb}>
+              Auto supports switching languages. Choose Hindi or English if recognition gets your language wrong.
+              This does not change your Hindi explanation preference.
+            </Text>
+          </View>
+
           <View style={styles.tipsCard}>
             <View style={styles.tipItem}>
               <Ionicons name="headset-outline" size={20} color={theme.colors.paleIris} />
@@ -891,7 +915,7 @@ export default function SessionScreen() {
             <View style={styles.tipItem}>
               <Ionicons name="globe-outline" size={20} color={theme.colors.cyanSignal} />
               <Text style={styles.tipText}>
-                If stuck, speak in Hindi — coach provides instant English recasts
+                If stuck, speak in Hindi, then practise the English version. A quieter spot helps recognition.
               </Text>
             </View>
           </View>
@@ -926,7 +950,7 @@ export default function SessionScreen() {
                       ? `Start talking about ${topic.trim()}`
                       : isRoleplay && roleplayRole.trim()
                       ? `Start roleplay with the ${roleplayRole}`
-                      : "Start conversation"}
+                      : "Start coached conversation"}
                   </Text>
                 </View>
               )}
@@ -1048,12 +1072,15 @@ export default function SessionScreen() {
             {activeCorrection.explanation ? (
               <Text style={styles.correctionWhyText}>💡 {activeCorrection.explanation}</Text>
             ) : null}
+            <Text style={styles.correctionWhyText}>
+              Say the English sentence aloud, then try your own example. It is okay to need another attempt.
+            </Text>
 
             <Pressable
               style={({ pressed }) => [styles.gotItBtn, pressed && styles.btnPressed]}
               onPress={() => setActiveCorrection(null)}
             >
-              <Text style={styles.gotItBtnText}>Got it 👍</Text>
+              <Text style={styles.gotItBtnText}>Keep practising →</Text>
             </Pressable>
           </View>
         ) : null}
@@ -1177,9 +1204,9 @@ export default function SessionScreen() {
 
               <View style={styles.summaryStatTile}>
                 <Text style={styles.summaryStatValue}>
-                  {formatSeconds(learnerSpeakingSeconds || Math.max(1, Math.round(sessionSeconds * 0.45)))}
+                  {Platform.OS === "web" ? formatSeconds(learnerSpeakingSeconds) : "—"}
                 </Text>
-                <Text style={styles.summaryStatLabel}>SPEAKING TIME</Text>
+                <Text style={styles.summaryStatLabel}>DETECTED SPEECH (EST.)</Text>
               </View>
 
               <View style={styles.summaryStatTile}>
@@ -1194,8 +1221,10 @@ export default function SessionScreen() {
             </View>
 
             <Text style={styles.summarySavedNotice}>
-              Your conversation was saved to your profile. Mistakes and vocabulary are updated.
+              Save your conversation to update your plan. Recorded mistakes and vocabulary
+              will appear on the dashboard after analysis.
             </Text>
+            {errorMessage ? <Text style={styles.errorBannerText}>{errorMessage}</Text> : null}
 
             <Pressable
               style={({ pressed }) => [styles.primaryReturnBtn, pressed && styles.btnPressed]}
@@ -1205,7 +1234,7 @@ export default function SessionScreen() {
               {savingSummary ? (
                 <ActivityIndicator size="small" color={theme.colors.void} />
               ) : (
-                <Text style={styles.primaryReturnBtnText}>Return to Dashboard →</Text>
+                <Text style={styles.primaryReturnBtnText}>Save & return to Dashboard →</Text>
               )}
             </Pressable>
           </View>

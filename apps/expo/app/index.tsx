@@ -63,7 +63,9 @@ type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
 
 const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
   recent_mistakes: "RECENT MISTAKES",
+  recent_vocabulary_errors: "VOCABULARY TO RETRY",
   failed_repetitions: "KEEPS SLIPPING",
+  unfinished_lesson: "FINISH THIS LESSON",
   low_mastery: "NEEDS WORK",
   developing: "DEVELOPING",
   mastered: "MASTERED",
@@ -137,172 +139,6 @@ function groupMistakes(mistakes: Mistake[]): MistakeGroup[] {
   return groups.sort((a, b) => b.total - a.total);
 }
 
-// Helper to generate instant optimistic activities matching chosen goal minutes
-function buildOptimisticActivities(
-  minutes: number,
-  targetSkill: string = "past_simple_auxiliary",
-  pravaahLevel: string = "C"
-): DailyPlanActivity[] {
-  const skillName = targetSkill.replace(/_/g, " ").toUpperCase();
-  const dateStr = new Date().toISOString().split("T")[0];
-
-  if (minutes === 15) {
-    return [
-      {
-        activity_id: `act_${dateStr}_1_warmup`,
-        title: "Conversational Warmup & Fluency Check",
-        mode: "free_conversation",
-        duration_minutes: 5,
-        stage: "guided_practice",
-        objective: "Wake up your English speaking with natural conversation.",
-        prompt_activity: "Talk about your day or what you did earlier today.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_2_target`,
-        title: `Targeted Precision: ${skillName}`,
-        mode: "grammar_practice",
-        target_skill: targetSkill,
-        duration_minutes: 10,
-        stage: "guided_practice",
-        objective: `Eliminate recurring errors in ${skillName} through active coaching.`,
-        prompt_activity: "Answer the tutor's questions using clear target-verb sentences.",
-        is_completed: false,
-      },
-    ];
-  }
-
-  if (minutes === 30) {
-    return [
-      {
-        activity_id: `act_${dateStr}_1_warmup`,
-        title: "Conversational Warmup & Check-in",
-        mode: "free_conversation",
-        duration_minutes: 5,
-        stage: "guided_practice",
-        objective: "Spontaneous conversational fluency check.",
-        prompt_activity: "Discuss what you're working on or plans for the week.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_2_target`,
-        title: `Targeted Focus: ${skillName}`,
-        mode: "grammar_practice",
-        target_skill: targetSkill,
-        duration_minutes: 15,
-        stage: "guided_practice",
-        objective: `Master ${skillName} with immediate rule guidance and repetition.`,
-        prompt_activity: "Tell a short story or describe past events while focusing on accuracy.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_3_vocab`,
-        title: "Collocations & Natural Expressions",
-        mode: "vocabulary_practice",
-        target_skill: "collocations",
-        duration_minutes: 10,
-        stage: "expansion",
-        objective: "Acquire and speak high-frequency natural English collocations.",
-        prompt_activity: "Practice replacing stiff phrases with natural conversational collocations.",
-        is_completed: false,
-      },
-    ];
-  }
-
-  if (minutes === 60) {
-    return [
-      {
-        activity_id: `act_${dateStr}_1_warmup`,
-        title: "Conversational Warmup & Fluency Check",
-        mode: "free_conversation",
-        duration_minutes: 10,
-        stage: "guided_practice",
-        objective: "Spontaneous spoken conversation.",
-        prompt_activity: "Speak freely about recent news, work, or hobbies.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_2_target`,
-        title: `Deep Targeted Precision: ${skillName}`,
-        mode: "grammar_practice",
-        target_skill: targetSkill,
-        duration_minutes: 25,
-        stage: "guided_practice",
-        objective: `Rigorous practice on ${skillName} across diverse conversational contexts.`,
-        prompt_activity: "Answer targeted situational questions with instant pedagogical feedback.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_3_vocab`,
-        title: "Idiomatic Phrasing & Collocations",
-        mode: "vocabulary_practice",
-        target_skill: "collocations",
-        duration_minutes: 15,
-        stage: "expansion",
-        objective: "Acquire natural conversational idioms and phrases.",
-        prompt_activity: "Incorporate new phrasing into your responses.",
-        is_completed: false,
-      },
-      {
-        activity_id: `act_${dateStr}_4_roleplay`,
-        title: "Situational Spoken Simulation",
-        mode: "roleplay",
-        duration_minutes: 10,
-        stage: "transfer",
-        objective: "Apply newly acquired accuracy in an immersive dialogue scenario.",
-        prompt_activity: "Roleplay a practical workplace or social scenario with Coach Pravaah.",
-        is_completed: false,
-      },
-    ];
-  }
-
-  // 90 minutes
-  return [
-    {
-      activity_id: `act_${dateStr}_1_warmup`,
-      title: "Conversational Warmup & Fluency Check",
-      mode: "free_conversation",
-      duration_minutes: 10,
-      stage: "guided_practice",
-      objective: "Warmup spontaneous speech flow.",
-      prompt_activity: "Catch up on recent events and current topics.",
-      is_completed: false,
-    },
-    {
-      activity_id: `act_${dateStr}_2_target`,
-      title: `Intensive Grammar Mastery: ${skillName}`,
-      mode: "grammar_practice",
-      target_skill: targetSkill,
-      duration_minutes: 35,
-      stage: "guided_practice",
-      objective: `Deep drill on ${skillName} to lock in permanent muscle memory.`,
-      prompt_activity: "Complex questions requiring past narratives and conditional responses.",
-      is_completed: false,
-    },
-    {
-      activity_id: `act_${dateStr}_3_vocab`,
-      title: "Advanced Collocations & Phrasal Verbs",
-      mode: "vocabulary_practice",
-      target_skill: "collocations",
-      duration_minutes: 25,
-      stage: "expansion",
-      objective: "Expand expressive vocabulary and natural connective phrasing.",
-      prompt_activity: "Speak using idiomatic collocations and professional phrasing.",
-      is_completed: false,
-    },
-    {
-      activity_id: `act_${dateStr}_4_roleplay`,
-      title: "Immersive Workplace Dialogue Simulation",
-      mode: "roleplay",
-      duration_minutes: 20,
-      stage: "transfer",
-      objective: "Full conversational roleplay applying grammar precision under pressure.",
-      prompt_activity: "Navigate a real-world scenario (negotiation, interview, or team discussion).",
-      is_completed: false,
-    },
-  ];
-}
-
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -323,6 +159,7 @@ export default function DashboardScreen() {
   const [editName, setEditName] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [refreshingPlan, setRefreshingPlan] = useState(false);
+  const [savingGoal, setSavingGoal] = useState(false);
 
   // Request sequence IDs to eliminate race conditions
   const goalRequestIdRef = useRef<number>(0);
@@ -383,36 +220,23 @@ export default function DashboardScreen() {
     loadData();
   };
 
-  // Instant optimistic update for daily practice commitment
-  const handleGoalChange = (minutes: number) => {
+  // Wait for real server IDs and ranking; fabricated optimistic activities cannot launch.
+  const handleGoalChange = async (minutes: number) => {
+    if (savingGoal || refreshingPlan) return;
     const reqId = ++goalRequestIdRef.current;
-    const targetSkill = profile?.current_focus || "past_simple_auxiliary";
-    const level = profile?.pravaah_level || "C";
-    const optimisticActivities = buildOptimisticActivities(minutes, targetSkill, level);
-
-    setDailyPlan((prev) => ({
-      plan_id: prev?.plan_id || `plan_${new Date().toISOString().split("T")[0]}`,
-      plan_date: prev?.plan_date || new Date().toISOString().split("T")[0],
-      goal_minutes: minutes,
-      planned_minutes: minutes,
-      completed_minutes: prev?.completed_minutes || 0,
-      activities: optimisticActivities,
-      completed_activities_count: 0,
-      target_skills: [targetSkill],
-      completion_status: "not_started",
-      current_activity_index: 0,
-    }));
-    setProfile((prev) => (prev ? { ...prev, daily_goal_minutes: minutes } : null));
-
-    setDailyGoal(minutes)
-      .then((res) => {
-        if (reqId === goalRequestIdRef.current && res.daily_plan) {
-          setDailyPlan(res.daily_plan);
-        }
-      })
-      .catch((err: any) => {
-        console.warn("Goal background update error:", err);
-      });
+    setSavingGoal(true);
+    setErrorMessage(null);
+    try {
+      const res = await setDailyGoal(minutes);
+      if (reqId === goalRequestIdRef.current) {
+        setDailyPlan(res.daily_plan);
+        setProfile((prev) => prev ? { ...prev, daily_goal_minutes: res.daily_goal_minutes } : null);
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || "Could not update your goal. Your previous plan is unchanged.");
+    } finally {
+      if (reqId === goalRequestIdRef.current) setSavingGoal(false);
+    }
   };
 
   // Instant optimistic update for Hindi support level
@@ -548,12 +372,13 @@ export default function DashboardScreen() {
   };
 
   const handleStartNextActivity = () => {
-    const nextAct = dailyPlan?.activities.find((a) => !a.is_completed) || dailyPlan?.activities[0];
+    if (savingGoal || refreshingPlan) return;
+    const nextAct = dailyPlan?.activities.find((a) => !a.is_completed);
     router.push({
       pathname: "/session",
       params: {
         mode: nextAct?.mode || "free_conversation",
-        target_skill: nextAct?.target_skill || profile?.current_focus || "",
+        target_skill: nextAct?.target_skill || "",
         lesson_id: nextAct?.activity_id || "",
         activity_title: nextAct?.title || "Spoken Practice",
         stage: nextAct?.stage || "guided_practice",
@@ -561,7 +386,8 @@ export default function DashboardScreen() {
     });
   };
 
-  const handleLaunchActivity = (act: any) => {
+  const handleLaunchActivity = (act: DailyPlanActivity) => {
+    if (savingGoal || refreshingPlan) return;
     router.push({
       pathname: "/session",
       params: {
@@ -589,7 +415,10 @@ export default function DashboardScreen() {
   const currentGoal = dailyPlan?.goal_minutes || profile?.daily_goal_minutes || 30;
   const completedMins = dailyPlan?.completed_minutes || 0;
   const progressPercent = currentGoal > 0 ? Math.min(100, Math.round((completedMins / currentGoal) * 100)) : 0;
-  const nextUnfinishedActivity = dailyPlan?.activities?.find((a) => !a.is_completed);
+  // The engine sequences correction, transfer and review. Skill priority is not
+  // an activity ordering: sorting by it would move retention ahead of practice.
+  const orderedActivities = dailyPlan?.activities || [];
+  const nextUnfinishedActivity = orderedActivities.find((a) => !a.is_completed);
 
   // Identity comes from the signed-in account, resolved server-side from the Firebase token.
   const displayName = profile?.display_name || profile?.email?.split("@")[0] || "";
@@ -725,7 +554,7 @@ export default function DashboardScreen() {
                 )}
               </Text>
               <Text style={styles.heroSubhead}>
-                Real-time voice coaching tailored to eliminate your recurring speech errors.
+                Coached conversations: understand a correction, retry it, then use it in your own words.
               </Text>
 
               {userLevel === "unassessed" ? (
@@ -740,6 +569,7 @@ export default function DashboardScreen() {
                 <Pressable
                   style={({ pressed }) => [styles.primaryHeroBtn, pressed && styles.btnPressed]}
                   onPress={handleStartNextActivity}
+                  disabled={savingGoal || refreshingPlan}
                 >
                   <Ionicons name="mic" size={20} color={theme.colors.void} />
                   <Text style={styles.primaryHeroBtnText}>
@@ -775,6 +605,7 @@ export default function DashboardScreen() {
                       currentGoal === mins && styles.goalChipActive,
                     ]}
                     onPress={() => handleGoalChange(mins)}
+                    disabled={savingGoal || refreshingPlan}
                   >
                     <Text
                       style={[
@@ -797,6 +628,7 @@ export default function DashboardScreen() {
                 {dailyPlan?.activities?.filter((a) => a.is_completed).length || 0} of{" "}
                 {dailyPlan?.activities?.length || 0} exercises finished today
               </Text>
+              {savingGoal ? <ActivityIndicator size="small" color={theme.colors.paleIris} /> : null}
             </View>
 
             {/* ACTIVITY SEQUENCE TIMELINE */}
@@ -805,7 +637,7 @@ export default function DashboardScreen() {
               <Pressable
                 style={({ pressed }) => [styles.refreshPlanBtn, pressed && styles.btnPressed]}
                 onPress={handleRefreshPlan}
-                disabled={refreshingPlan}
+                disabled={refreshingPlan || savingGoal}
               >
                 {refreshingPlan ? (
                   <ActivityIndicator size="small" color={theme.colors.paleIris} />
@@ -820,7 +652,7 @@ export default function DashboardScreen() {
 
             {priorityFocus.length > 0 ? (
               <Text style={styles.planRationaleText}>
-                Ordered around {priorityFocus.slice(0, 2).map((s) => s.title).join(" and ")}
+                Your current focus: {priorityFocus.slice(0, 2).map((s) => s.title).join(" and ")}
                 {priorityFocus[0].mistake_count > 0
                   ? ` — your most frequent recent mistakes.`
                   : ` — your weakest skills so far.`}
@@ -836,9 +668,9 @@ export default function DashboardScreen() {
                   </Text>
                 </View>
               ) : (
-                dailyPlan.activities.map((activity, idx) => {
+                orderedActivities.map((activity, idx) => {
                   const isCurrent =
-                    idx === (dailyPlan.current_activity_index ?? 0) && !activity.is_completed;
+                    activity.activity_id === nextUnfinishedActivity?.activity_id;
                   const modeIcon =
                     activity.mode === "free_conversation"
                       ? "cafe-outline"
@@ -856,6 +688,7 @@ export default function DashboardScreen() {
                         pressed && styles.btnPressed,
                       ]}
                       onPress={() => handleLaunchActivity(activity)}
+                      disabled={savingGoal || refreshingPlan}
                     >
                       <View style={styles.activityCardLeft}>
                         <View
@@ -881,9 +714,13 @@ export default function DashboardScreen() {
                             <Ionicons name={modeIcon as any} size={12} color={theme.colors.paleIris} />
                             <Text style={styles.modeTagText}>
                               {activity.mode === "free_conversation"
-                                ? "WARMUP"
+                                ? "COACHED CONVERSATION"
                                 : activity.mode === "grammar_practice"
                                 ? "PRECISION"
+                                : activity.mode === "roleplay"
+                                ? "ROLEPLAY"
+                                : activity.mode === "review"
+                                ? "RETRY & REVIEW"
                                 : "VOCABULARY"}
                             </Text>
                           </View>
@@ -904,6 +741,24 @@ export default function DashboardScreen() {
                         <Text style={styles.activityTitle}>{activity.title}</Text>
                         <Text style={styles.activityObjective} numberOfLines={2}>
                           {activity.objective}
+                        </Text>
+                        {activity.priority_reason ? (
+                          <Text style={styles.focusRuleText}>
+                            {activity.priority_rank != null ? `Skill priority ${activity.priority_rank} · ` : "Why this exercise: "}
+                            {activity.priority_reason.replace(/_/g, " ")}
+                          </Text>
+                        ) : null}
+                        {activity.source_examples?.slice(0, 2).map((example, exampleIndex) => (
+                          <View key={`${activity.activity_id}_evidence_${exampleIndex}`} style={styles.goalTipBox}>
+                            <Text style={styles.goalTipText}>
+                              You said: “{example.original}”{"\n"}
+                              Try: “{example.corrected}”
+                              {example.explanation ? `\nWhy: ${example.explanation}` : ""}
+                            </Text>
+                          </View>
+                        ))}
+                        <Text style={styles.activityObjective} numberOfLines={3}>
+                          {activity.prompt_activity}
                         </Text>
                       </View>
 
@@ -993,17 +848,17 @@ export default function DashboardScreen() {
                     pathname: "/session",
                     params: {
                       mode: "free_conversation",
-                      activity_title: "Free Spoken Conversation",
+                      activity_title: "Coached Conversation",
                     },
                   })
                 }
               >
                 <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 03 • FLUENCY</Text>
-                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Free Spoken Conversation</Text>
+                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Coached Conversation</Text>
                 <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
-                  Speak freely on any topic with active real-time AI feedback.
+                  Talk about your interests while practising a priority skill, with explanations and retries.
                 </Text>
-                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Free Conversation →</Text>
+                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Coached Conversation →</Text>
               </Pressable>
 
               {/* Tile 4: Roleplay */}
@@ -1080,7 +935,7 @@ export default function DashboardScreen() {
                     router.push({
                       pathname: "/session",
                       params: {
-                        mode: "grammar_practice",
+                        mode: profile.recommended_lesson?.category === "vocabulary" ? "vocabulary_practice" : "grammar_practice",
                         target_skill: profile.recommended_lesson?.target_skill_id,
                         lesson_id: profile.recommended_lesson?.lesson_id,
                         activity_title: profile.recommended_lesson?.lesson_title,
@@ -1177,7 +1032,7 @@ export default function DashboardScreen() {
                         <View style={styles.focusMetaRow}>
                           <View style={styles.focusReasonPill}>
                             <Text style={styles.focusReasonText}>
-                              {FOCUS_REASON_LABELS[skill.reason]}
+                              {FOCUS_REASON_LABELS[skill.reason] || skill.reason.replace(/_/g, " ").toUpperCase()}
                             </Text>
                           </View>
                           {skill.mistake_count > 0 ? (
@@ -1195,6 +1050,11 @@ export default function DashboardScreen() {
                             {skill.rule_summary}
                           </Text>
                         ) : null}
+                        {isTop ? skill.recent_examples?.slice(0, 2).map((example, exampleIndex) => (
+                          <Text key={exampleIndex} style={styles.focusRuleText}>
+                            “{example.original}” → “{example.corrected}”
+                          </Text>
+                        )) : null}
                       </View>
                     </Pressable>
                   );

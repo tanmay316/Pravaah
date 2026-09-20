@@ -129,13 +129,25 @@ function normalizeSessionMode(mode?: string, targetSkill?: string): string {
 
 /**
  * The learner already chose a specific skill or lesson to open this session, so the topic
- * step should reflect that instead of asking them to pick a subject a second time. Free
- * conversation and roleplay have no single skill behind them, so they stay blank for the
- * learner to fill in.
+ * step defaults to that skill or lesson name instead of asking them to type it again.
  */
-function defaultTopicFor(mode?: string, targetSkill?: string): string {
-  if ((mode === "grammar_practice" || mode === "vocabulary_practice") && targetSkill) {
+function defaultTopicFor(
+  mode?: string,
+  targetSkill?: string,
+  activityTitle?: string,
+  lessonId?: string
+): string {
+  if (activityTitle && activityTitle.trim() && activityTitle !== "Spoken Practice") {
+    return activityTitle.trim();
+  }
+  if (targetSkill && targetSkill.trim()) {
     return skillLabel(targetSkill);
+  }
+  if (lessonId && lessonId.trim()) {
+    return lessonId
+      .replace(/^lesson_/, "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
   }
   return "";
 }
@@ -183,8 +195,18 @@ export default function SessionScreen() {
   const [sessionStatus, setSessionStatus] = useState<
     "choosing" | "starting" | "active" | "ended"
   >("choosing");
-  const [topic, setTopic] = useState(() => defaultTopicFor(sessionMode, params.target_skill));
+  const [topic, setTopic] = useState(() =>
+    defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id)
+  );
   const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(sessionMode));
+
+  // Sync topic whenever incoming params update or load
+  useEffect(() => {
+    const def = defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id);
+    if (def && (!topic || topic.trim() === "")) {
+      setTopic(def);
+    }
+  }, [params.target_skill, params.activity_title, params.lesson_id, sessionMode]);
   const [roleplayRole, setRoleplayRole] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -319,6 +341,8 @@ export default function SessionScreen() {
   const attachAgentAudio = (track: Track) => {
     if (track.kind !== Track.Kind.Audio) return;
     hasRemoteAudioRef.current = true;
+    cancelPendingDeviceSpeech();
+    stopDeviceSpeech().catch(() => {});
     if (Platform.OS !== "web") return;
     if (audioElementRef.current) {
       try {
@@ -339,6 +363,9 @@ export default function SessionScreen() {
    */
   const speakTurnOnDevice = async (text: string) => {
     if (speakingOnDeviceRef.current) return;
+    // Never speak on device if remote audio is playing or coach is present
+    if (hasRemoteAudioRef.current && agentSpeakingRef.current) return;
+
     speakingOnDeviceRef.current = true;
     setDeviceVoiceActive(true);
     setAgentSpeaking(true);
@@ -370,14 +397,15 @@ export default function SessionScreen() {
   const queueDeviceSpeech = (id: string, text: string) => {
     const mode = deviceVoiceModeRef.current;
     if (mode === "off") return;
-    if (mode === "auto" && hasRemoteAudioRef.current && agentSpeakingRef.current) return;
+    // When connected to LiveKit room with an agent, NEVER talk over the server agent!
+    if (mode === "auto" && (hasRemoteAudioRef.current || coachJoined || !!roomRef.current)) return;
 
-    const delay = mode === "on" ? 150 : DEVICE_SPEECH_GRACE_MS;
+    const delay = mode === "on" ? 150 : 8000;
     const handle = setTimeout(() => {
       pendingSpeechRef.current.delete(id);
       if (deviceVoiceModeRef.current === "off") return;
       // The agent found its voice in the meantime; let it speak.
-      if (deviceVoiceModeRef.current === "auto" && agentSpeakingRef.current) return;
+      if (deviceVoiceModeRef.current === "auto" && (hasRemoteAudioRef.current || agentSpeakingRef.current || coachJoined)) return;
       speakTurnOnDevice(text);
     }, delay);
     pendingSpeechRef.current.set(id, handle);
@@ -446,6 +474,7 @@ export default function SessionScreen() {
         if (remoteSpeaking) {
           // Real coach audio wins over the device fallback.
           cancelPendingDeviceSpeech();
+          stopDeviceSpeech().catch(() => {});
         }
         if (speakingOnDeviceRef.current) return;
         agentSpeakingRef.current = remoteSpeaking;

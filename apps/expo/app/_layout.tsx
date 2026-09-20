@@ -9,25 +9,44 @@ import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { useFonts } from "expo-font";
+import * as Font from "expo-font";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/firebase";
 import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
 
+// @expo/vector-icons relies on fontfaceobserver on web, which tests latin glyphs (BESbswy).
+// Icon fonts only contain private-use unicode glyphs, causing fontfaceobserver to timeout
+// and reject, leaving createIconSet in a permanent unmounted/blank state.
+// Patch Font.isLoaded on web so icon fonts are treated as loaded immediately.
+if (Platform.OS === "web") {
+  const iconFamilies = new Set([
+    "ionicons",
+    "Ionicons",
+    "feather",
+    "Feather",
+    "material-community",
+    "MaterialCommunityIcons",
+    "MaterialIcons",
+    "Material Icons",
+    "fontawesome",
+    "FontAwesome",
+  ]);
+  const origIsLoaded = Font.isLoaded;
+  (Font as any).isLoaded = (name: string) => {
+    if (iconFamilies.has(name)) return true;
+    return origIsLoaded ? origIsLoaded(name) : true;
+  };
+}
+
+// Directly require the icon font TTF so Metro exports the asset URL
+// @ts-ignore
+const ioniconsTtf = require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf");
+
 export default function RootLayout() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-
-  // @expo/vector-icons renders nothing until its font finishes downloading (see
-  // createIconSet.js: it returns an empty <Text /> until Font.isLoaded() is true). On a
-  // fast local dev server that window is imperceptible; over a real network it can leave
-  // every icon in the app invisible for a beat right after load. Loading it here, gated by
-  // the same spinner already used for auth, means icons are either ready or not shown yet
-  // — never present-but-blank.
-  const [iconsLoaded, iconsError] = useFonts(Ionicons.font);
-  const iconsReady = iconsLoaded || !!iconsError;
 
   // Inject Mobile Web meta tags, Google Fonts, Favicon, and PWA setup
   useEffect(() => {
@@ -133,6 +152,33 @@ export default function RootLayout() {
         document.head.appendChild(style);
       }
 
+      // Inject @font-face rules for vector icons so browser text glyphs render immediately
+      const iconFontId = "pravaah-vector-icons-stylesheet";
+      if (!document.getElementById(iconFontId)) {
+        const iconStyle = document.createElement("style");
+        iconStyle.id = iconFontId;
+        iconStyle.textContent = `
+          @font-face {
+            font-family: 'ionicons';
+            src: url('${ioniconsTtf}') format('truetype');
+            font-display: swap;
+          }
+          @font-face {
+            font-family: 'Ionicons';
+            src: url('${ioniconsTtf}') format('truetype');
+            font-display: swap;
+          }
+        `;
+        document.head.appendChild(iconStyle);
+
+        if (typeof FontFace !== "undefined" && (document as any).fonts) {
+          const f1 = new FontFace("ionicons", `url('${ioniconsTtf}')`);
+          const f2 = new FontFace("Ionicons", `url('${ioniconsTtf}')`);
+          f1.load().then((loaded) => (document as any).fonts.add(loaded)).catch(() => {});
+          f2.load().then((loaded) => (document as any).fonts.add(loaded)).catch(() => {});
+        }
+      }
+
       // Automatically clean internal Expo Router key from the browser address bar
       if (window.location.search && window.location.search.includes("__EXPO_ROUTER_key")) {
         try {
@@ -156,7 +202,7 @@ export default function RootLayout() {
     }
   }, [user, loading, segments, router]);
 
-  if (loading || !iconsReady) {
+  if (loading) {
     return (
       <SafeAreaProvider>
         <StatusBar style="light" backgroundColor={theme.colors.obsidian} />

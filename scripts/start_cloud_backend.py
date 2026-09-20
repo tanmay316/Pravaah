@@ -37,7 +37,11 @@ os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 port = int(os.environ.get("PORT", "10000"))
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "false").lower() in {"1", "true", "yes"}
+is_cloud_run = bool(os.environ.get("K_SERVICE"))
+default_run_voice = "false"
+RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", default_run_voice).lower() in {"1", "true", "yes"}
+if is_cloud_run:
+    logger.info("Detected Google Cloud Run runtime (service=%s). Voice agent co-hosting is disabled by default.", os.environ.get("K_SERVICE"))
 
 # Credentials come from the environment only. Never commit keys to the repo: anything
 # checked in is public to everyone who can read it and must be treated as compromised.
@@ -91,8 +95,10 @@ def main():
     if RUN_VOICE_AGENT:
         if os.environ.get("LIVEKIT_URL"):
             logger.info("Starting co-hosted LiveKit Voice Agent Worker (%s)...", os.environ["LIVEKIT_URL"])
-            # The co-hosted agent talks to this same container's TTS route.
+            # The co-hosted agent talks to this same container's TTS route with male Indian English voice.
             os.environ.setdefault("TTS_BASE_URL", f"http://127.0.0.1:{port}/v1")
+            os.environ.setdefault("TTS_VOICE", "en-IN-PrabhatNeural")
+            os.environ.setdefault("GROQ_TTS_VOICE", "troy")
             processes.append(
                 subprocess.Popen(
                     [sys.executable, "agent.py", "start"],

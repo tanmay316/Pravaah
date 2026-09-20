@@ -13,6 +13,7 @@ Endpoints:
   GET  /api/sessions/{session_id}
 """
 
+import asyncio
 import json
 import os
 import time
@@ -141,10 +142,35 @@ def _compute_streak_days(last_practice_date: str | None, current_streak: int) ->
 # App lifecycle
 # ---------------------------------------------------------------------------
 
+async def _warmup_tts():
+    try:
+        await asyncio.sleep(2)
+        greetings = [
+            "Hi! I'm Coach Pravaah, your spoken English partner. What would you like to talk about today?",
+            "Hi Tanmay! I'm Coach Pravaah, your spoken English partner. What would you like to talk about today?",
+            "Hello! I'm Coach Pravaah, your spoken English partner. What would you like to talk about today?",
+            "I'm ready whenever you are. Just say hello to get started!",
+        ]
+        for g in greetings:
+            clean = g.strip()
+            key = f"en-IN-PrabhatNeural|{clean}"
+            if key not in _tts_cache:
+                try:
+                    data = await _synthesize_edge(clean, "en-IN-PrabhatNeural")
+                    if data:
+                        _tts_cache[key] = data
+                        logging.getLogger("api").info("Pre-warmed TTS greeting: %s", clean[:35])
+                except Exception as e:
+                    logging.getLogger("api").debug("TTS warmup notice: %s", e)
+    except Exception as exc:
+        logging.getLogger("api").debug("TTS warmup task notice: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize Firebase on startup."""
+    """Initialize Firebase and warmup TTS cache on startup."""
     get_firebase_app()
+    asyncio.create_task(_warmup_tts())
     yield
 
 
@@ -201,13 +227,13 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# Embedded Neural TTS Endpoint (/v1/audio/speech)
+# Embedded Neural TTS Endpoint (/v1/audio/speech) — Male voice default
 # ---------------------------------------------------------------------------
 
 class SpeechRequest(BaseModel):
     model: str = "tts-1"
     input: str
-    voice: str = "en-IN-NeerjaNeural"
+    voice: str = "en-IN-PrabhatNeural"
     response_format: str = "mp3"
     speed: float = 1.0
 
@@ -215,10 +241,24 @@ class SpeechRequest(BaseModel):
 _tts_cache: dict[str, bytes] = {}
 
 
+async def _synthesize_edge(clean_text: str, voice: str) -> bytes:
+    import edge_tts
+    communicate = edge_tts.Communicate(clean_text, voice=voice)
+    audio_buf = bytearray()
+
+    async def _stream():
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_buf.extend(chunk["data"])
+
+    await asyncio.wait_for(_stream(), timeout=7.0)
+    return bytes(audio_buf)
+
+
 @app.post("/v1/audio/speech")
 async def generate_speech(req: SpeechRequest):
     clean_text = req.input.strip().replace("**", "").replace("*", "").replace("#", "").replace('"', "").replace("`", "") or "Okay."
-    voice = req.voice if req.voice in {"en-IN-NeerjaNeural", "en-IN-PrabhatNeural", "hi-IN-SwaraNeural"} else "en-IN-NeerjaNeural"
+    voice = req.voice if req.voice in {"en-IN-PrabhatNeural", "en-IN-NeerjaNeural", "hi-IN-SwaraNeural"} else "en-IN-PrabhatNeural"
     key = f"{voice}|{clean_text}"
 
     if key in _tts_cache:
@@ -229,14 +269,7 @@ async def generate_speech(req: SpeechRequest):
         )
 
     try:
-        import edge_tts
-        communicate = edge_tts.Communicate(clean_text, voice=voice)
-        audio_buf = bytearray()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_buf.extend(chunk["data"])
-
-        result_bytes = bytes(audio_buf)
+        result_bytes = await _synthesize_edge(clean_text, voice)
         if result_bytes:
             if len(_tts_cache) < 200:
                 _tts_cache[key] = result_bytes
@@ -246,7 +279,19 @@ async def generate_speech(req: SpeechRequest):
                 headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
             )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"TTS synthesis error: {exc}")
+        logging.getLogger("api").warning("TTS synthesis attempt 1 error (%s), retrying...", exc)
+        try:
+            result_bytes = await _synthesize_edge(clean_text, voice)
+            if result_bytes:
+                if len(_tts_cache) < 200:
+                    _tts_cache[key] = result_bytes
+                return Response(
+                    content=result_bytes,
+                    media_type="audio/mpeg",
+                    headers={"Content-Disposition": 'attachment; filename="speech.mp3"'},
+                )
+        except Exception as retry_exc:
+            raise HTTPException(status_code=500, detail=f"TTS synthesis error: {retry_exc}")
 
     raise HTTPException(status_code=500, detail="TTS generation failed")
 

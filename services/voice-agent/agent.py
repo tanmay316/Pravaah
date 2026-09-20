@@ -691,7 +691,7 @@ async def entrypoint(ctx: JobContext):
     tts_candidates = [
         openai.TTS(
             model="tts-1",
-            voice=os.getenv("TTS_VOICE", "en-IN-NeerjaNeural"),
+            voice=os.getenv("TTS_VOICE", "en-IN-PrabhatNeural"),
             api_key="not-needed",
             base_url=tts_base_url,
         )
@@ -702,7 +702,7 @@ async def entrypoint(ctx: JobContext):
             tts_candidates.append(
                 groq.TTS(
                     model=os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english"),
-                    voice=os.getenv("GROQ_TTS_VOICE", "autumn"),
+                    voice=os.getenv("GROQ_TTS_VOICE", "troy"),
                     api_key=groq_key,
                 )
             )

@@ -1,0 +1,40 @@
+# Version control
+.git
+.gitignore
+
+# Frontend & node dependencies
+node_modules
+apps/expo/node_modules
+apps/expo/dist
+apps/expo/.expo
+.expo/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Secrets & local environment files
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+
+# IDE & OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

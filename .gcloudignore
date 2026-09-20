@@ -1,0 +1,27 @@
+.gcloudignore
+.git
+.gitignore
+
+# Frontend & node dependencies
+node_modules
+apps/expo/node_modules
+apps/expo/dist
+apps/expo/.expo
+.expo/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
+env/
+venv/
+.venv/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem

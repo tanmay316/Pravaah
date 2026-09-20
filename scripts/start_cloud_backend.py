@@ -34,9 +34,11 @@ os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
 
 port = int(os.environ.get("PORT", "10000"))
 os.environ["PYTHONUNBUFFERED"] = "1"
-
-RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", "true").lower() in {"1", "true", "yes"}
-
+is_cloud_run = bool(os.environ.get("K_SERVICE"))
+default_run_voice = "false" if is_cloud_run else "true"
+RUN_VOICE_AGENT = os.environ.get("RUN_VOICE_AGENT", default_run_voice).lower() in {"1", "true", "yes"}
+if is_cloud_run:
+    logger.info("Detected Google Cloud Run runtime (service=%s). Voice agent co-hosting is disabled by default.", os.environ.get("K_SERVICE"))
 # Credentials come from the environment only. Never commit keys to the repo: anything
 # checked in is public to everyone who can read it and must be treated as compromised.
 REQUIRED_VARS = ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]

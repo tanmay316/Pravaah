@@ -48,6 +48,8 @@ import {
   VocabularyEntry,
   ProgressSummary,
   PRAVAAH_LEVEL_NAMES,
+  COACH_VOICES,
+  TtsVoice,
 } from "../lib/api";
 import { signOut } from "../lib/firebase";
 import { skillLabel } from "../lib/skills";
@@ -165,6 +167,7 @@ export default function DashboardScreen() {
   // Request sequence IDs to eliminate race conditions
   const goalRequestIdRef = useRef<number>(0);
   const hindiRequestIdRef = useRef<number>(0);
+  const voiceRequestIdRef = useRef<number>(0);
 
   // Fetch real data from backend
   const loadData = useCallback(async () => {
@@ -266,6 +269,17 @@ export default function DashboardScreen() {
       .catch((err) => {
         console.warn("Hindi support background update error:", err);
       });
+  };
+
+  // The agent reads this at session start, so only the next session changes voice.
+  const handleVoiceChange = (voice: TtsVoice) => {
+    const reqId = ++voiceRequestIdRef.current;
+    setProfile((prev) => (prev ? { ...prev, tts_voice: voice } : prev));
+    updateProfile({ tts_voice: voice })
+      .then((updated) => {
+        if (reqId === voiceRequestIdRef.current && updated) setProfile(updated);
+      })
+      .catch((err) => console.warn("Coach voice update error:", err));
   };
 
   const handleSignOut = async () => {
@@ -1408,6 +1422,38 @@ export default function DashboardScreen() {
               <View style={[styles.profileInfoRow, styles.profileInfoRowLast]}>
                 <Text style={styles.profileInfoLabel}>Words collected</Text>
                 <Text style={styles.profileInfoValue}>{vocabulary.length}</Text>
+              </View>
+            </View>
+
+            {/* Coach voice */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>COACH VOICE</Text>
+              <Text style={styles.settingsGroupDesc}>
+                Choose who you practise with. This applies to your next session.
+              </Text>
+
+              <View style={styles.voiceList}>
+                {COACH_VOICES.map((voice) => {
+                  const active = (profile?.tts_voice || "indian_female") === voice.value;
+                  return (
+                    <Pressable
+                      key={voice.value}
+                      style={[styles.voiceRow, active && styles.voiceRowActive]}
+                      onPress={() => handleVoiceChange(voice.value)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
+                    >
+                      <Ionicons
+                        name={active ? "radio-button-on" : "radio-button-off"}
+                        size={18}
+                        color={active ? theme.colors.irisGleam : theme.colors.fog}
+                      />
+                      <Text style={[styles.voiceRowText, active && styles.voiceRowTextActive]}>
+                        {voice.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
 
@@ -2898,6 +2944,33 @@ const styles = StyleSheet.create({
   supportChipsRow: {
     flexDirection: "row",
     gap: 6,
+  },
+  voiceList: {
+    gap: 6,
+  },
+  voiceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: theme.colors.abyss,
+    borderRadius: theme.radii.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+  },
+  voiceRowActive: {
+    borderColor: theme.colors.irisGleam,
+    backgroundColor: theme.colors.surfaceElevated,
+  },
+  voiceRowText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    color: theme.colors.fog,
+  },
+  voiceRowTextActive: {
+    color: theme.colors.pure,
+    fontWeight: "600",
   },
   supportChip: {
     flex: 1,

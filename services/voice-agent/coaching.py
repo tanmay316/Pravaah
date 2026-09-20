@@ -29,25 +29,47 @@ def is_meaningful_speech(text: str) -> bool:
 
 
 def stt_options(context: dict) -> dict:
-    language = context.get("speech_language", "auto")
+    """Pin the spoken language by default: Whisper is markedly more accurate when it
+    is not also guessing the language, and auto-detection on short Indian-accented
+    turns often mislabels English and returns an unrelated sentence.
+
+    No `prompt` is sent. That field is decoding context, not an instruction, so any
+    wording there biases the transcript toward itself and invents phrasing.
+    """
+    language = context.get("speech_language", "en")
     if language not in {"auto", "en", "hi"}:
-        language = "auto"
-    # Auto retains the fast multilingual path. Explicit Hindi favors accuracy;
-    # operators can select turbo for either path after measuring their audio.
+        language = "en"
     model = os.getenv("GROQ_STT_HINDI_MODEL", "whisper-large-v3") if language == "hi" else os.getenv(
-        "GROQ_STT_MODEL", "whisper-large-v3-turbo"
+        "GROQ_STT_MODEL", "whisper-large-v3"
     )
     return {
         "model": model,
         "language": "en" if language == "auto" else language,
         "detect_language": language == "auto",
-        "prompt": (
-            "Verbatim English and Hindi language-learning conversation. Hindi in Devanagari; "
-            "English words in English. Preserve code-switching, grammatical errors, repetitions "
-            "and incomplete sentences. Transcribe, do not translate or correct. "
-            "Do not invent speech during silence, music or background noise."
-        ),
     }
+
+
+# Learner-selectable coach voices. Each maps to the primary neural endpoint and to
+# the hosted fallback, so switching providers never changes who the learner hears.
+VOICE_CHOICES: dict[str, dict[str, str]] = {
+    "indian_male": {"label": "Aarav - Indian male", "neural": "en-IN-PrabhatNeural", "groq": "troy"},
+    "indian_female": {"label": "Ananya - Indian female", "neural": "en-IN-NeerjaNeural", "groq": "autumn"},
+    "british_male": {"label": "Oliver - British male", "neural": "en-GB-RyanNeural", "groq": "troy"},
+    "british_female": {"label": "Sophie - British female", "neural": "en-GB-SoniaNeural", "groq": "autumn"},
+    "us_male": {"label": "Ethan - American male", "neural": "en-US-GuyNeural", "groq": "troy"},
+    "us_female": {"label": "Ava - American female", "neural": "en-US-AriaNeural", "groq": "autumn"},
+}
+DEFAULT_VOICE = "indian_female"
+
+
+def tts_options(context: dict) -> dict:
+    """Resolve the learner's chosen coach voice for both TTS providers."""
+    choice = context.get("tts_voice")
+    voice = VOICE_CHOICES.get(choice) or VOICE_CHOICES[os.getenv("TTS_VOICE_DEFAULT", DEFAULT_VOICE)
+                                                      if os.getenv("TTS_VOICE_DEFAULT") in VOICE_CHOICES
+                                                      else DEFAULT_VOICE]
+    return {"neural": os.getenv("TTS_VOICE") or voice["neural"],
+            "groq": os.getenv("GROQ_TTS_VOICE") or voice["groq"]}
 
 
 class CorrectionCard(BaseModel):

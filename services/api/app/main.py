@@ -91,6 +91,9 @@ PRAVAAH_CEFR_REFERENCE = {
     "E": "A1", "D": "A1–A2", "C": "A2", "B": "B1", "A": "B2–C1", "S": "C1–C2+",
 }
 
+TTS_VOICES = {"indian_male", "indian_female", "british_male", "british_female", "us_male", "us_female"}
+DEFAULT_TTS_VOICE = "indian_female"
+
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -669,17 +672,19 @@ def _session_token_metadata(session_data: dict, uid: str, session_id: str) -> di
     saved = session_data.get("session_context") or session_data
     keys = (
         "learner_name", "mode", "target_skill", "lesson_id", "topic", "conversation_goal",
-        "roleplay_scenario", "pravaah_level", "hindi_support", "speech_language",
+        "roleplay_scenario", "pravaah_level", "hindi_support", "speech_language", "tts_voice",
         "lesson_title", "rule_summary", "practice_activity", "recent_examples",
     )
     metadata = {key: saved.get(key) for key in keys}
     metadata.update(user_id=uid, session_id=session_id)
-    metadata["speech_language"] = saved.get("speech_language") or "auto"
+    metadata["speech_language"] = saved.get("speech_language") or "en"
     metadata["hindi_support"] = saved.get("hindi_support") or "high"
     if metadata["speech_language"] not in {"auto", "en", "hi"}:
-        metadata["speech_language"] = "auto"
+        metadata["speech_language"] = "en"
     if metadata["hindi_support"] not in {"high", "occasional", "minimal", "off"}:
         metadata["hindi_support"] = "high"
+    if metadata.get("tts_voice") not in TTS_VOICES:
+        metadata["tts_voice"] = DEFAULT_TTS_VOICE
     metadata["recent_examples"] = _compact_examples(saved.get("recent_examples"))
     if metadata.get("mode") == "assessment" or metadata.get("conversation_goal") == "assessment":
         metadata.update(mode="assessment", conversation_goal="assessment", target_skill=None,
@@ -799,6 +804,7 @@ async def create_session(
         "roleplay_scenario": roleplay_scenario,
         "pravaah_level": profile_data.get("pravaah_level", "unassessed"),
         "hindi_support": profile_data.get("hindi_support", "high"),
+        "tts_voice": profile_data.get("tts_voice", DEFAULT_TTS_VOICE),
         "speech_language": body.speech_language,
     }, uid, session_id)
 

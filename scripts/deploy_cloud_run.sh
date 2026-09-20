@@ -58,7 +58,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --cpu "${CPU}" \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars RUN_VOICE_AGENT=false,TTS_VOICE=en-IN-PrabhatNeural,GROQ_TTS_VOICE=troy
+    --set-env-vars RUN_VOICE_AGENT=false,TTS_VOICE_DEFAULT=indian_female
 
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" --platform managed --region "${REGION}" --format 'value(status.url)')
 

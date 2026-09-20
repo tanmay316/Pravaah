@@ -208,7 +208,7 @@ export default function SessionScreen() {
     defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id)
   );
   const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(sessionMode));
-  const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
+  const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("en");
 
   // Sync topic whenever incoming params update or load
   useEffect(() => {
@@ -225,6 +225,7 @@ export default function SessionScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showSummary, setShowSummary] = useState(false);
   const [savingSummary, setSavingSummary] = useState(false);
+  const [saveIssue, setSaveIssue] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [activeCorrection, setActiveCorrection] = useState<InSessionCorrection | null>(null);
   const [correctionCount, setCorrectionCount] = useState(0);
@@ -687,13 +688,21 @@ export default function SessionScreen() {
           }))
         );
         if (result.retryable) {
-          setErrorMessage("Your session is saved, but learning analysis or plan updates could not finish. Tap the save button again to retry without counting the session twice.");
+          // The session and its minutes are already saved; only the coaching analysis
+          // is outstanding. Offer a retry but never hold the learner on this screen.
+          setSaveIssue(
+            "Session saved. Your corrections and plan update are still being processed, so they may appear a little later."
+          );
           return;
         }
       }
       router.replace("/");
     } catch (err: any) {
-      setErrorMessage(err?.message || "Could not save this session. Please retry.");
+      setSaveIssue(
+        err?.message === "NOT_AUTHENTICATED"
+          ? "Your sign-in expired, so this session could not be saved."
+          : err?.message || "Could not save this session."
+      );
     } finally {
       setSavingSummary(false);
     }
@@ -883,9 +892,9 @@ export default function SessionScreen() {
             <Text style={styles.setupStepLabel}>3 · SPEECH RECOGNITION LANGUAGE</Text>
             <View style={styles.chipWrap}>
               {([
-                { value: "auto", label: "Auto · Hindi / English" },
+                { value: "en", label: "English · best accuracy" },
                 { value: "hi", label: "Hindi" },
-                { value: "en", label: "English" },
+                { value: "auto", label: "Auto detect" },
               ] as const).map((option) => (
                 <Pressable
                   key={option.value}
@@ -1030,7 +1039,9 @@ export default function SessionScreen() {
               ? "Coach is speaking..."
               : learnerSpeaking
               ? "Listening to your voice..."
-              : "Speak naturally in English or Hindi"}
+              : speechLanguage === "hi"
+              ? "Speak in Hindi. The coach replies in English."
+              : "Speak in full sentences and pause when you finish."}
           </Text>
         </View>
 
@@ -1050,7 +1061,7 @@ export default function SessionScreen() {
                 ]}
               >
                 <Text style={styles.correctionPillText}>
-                  {activeCorrection.card_type === "translation" ? "🌐 HINDI ➔ ENGLISH" : "💡 COACH RECAST"}
+                  {activeCorrection.card_type === "translation" ? "IN ENGLISH" : "QUICK CORRECTION"}
                 </Text>
               </View>
               <Pressable onPress={() => setActiveCorrection(null)} hitSlop={12}>
@@ -1059,35 +1070,45 @@ export default function SessionScreen() {
             </View>
 
             <View style={styles.correctionSpeechComparison}>
-              <Text style={styles.originalSpeechText}>
-                {activeCorrection.card_type === "translation" ? "Hindi: " : "Said: "}
-                "{activeCorrection.original}"
-              </Text>
-              <Text style={styles.betterSpeechText}>
-                {activeCorrection.card_type === "translation" ? "English: " : "Better: "}
-                "{activeCorrection.corrected}"
-              </Text>
+              <View style={styles.correctionLine}>
+                <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
+                <Text style={styles.originalSpeechText} numberOfLines={3}>
+                  {activeCorrection.original}
+                </Text>
+              </View>
+              <View style={styles.correctionLine}>
+                <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
+                <Text style={styles.betterSpeechText} numberOfLines={3}>
+                  {activeCorrection.corrected}
+                </Text>
+              </View>
             </View>
 
             {activeCorrection.explanation ? (
-              <Text style={styles.correctionWhyText}>💡 {activeCorrection.explanation}</Text>
+              <Text style={styles.correctionWhyText} numberOfLines={3}>
+                {activeCorrection.explanation}
+              </Text>
             ) : null}
-            <Text style={styles.correctionWhyText}>
-              Say the English sentence aloud, then try your own example. It is okay to need another attempt.
-            </Text>
 
             <Pressable
               style={({ pressed }) => [styles.gotItBtn, pressed && styles.btnPressed]}
               onPress={() => setActiveCorrection(null)}
             >
-              <Text style={styles.gotItBtnText}>Keep practising →</Text>
+              <Text style={styles.gotItBtnText}>Got it</Text>
             </Pressable>
           </View>
         ) : null}
 
         {/* Live Conversation Chat Transcript */}
         <View style={styles.transcriptSection}>
-          <Text style={styles.transcriptSectionLabel}>LIVE TRANSCRIPT</Text>
+          <View style={styles.transcriptHeaderRow}>
+            <Text style={styles.transcriptSectionLabel}>LIVE TRANSCRIPT</Text>
+            {correctionCount > 0 ? (
+              <Text style={styles.transcriptCountLabel}>
+                {correctionCount} correction{correctionCount === 1 ? "" : "s"}
+              </Text>
+            ) : null}
+          </View>
           <ScrollView
             ref={transcriptScrollRef}
             contentContainerStyle={styles.transcriptContent}
@@ -1097,7 +1118,7 @@ export default function SessionScreen() {
               <View style={styles.emptyTranscriptBubble}>
                 <Ionicons name="mic-outline" size={16} color={theme.colors.fog} />
                 <Text style={styles.emptyTranscriptText}>
-                  Speak now. Your conversation will appear here in real time...
+                  Your conversation will appear here as you speak.
                 </Text>
               </View>
             ) : (
@@ -1224,7 +1245,12 @@ export default function SessionScreen() {
               Save your conversation to update your plan. Recorded mistakes and vocabulary
               will appear on the dashboard after analysis.
             </Text>
-            {errorMessage ? <Text style={styles.errorBannerText}>{errorMessage}</Text> : null}
+            {saveIssue ? (
+              <View style={styles.summaryNoticeBox}>
+                <Ionicons name="information-circle-outline" size={16} color={theme.colors.amberWarning} />
+                <Text style={styles.summaryNoticeText}>{saveIssue}</Text>
+              </View>
+            ) : null}
 
             <Pressable
               style={({ pressed }) => [styles.primaryReturnBtn, pressed && styles.btnPressed]}
@@ -1234,9 +1260,21 @@ export default function SessionScreen() {
               {savingSummary ? (
                 <ActivityIndicator size="small" color={theme.colors.void} />
               ) : (
-                <Text style={styles.primaryReturnBtnText}>Save & return to Dashboard →</Text>
+                <Text style={styles.primaryReturnBtnText}>
+                  {saveIssue ? "Try saving again" : "Save & return to Dashboard →"}
+                </Text>
               )}
             </Pressable>
+
+            {saveIssue ? (
+              <Pressable
+                style={({ pressed }) => [styles.secondaryReturnBtn, pressed && styles.btnPressed]}
+                onPress={() => router.replace("/")}
+                disabled={savingSummary}
+              >
+                <Text style={styles.secondaryReturnBtnText}>Back to dashboard</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -1680,19 +1718,27 @@ const styles = StyleSheet.create({
     color: theme.colors.paleIris,
   },
   correctionSpeechComparison: {
-    gap: 4,
-    marginBottom: 6,
+    gap: 6,
+    marginBottom: 8,
+  },
+  correctionLine: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
   },
   originalSpeechText: {
+    flex: 1,
     fontFamily: theme.fonts.sans,
     fontSize: 12,
-    color: theme.colors.crimsonError,
+    color: theme.colors.ash,
+    textDecorationLine: "line-through",
   },
   betterSpeechText: {
+    flex: 1,
     fontFamily: theme.fonts.sans,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "700",
-    color: theme.colors.emeraldSuccess,
+    color: theme.colors.pure,
   },
   correctionWhyText: {
     fontFamily: theme.fonts.sans,
@@ -1723,13 +1769,24 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 80,
   },
+  transcriptHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  transcriptCountLabel: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 10,
+    color: theme.colors.paleIris,
+    fontWeight: "700",
+  },
   transcriptSectionLabel: {
     fontFamily: theme.fonts.mono,
     fontSize: 10,
     color: theme.colors.fog,
     fontWeight: "700",
     letterSpacing: 0.8,
-    marginBottom: 8,
   },
   transcriptContent: {
     gap: 8,
@@ -1910,12 +1967,45 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: theme.spacing.lg,
   },
+  summaryNoticeBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "rgba(245, 183, 66, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(245, 183, 66, 0.35)",
+    borderRadius: theme.radii.sm,
+    padding: 10,
+    marginBottom: theme.spacing.md,
+  },
+  summaryNoticeText: {
+    flex: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    lineHeight: 17,
+    color: theme.colors.cloud,
+  },
   primaryReturnBtn: {
     height: 48,
     borderRadius: theme.radii.sm,
     backgroundColor: theme.colors.pure,
     alignItems: "center",
     justifyContent: "center",
+  },
+  secondaryReturnBtn: {
+    height: 44,
+    marginTop: 10,
+    borderRadius: theme.radii.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryReturnBtnText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
+    color: theme.colors.cloud,
   },
   primaryReturnBtnText: {
     fontFamily: theme.fonts.sans,

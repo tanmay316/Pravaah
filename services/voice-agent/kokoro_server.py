@@ -62,8 +62,11 @@ def get_kokoro():
 _tts_cache: dict[str, bytes] = {}
 MAX_CACHE = 400
 
-VALID_VOICES = {"en-IN-PrabhatNeural", "en-IN-NeerjaNeural", "hi-IN-SwaraNeural"}
-DEFAULT_VOICE = "en-IN-PrabhatNeural"
+VALID_VOICES = {
+    "en-IN-PrabhatNeural", "en-IN-NeerjaNeural", "hi-IN-SwaraNeural",
+    "en-GB-RyanNeural", "en-GB-SoniaNeural", "en-US-GuyNeural", "en-US-AriaNeural",
+}
+DEFAULT_VOICE = "en-IN-NeerjaNeural"
 
 PREWARM_PHRASES = [
     "Hello! Welcome to your English practice. How is your day going so far?",

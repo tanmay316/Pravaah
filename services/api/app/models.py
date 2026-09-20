@@ -47,6 +47,12 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
+# Coach voices the learner can pick; resolved to provider voice IDs in the agent.
+TtsVoice = Literal[
+    "indian_male", "indian_female", "british_male", "british_female", "us_male", "us_female",
+]
+
+
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
@@ -68,7 +74,7 @@ class CreateSessionRequest(BaseModel):
     mode: SessionMode = SessionMode.free_conversation
     target_skill: Optional[str] = Field(default=None, min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
     lesson_id: Optional[str] = Field(default=None, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-    speech_language: Literal["auto", "en", "hi"] = "auto"
+    speech_language: Literal["auto", "en", "hi"] = "en"
     topic: Optional[str] = Field(
         default=None, max_length=120,
         description="Learner-chosen subject, e.g. 'job interview', 'cricket', 'my daily routine'.",
@@ -149,6 +155,7 @@ class LearnerProfile(BaseModel):
     daily_goal_minutes: int = 15
     tutor_style: str = "encouraging"
     hindi_support: str = "high"  # high | occasional | minimal | off
+    tts_voice: TtsVoice = "indian_female"
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     developing_skills: list[str] = Field(default_factory=list)
@@ -169,6 +176,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     daily_goal_minutes: Optional[int] = None
     hindi_support: Optional[str] = None  # high | occasional | minimal | off
+    tts_voice: Optional[TtsVoice] = None
     target_language: Optional[str] = None
     native_language: Optional[str] = None
 

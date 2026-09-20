@@ -46,6 +46,24 @@ export const PRAVAAH_LEVEL_NAMES: Record<string, string> = {
   unassessed: "Unassessed",
 };
 
+export type TtsVoice =
+  | "indian_male"
+  | "indian_female"
+  | "british_male"
+  | "british_female"
+  | "us_male"
+  | "us_female";
+
+/** Must stay in sync with VOICE_CHOICES in services/voice-agent/coaching.py. */
+export const COACH_VOICES: { value: TtsVoice; label: string }[] = [
+  { value: "indian_female", label: "Ananya · Indian female" },
+  { value: "indian_male", label: "Aarav · Indian male" },
+  { value: "british_female", label: "Sophie · British female" },
+  { value: "british_male", label: "Oliver · British male" },
+  { value: "us_female", label: "Ava · American female" },
+  { value: "us_male", label: "Ethan · American male" },
+];
+
 export interface CreateSessionResponse {
   session_id: string;
   livekit_token: string;
@@ -68,6 +86,7 @@ export interface LearnerProfile {
   target_language: string;
   daily_goal_minutes: number;
   hindi_support: string;
+  tts_voice?: TtsVoice;
   strengths?: string[];
   weaknesses?: string[];
   developing_skills?: string[];
@@ -440,7 +459,6 @@ export type ConversationGoal =
   | "assessment";
 
 export type SpeechLanguage = "auto" | "hi" | "en";
-
 export interface CreateSessionOptions {
   mode?: string;
   targetSkill?: string;
@@ -463,7 +481,7 @@ export async function createSession(
       topic: options.topic?.trim() || null,
       conversation_goal: options.conversationGoal || null,
       roleplay_scenario: options.roleplayScenario?.trim() || null,
-      speech_language: options.speechLanguage || "auto",
+      speech_language: options.speechLanguage || "en",
     }),
   });
 }

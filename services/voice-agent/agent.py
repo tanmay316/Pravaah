@@ -41,7 +41,7 @@ from livekit.agents import tts as agent_tts
 from livekit.plugins import google, groq, openai, silero
 from openai import AsyncOpenAI
 
-from coaching import CARD_INSTRUCTIONS, CorrectionCard, is_meaningful_speech, stt_options
+from coaching import CARD_INSTRUCTIONS, CorrectionCard, is_meaningful_speech, stt_options, tts_options
 
 load_dotenv()
 
@@ -111,6 +111,7 @@ def parse_session_context(raw_metadata: str | None) -> dict:
         "mode", "conversation_goal", "topic", "roleplay_scenario", "learner_name",
         "target_skill", "lesson_id", "user_id", "session_id", "pravaah_level", "hindi_support",
         "lesson_title", "rule_summary", "practice_activity", "recent_examples", "speech_language",
+        "tts_voice",
     ):
         if parsed.get(key):
             ctx[key] = parsed[key]
@@ -541,11 +542,20 @@ async def entrypoint(ctx: JobContext):
 
     # VAD is not a noise canceller. Combine conservative activation with the client's
     # echo cancellation/noise suppression and require words before interrupting TTS.
+    # Cutting a turn early sends Whisper half a sentence, which it completes by
+    # guessing, so wait long enough for the learner to actually finish.
+    def _tuning(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except ValueError:
+            logger.warning("Ignoring non-numeric %s; using %s", name, default)
+            return default
+
     vad = silero.VAD.load(
-        activation_threshold=0.65,
+        activation_threshold=_tuning("VAD_ACTIVATION_THRESHOLD", 0.55),
         min_speech_duration=0.20,
-        min_silence_duration=0.35,
-        prefix_padding_duration=0.20,
+        min_silence_duration=_tuning("VAD_MIN_SILENCE", 0.60),
+        prefix_padding_duration=0.30,
     )
 
     # 2. Hindi can be explicitly selected instead of guessing language on tiny turns.
@@ -609,11 +619,12 @@ async def entrypoint(ctx: JobContext):
     # with Groq's hosted TTS behind it so a dead edge-tts host doesn't mute the coach.
     # TTS_BASE_URL must point at a host that is not competing with the agent for CPU.
     tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL") or "http://127.0.0.1:10000/v1"
-    logger.info("Primary TTS endpoint: %s", tts_base_url)
+    voices = tts_options(lesson_context)
+    logger.info("Primary TTS endpoint: %s (voice=%s)", tts_base_url, voices["neural"])
     tts_candidates = [
         openai.TTS(
             model="tts-1",
-            voice=os.getenv("TTS_VOICE", "en-IN-PrabhatNeural"),
+            voice=voices["neural"],
             api_key="not-needed",
             base_url=tts_base_url,
         )
@@ -624,7 +635,7 @@ async def entrypoint(ctx: JobContext):
             tts_candidates.append(
                 groq.TTS(
                     model=os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english"),
-                    voice=os.getenv("GROQ_TTS_VOICE", "troy"),
+                    voice=voices["groq"],
                     api_key=groq_key,
                 )
             )
@@ -642,8 +653,8 @@ async def entrypoint(ctx: JobContext):
         llm=llm,
         tts=tts,
         turn_detection="vad",
-        min_endpointing_delay=0.18,
-        max_endpointing_delay=0.80,
+        min_endpointing_delay=_tuning("MIN_ENDPOINTING_DELAY", 0.40),
+        max_endpointing_delay=_tuning("MAX_ENDPOINTING_DELAY", 1.20),
         preemptive_generation=True,
         allow_interruptions=True,
         min_interruption_duration=0.35,  # Protects against wind puffs or breath bursts during walking/running

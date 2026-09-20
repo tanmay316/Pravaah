@@ -60,24 +60,43 @@ class SpeechPolicyTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(policy.is_meaningful_speech(text))
 
-    def test_language_modes_and_verbatim_prompt(self):
+    def test_language_modes_never_send_a_biasing_whisper_prompt(self):
         with patch.dict(os.environ, {}, clear=True):
-            auto = policy.stt_options({})
-            self.assertTrue(auto["detect_language"])
-            self.assertEqual(auto["model"], "whisper-large-v3-turbo")
+            default = policy.stt_options({})
+            # A prompt is decoding context, not an instruction: it rewrites transcripts.
+            self.assertNotIn("prompt", default)
+            # Pinning the language stops auto-detect mislabelling accented English.
+            self.assertEqual(default["language"], "en")
+            self.assertFalse(default["detect_language"])
+            self.assertEqual(default["model"], "whisper-large-v3")
             hindi = policy.stt_options({"speech_language": "hi"})
             self.assertEqual(hindi["language"], "hi")
-            self.assertEqual(hindi["model"], "whisper-large-v3")
             self.assertFalse(hindi["detect_language"])
-            self.assertFalse(policy.stt_options({"speech_language": "en"})["detect_language"])
-            self.assertTrue(policy.stt_options({"speech_language": "invalid"})["detect_language"])
-            self.assertIn("do not translate or correct", auto["prompt"])
+            self.assertTrue(policy.stt_options({"speech_language": "auto"})["detect_language"])
+            self.assertFalse(policy.stt_options({"speech_language": "invalid"})["detect_language"])
+
+    def test_voice_choice_resolves_for_both_providers(self):
+        with patch.dict(os.environ, {}, clear=True):
+            default = policy.tts_options({})
+            self.assertEqual(default["neural"], "en-IN-NeerjaNeural")
+            chosen = policy.tts_options({"tts_voice": "british_male"})
+            self.assertEqual(chosen["neural"], "en-GB-RyanNeural")
+            self.assertEqual(chosen["groq"], "troy")
+            # An unknown or missing choice must still produce a usable voice.
+            self.assertEqual(policy.tts_options({"tts_voice": "nope"}), default)
+            for voice in policy.VOICE_CHOICES.values():
+                self.assertTrue(voice["neural"] and voice["groq"] and voice["label"])
+
+    def test_operator_overrides_win_over_learner_choice(self):
+        with patch.dict(os.environ, {"TTS_VOICE": "en-IN-PrabhatNeural", "GROQ_TTS_VOICE": "autumn"}):
+            forced = policy.tts_options({"tts_voice": "us_female"})
+            self.assertEqual(forced["neural"], "en-IN-PrabhatNeural")
+            self.assertEqual(forced["groq"], "autumn")
 
     def test_model_overrides(self):
         with patch.dict(os.environ, {"GROQ_STT_HINDI_MODEL": "custom", "GROQ_STT_MODEL": "fast"}):
             self.assertEqual(policy.stt_options({"speech_language": "hi"})["model"], "custom")
             self.assertEqual(policy.stt_options({})["model"], "fast")
-
     def test_card_requires_confidence_and_exact_evidence(self):
         card = {"has_card": True, "original": "I go yesterday", "corrected": "I went yesterday", "confidence": 0.95}
         self.assertIsNotNone(policy.CorrectionCard(**card).for_utterance("I go yesterday."))

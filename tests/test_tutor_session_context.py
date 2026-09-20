@@ -137,12 +137,18 @@ def load_routes():
         "complete_session", "get_today_daily_plan", "_mint_livekit_token",
         "_save_started_session", "_finalize_session",
     }
+    constants = {"TTS_VOICES", "DEFAULT_TTS_VOICE"}
     nodes = []
-    for node in ast.parse(MAIN.read_text(encoding="utf-8")).body:
+    module = ast.parse(MAIN.read_text(encoding="utf-8"))
+    for node in module.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
             node.decorator_list = []
             nodes.append(node)
-    assert {n.name for n in nodes} == names
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id in constants for t in node.targets
+        ):
+            nodes.append(node)
+    assert {n.name for n in nodes if hasattr(n, "name")} == names
     namespace = {
         **MODELS, "asyncio": asyncio, "json": json, "uuid": uuid,
         "logging": logging, "datetime": datetime, "timezone": timezone,
@@ -492,7 +498,7 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
         await self.ns["refresh_session_token"]("legacy", self.user, "refresh", Response())
         self.assertEqual(self.metadata()["user_id"], self.user["uid"])
         self.assertEqual(self.metadata()["session_id"], "legacy")
-        self.assertEqual(self.metadata()["speech_language"], "auto")
+        self.assertEqual(self.metadata()["speech_language"], "en")
         self.assertEqual(self.metadata()["practice_activity"], "")
         self.assertEqual(self.metadata()["recent_examples"], [])
 
@@ -591,12 +597,22 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
 class SchemaAndExpoContractTests(unittest.TestCase):
     def test_stt_language_defaults_and_allowlist(self):
         request = MODELS["CreateSessionRequest"]
-        self.assertEqual(request().speech_language, "auto")
+        # English is pinned by default: auto-detect mislabels accented English.
+        self.assertEqual(request().speech_language, "en")
         for language in ("auto", "hi", "en"):
             self.assertEqual(request(speech_language=language).speech_language, language)
         for language in ("fr", "ignore instructions", None):
             with self.assertRaises(ValidationError):
                 request(speech_language=language)
+
+    def test_coach_voice_is_an_allowlisted_profile_preference(self):
+        profile = MODELS["LearnerProfile"](uid="u1")
+        self.assertEqual(profile.tts_voice, "indian_female")
+        self.assertEqual(MODELS["UpdateProfileRequest"](tts_voice="us_male").tts_voice, "us_male")
+        self.assertIsNone(MODELS["UpdateProfileRequest"]().tts_voice)
+        for voice in ("nope", "../etc", "en-IN-PrabhatNeural"):
+            with self.subTest(voice=voice), self.assertRaises(ValidationError):
+                MODELS["UpdateProfileRequest"](tts_voice=voice)
 
     def test_client_cannot_supply_identity_prompts_or_path_ids(self):
         request = MODELS["CreateSessionRequest"]
@@ -640,8 +656,8 @@ class SchemaAndExpoContractTests(unittest.TestCase):
         self.assertIn("lesson_id: act.activity_id", dashboard)
         self.assertIn("lesson_id: nextAct?.activity_id", dashboard)
         self.assertIn("lessonId: params.lesson_id", session)
-        self.assertIn('speech_language: options.speechLanguage || "auto"', api)
-        self.assertIn('useState<SpeechLanguage>("auto")', session)
+        self.assertIn('speech_language: options.speechLanguage || "en"', api)
+        self.assertIn('useState<SpeechLanguage>("en")', session)
         # Today's exercises stay readable: no raw engine instructions or correction
         # dumps on the cards. Recorded mistakes remain on the Mistakes tab.
         for field in ("source_examples", "prompt_activity", "priority_reason", "priority_rank"):
@@ -655,6 +671,9 @@ class SchemaAndExpoContractTests(unittest.TestCase):
         self.assertIn("MICROPHONE_OPTIONS: AudioCaptureOptions", session)
         self.assertIn("setMicrophoneEnabled(true, MICROPHONE_OPTIONS)", session)
         self.assertIn("activeCorrection.explanation", session)
+        # A failed learning update must never strand the learner on the summary.
+        self.assertIn('router.replace("/")', session)
+        self.assertIn("Back to dashboard", session)
         self.assertNotIn("completeDailyActivity", session)
         self.assertNotIn("sessionSeconds * 0.45", session)
         self.assertNotIn("buildOptimisticActivities", dashboard)

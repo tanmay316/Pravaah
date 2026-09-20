@@ -13,9 +13,11 @@ Design constraints this file is written against:
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -508,6 +510,37 @@ class EnglishTutor(Agent):
 # Agent entrypoint
 # ---------------------------------------------------------------------------
 
+def _tuning(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        logger.warning("Ignoring non-numeric %s; using %s", name, default)
+        return default
+
+
+def load_vad():
+    """VAD is not a noise canceller. Combine conservative activation with the client's
+    echo cancellation/noise suppression and require words before interrupting TTS.
+    Cutting a turn early sends Whisper half a sentence, which it completes by
+    guessing, so wait long enough for the learner to actually finish.
+    """
+    return silero.VAD.load(
+        activation_threshold=_tuning("VAD_ACTIVATION_THRESHOLD", 0.55),
+        min_speech_duration=0.20,
+        min_silence_duration=_tuning("VAD_MIN_SILENCE", 0.60),
+        prefix_padding_duration=0.30,
+    )
+
+
+def prewarm(proc):
+    """Loading Silero takes seconds on a shared CPU. Doing it here keeps it off the
+    join path, where the learner is already staring at a connected call.
+    """
+    started = time.monotonic()
+    proc.userdata["vad"] = load_vad()
+    logger.info("Prewarmed VAD in %.2fs", time.monotonic() - started)
+
+
 async def entrypoint(ctx: JobContext):
     """LiveKit Agents entrypoint."""
 
@@ -540,23 +573,12 @@ async def entrypoint(ctx: JobContext):
         lesson_context.get("topic"), target_skill,
     )
 
-    # VAD is not a noise canceller. Combine conservative activation with the client's
-    # echo cancellation/noise suppression and require words before interrupting TTS.
-    # Cutting a turn early sends Whisper half a sentence, which it completes by
-    # guessing, so wait long enough for the learner to actually finish.
-    def _tuning(name: str, default: float) -> float:
-        try:
-            return float(os.getenv(name, default))
-        except ValueError:
-            logger.warning("Ignoring non-numeric %s; using %s", name, default)
-            return default
-
-    vad = silero.VAD.load(
-        activation_threshold=_tuning("VAD_ACTIVATION_THRESHOLD", 0.55),
-        min_speech_duration=0.20,
-        min_silence_duration=_tuning("VAD_MIN_SILENCE", 0.60),
-        prefix_padding_duration=0.30,
-    )
+    # VAD is prewarmed per runner; only a cold/failed prewarm pays the load cost here.
+    proc = getattr(ctx, "proc", None)
+    vad = proc.userdata.get("vad") if proc is not None else None
+    if vad is None:
+        logger.warning("VAD was not prewarmed; loading it on the join path.")
+        vad = load_vad()
 
     # 2. Hindi can be explicitly selected instead of guessing language on tiny turns.
     stt_provider = os.getenv("STT_PROVIDER", "groq_turbo").lower()
@@ -680,7 +702,9 @@ async def entrypoint(ctx: JobContext):
         values = {key: getattr(metric, key) for key in (
             "ttft", "ttfb", "end_of_utterance_delay", "transcription_delay", "duration",
         ) if getattr(metric, key, None) is not None}
-        logger.info("Voice timing session=%s type=%s values=%s", session_id, metric.type, values)
+        # VAD reports every inference window and carries no timing worth a log line.
+        if values:
+            logger.info("Voice timing session=%s type=%s values=%s", session_id, metric.type, values)
 
     # Broadcast every turn to UI transcript & record messages
     @session.on("conversation_item_added")
@@ -831,14 +855,21 @@ if __name__ == "__main__":
     )
     logger.info("Starting worker with %s job executor", executor_type)
 
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-            job_executor_type=executor_type,
-            num_idle_processes=int(os.getenv("NUM_IDLE_PROCESSES", "0")),
-            host="127.0.0.1",
-            port=0,
-            load_threshold=float("inf"),
-        ),
-    )
+    options = {
+        "entrypoint_fnc": entrypoint,
+        "prewarm_fnc": prewarm,
+        "job_executor_type": executor_type,
+        # A cold runner has to load Silero before the learner hears anything, so keep
+        # one warmed. Raise it only if the host can afford another resident model.
+        "num_idle_processes": int(os.getenv("NUM_IDLE_PROCESSES", "1")),
+        "host": "127.0.0.1",
+        "port": 0,
+        "load_threshold": float("inf"),
+    }
+    # Prewarming can exceed the stock 10s init budget on a shared CPU; older
+    # livekit-agents releases in our supported range lack this option.
+    if "initialize_process_timeout" in {f.name for f in dataclasses.fields(WorkerOptions)}:
+        options["initialize_process_timeout"] = _tuning("PREWARM_TIMEOUT", 60.0)
+
+    cli.run_app(WorkerOptions(**options))
 

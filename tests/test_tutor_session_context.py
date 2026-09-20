@@ -607,8 +607,8 @@ class SchemaAndExpoContractTests(unittest.TestCase):
 
     def test_coach_voice_is_an_allowlisted_profile_preference(self):
         profile = MODELS["LearnerProfile"](uid="u1")
-        self.assertEqual(profile.tts_voice, "indian_female")
-        self.assertEqual(MODELS["UpdateProfileRequest"](tts_voice="us_male").tts_voice, "us_male")
+        self.assertEqual(profile.tts_voice, "warm_male")
+        self.assertEqual(MODELS["UpdateProfileRequest"](tts_voice="indian_male").tts_voice, "indian_male")
         self.assertIsNone(MODELS["UpdateProfileRequest"]().tts_voice)
         for voice in ("nope", "../etc", "en-IN-PrabhatNeural"):
             with self.subTest(voice=voice), self.assertRaises(ValidationError):

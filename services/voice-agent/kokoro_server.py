@@ -63,10 +63,11 @@ _tts_cache: dict[str, bytes] = {}
 MAX_CACHE = 400
 
 VALID_VOICES = {
+    "en-US-AndrewNeural", "en-US-BrianNeural", "en-US-AvaNeural",
+    "en-GB-RyanNeural", "en-GB-SoniaNeural",
     "en-IN-PrabhatNeural", "en-IN-NeerjaNeural", "hi-IN-SwaraNeural",
-    "en-GB-RyanNeural", "en-GB-SoniaNeural", "en-US-GuyNeural", "en-US-AriaNeural",
 }
-DEFAULT_VOICE = "en-IN-NeerjaNeural"
+DEFAULT_VOICE = "en-US-AndrewNeural"
 
 PREWARM_PHRASES = [
     "Hello! Welcome to your English practice. How is your day going so far?",

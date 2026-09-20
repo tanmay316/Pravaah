@@ -47,21 +47,23 @@ export const PRAVAAH_LEVEL_NAMES: Record<string, string> = {
 };
 
 export type TtsVoice =
+  | "warm_male"
+  | "casual_male"
+  | "british_male"
   | "indian_male"
   | "indian_female"
-  | "british_male"
   | "british_female"
-  | "us_male"
   | "us_female";
 
 /** Must stay in sync with VOICE_CHOICES in services/voice-agent/coaching.py. */
 export const COACH_VOICES: { value: TtsVoice; label: string }[] = [
-  { value: "indian_female", label: "Ananya · Indian female" },
-  { value: "indian_male", label: "Aarav · Indian male" },
-  { value: "british_female", label: "Sophie · British female" },
+  { value: "warm_male", label: "Arjun · warm male" },
+  { value: "casual_male", label: "Neil · relaxed male" },
   { value: "british_male", label: "Oliver · British male" },
+  { value: "indian_male", label: "Prabhat · Indian male" },
+  { value: "indian_female", label: "Ananya · Indian female" },
+  { value: "british_female", label: "Sophie · British female" },
   { value: "us_female", label: "Ava · American female" },
-  { value: "us_male", label: "Ethan · American male" },
 ];
 
 export interface CreateSessionResponse {

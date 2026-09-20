@@ -91,8 +91,9 @@ PRAVAAH_CEFR_REFERENCE = {
     "E": "A1", "D": "A1–A2", "C": "A2", "B": "B1", "A": "B2–C1", "S": "C1–C2+",
 }
 
-TTS_VOICES = {"indian_male", "indian_female", "british_male", "british_female", "us_male", "us_female"}
-DEFAULT_TTS_VOICE = "indian_female"
+TTS_VOICES = {"warm_male", "casual_male", "british_male", "indian_male",
+              "indian_female", "british_female", "us_female"}
+DEFAULT_TTS_VOICE = "warm_male"
 
 load_dotenv()
 

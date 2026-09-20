@@ -51,15 +51,17 @@ def stt_options(context: dict) -> dict:
 
 # Learner-selectable coach voices. Each maps to the primary neural endpoint and to
 # the hosted fallback, so switching providers never changes who the learner hears.
+# Neural IDs verified against the edge-tts voice catalogue.
 VOICE_CHOICES: dict[str, dict[str, str]] = {
-    "indian_male": {"label": "Aarav - Indian male", "neural": "en-IN-PrabhatNeural", "groq": "troy"},
-    "indian_female": {"label": "Ananya - Indian female", "neural": "en-IN-NeerjaNeural", "groq": "autumn"},
+    "warm_male": {"label": "Arjun - warm male", "neural": "en-US-AndrewNeural", "groq": "troy"},
+    "casual_male": {"label": "Neil - relaxed male", "neural": "en-US-BrianNeural", "groq": "troy"},
     "british_male": {"label": "Oliver - British male", "neural": "en-GB-RyanNeural", "groq": "troy"},
+    "indian_male": {"label": "Prabhat - Indian male", "neural": "en-IN-PrabhatNeural", "groq": "troy"},
+    "indian_female": {"label": "Ananya - Indian female", "neural": "en-IN-NeerjaNeural", "groq": "autumn"},
     "british_female": {"label": "Sophie - British female", "neural": "en-GB-SoniaNeural", "groq": "autumn"},
-    "us_male": {"label": "Ethan - American male", "neural": "en-US-GuyNeural", "groq": "troy"},
-    "us_female": {"label": "Ava - American female", "neural": "en-US-AriaNeural", "groq": "autumn"},
+    "us_female": {"label": "Ava - American female", "neural": "en-US-AvaNeural", "groq": "autumn"},
 }
-DEFAULT_VOICE = "indian_female"
+DEFAULT_VOICE = "warm_male"
 
 
 def tts_options(context: dict) -> dict:

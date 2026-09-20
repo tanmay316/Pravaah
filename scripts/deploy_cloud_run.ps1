@@ -46,7 +46,7 @@ gcloud run deploy $ServiceName `
     --cpu $Cpu `
     --min-instances 0 `
     --max-instances 10 `
-    --set-env-vars RUN_VOICE_AGENT=false,TTS_VOICE_DEFAULT=indian_female
+    --set-env-vars RUN_VOICE_AGENT=false,TTS_VOICE_DEFAULT=warm_male
 
 $serviceUrl = (gcloud run services describe $ServiceName --platform managed --region $Region --format 'value(status.url)').Trim()
 

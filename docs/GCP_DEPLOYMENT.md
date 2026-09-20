@@ -67,7 +67,7 @@ Google Cloud Shell is a free web terminal inside your browser with `gcloud` and 
    * `LIVEKIT_API_SECRET` = `<your_livekit_secret>`
    * `GROQ_API_KEY` = `<your_groq_key>`
    * `GEMINI_API_KEY` = `<your_gemini_key>`
-   * `TTS_VOICE_DEFAULT` = `indian_female`
+   * `TTS_VOICE_DEFAULT` = `warm_male`
    * `FIREBASE_SERVICE_ACCOUNT_JSON` = `<paste your json string>`
 9. Click **Create**!
 

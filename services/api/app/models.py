@@ -49,7 +49,8 @@ class ErrorResponse(BaseModel):
 
 # Coach voices the learner can pick; resolved to provider voice IDs in the agent.
 TtsVoice = Literal[
-    "indian_male", "indian_female", "british_male", "british_female", "us_male", "us_female",
+    "warm_male", "casual_male", "british_male", "indian_male",
+    "indian_female", "british_female", "us_female",
 ]
 
 
@@ -155,7 +156,7 @@ class LearnerProfile(BaseModel):
     daily_goal_minutes: int = 15
     tutor_style: str = "encouraging"
     hindi_support: str = "high"  # high | occasional | minimal | off
-    tts_voice: TtsVoice = "indian_female"
+    tts_voice: TtsVoice = "warm_male"
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     developing_skills: list[str] = Field(default_factory=list)

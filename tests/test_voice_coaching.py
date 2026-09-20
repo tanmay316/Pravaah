@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -33,15 +34,17 @@ class StubAgent:
     default = SimpleNamespace(llm_node=None)
 
 
-def agent_namespace():
+def agent_namespace(silero=None):
     tree = ast.parse((VOICE / "agent.py").read_text(encoding="utf-8"))
     names = {"DEFAULT_CONTEXT", "first_name", "parse_session_context", "build_mode_instructions",
-             "build_greeting", "EnglishTutor", "run_parallel_accuracy_check"}
+             "build_greeting", "EnglishTutor", "run_parallel_accuracy_check",
+             "_tuning", "load_vad", "prewarm"}
     nodes = [n for n in tree.body if getattr(n, "name", None) in names or (
         isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names for t in n.targets))]
-    namespace = {"asyncio": asyncio, "os": os, "json": json, "Agent": StubAgent,
+    namespace = {"asyncio": asyncio, "os": os, "json": json, "time": time, "Agent": StubAgent,
                  "agent_llm": SimpleNamespace(StopResponse=StopResponse),
                  "logger": logging.getLogger("test-voice"), "AsyncOpenAI": Mock(),
+                 "silero": silero or SimpleNamespace(VAD=SimpleNamespace(load=Mock())),
                  "GEMINI_CARD_CHAIN": ["test-model"], "emit_event": AsyncMock(), "make_event": Mock(),
                  **{n: getattr(policy, n) for n in (
                      "is_meaningful_speech", "CorrectionCard", "CARD_INSTRUCTIONS")}}
@@ -78,7 +81,7 @@ class SpeechPolicyTests(unittest.TestCase):
     def test_voice_choice_resolves_for_both_providers(self):
         with patch.dict(os.environ, {}, clear=True):
             default = policy.tts_options({})
-            self.assertEqual(default["neural"], "en-IN-NeerjaNeural")
+            self.assertEqual(default["neural"], "en-US-AndrewNeural")
             chosen = policy.tts_options({"tts_voice": "british_male"})
             self.assertEqual(chosen["neural"], "en-GB-RyanNeural")
             self.assertEqual(chosen["groq"], "troy")
@@ -105,10 +108,53 @@ class SpeechPolicyTests(unittest.TestCase):
         self.assertIsNone(policy.CorrectionCard(**{**card, "corrected": card["original"]}).for_utterance(card["original"]))
 
 
+class StartupLatencyTests(unittest.TestCase):
+    """The Silero load cost must be paid before a learner joins, not during the call."""
+
+    def namespace(self):
+        self.load = Mock(return_value=SimpleNamespace(name="silero"))
+        return agent_namespace(SimpleNamespace(VAD=SimpleNamespace(load=self.load)))
+
+    def test_prewarm_loads_vad_into_runner_userdata(self):
+        ns = self.namespace()
+        proc = SimpleNamespace(userdata={})
+        ns["prewarm"](proc)
+        self.assertIs(proc.userdata["vad"], self.load.return_value)
+        self.load.assert_called_once()
+
+    def test_prewarm_uses_the_same_tuning_as_the_join_path(self):
+        ns = self.namespace()
+        with patch.dict(os.environ, {}, clear=True):
+            proc = SimpleNamespace(userdata={})
+            ns["prewarm"](proc)
+            prewarmed = self.load.call_args.kwargs
+            ns["load_vad"]()
+        self.assertEqual(prewarmed, self.load.call_args.kwargs)
+        self.assertEqual(prewarmed["min_silence_duration"], 0.60)
+        self.assertEqual(prewarmed["activation_threshold"], 0.55)
+
+    def test_turn_taking_values_are_operator_tunable(self):
+        ns = self.namespace()
+        with patch.dict(os.environ, {"VAD_MIN_SILENCE": "0.9", "VAD_ACTIVATION_THRESHOLD": "0.7"}):
+            ns["load_vad"]()
+        self.assertEqual(self.load.call_args.kwargs["min_silence_duration"], 0.9)
+        self.assertEqual(self.load.call_args.kwargs["activation_threshold"], 0.7)
+
+    def test_bad_tuning_value_falls_back_instead_of_crashing_the_worker(self):
+        ns = self.namespace()
+        with patch.dict(os.environ, {"VAD_MIN_SILENCE": "not-a-number"}):
+            self.assertEqual(ns["_tuning"]("VAD_MIN_SILENCE", 0.60), 0.60)
+
+    def test_worker_keeps_a_warm_runner_and_registers_prewarm(self):
+        source = (VOICE / "agent.py").read_text(encoding="utf-8")
+        # num_idle_processes=0 leaves every call waiting for a cold runner.
+        self.assertIn('"prewarm_fnc": prewarm', source)
+        self.assertIn('os.getenv("NUM_IDLE_PROCESSES", "1")', source)
+
+
 class PromptTests(unittest.TestCase):
     def setUp(self):
         self.ns = agent_namespace()
-
     def test_all_practice_modes_teach_and_retry(self):
         for mode, goal in [("free_conversation", "intro"), ("roleplay", "roleplay"),
                            ("grammar_practice", "grammar"), ("vocabulary_practice", "vocabulary"),

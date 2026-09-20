@@ -1434,7 +1434,7 @@ export default function DashboardScreen() {
 
               <View style={styles.voiceList}>
                 {COACH_VOICES.map((voice) => {
-                  const active = (profile?.tts_voice || "indian_female") === voice.value;
+                  const active = (profile?.tts_voice || "warm_male") === voice.value;
                   return (
                     <Pressable
                       key={voice.value}

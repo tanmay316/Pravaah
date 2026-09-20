@@ -160,6 +160,7 @@ export default function DashboardScreen() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [refreshingPlan, setRefreshingPlan] = useState(false);
   const [savingGoal, setSavingGoal] = useState(false);
+  const [pendingGoal, setPendingGoal] = useState<number | null>(null);
 
   // Request sequence IDs to eliminate race conditions
   const goalRequestIdRef = useRef<number>(0);
@@ -225,6 +226,7 @@ export default function DashboardScreen() {
     if (savingGoal || refreshingPlan) return;
     const reqId = ++goalRequestIdRef.current;
     setSavingGoal(true);
+    setPendingGoal(minutes);
     setErrorMessage(null);
     try {
       const res = await setDailyGoal(minutes);
@@ -235,7 +237,10 @@ export default function DashboardScreen() {
     } catch (err: any) {
       setErrorMessage(err?.message || "Could not update your goal. Your previous plan is unchanged.");
     } finally {
-      if (reqId === goalRequestIdRef.current) setSavingGoal(false);
+      if (reqId === goalRequestIdRef.current) {
+        setSavingGoal(false);
+        setPendingGoal(null);
+      }
     }
   };
 
@@ -413,12 +418,14 @@ export default function DashboardScreen() {
   const levelName = PRAVAAH_LEVEL_NAMES[userLevel] || (userLevel === "unassessed" ? "Unassessed" : "Elementary");
   const cefrRef = profile?.cefr_reference || (userLevel === "unassessed" ? "Not Assessed" : "A1");
   const currentGoal = dailyPlan?.goal_minutes || profile?.daily_goal_minutes || 30;
+  const selectedGoal = pendingGoal ?? currentGoal;
   const completedMins = dailyPlan?.completed_minutes || 0;
   const progressPercent = currentGoal > 0 ? Math.min(100, Math.round((completedMins / currentGoal) * 100)) : 0;
   // The engine sequences correction, transfer and review. Skill priority is not
   // an activity ordering: sorting by it would move retention ahead of practice.
   const orderedActivities = dailyPlan?.activities || [];
   const nextUnfinishedActivity = orderedActivities.find((a) => !a.is_completed);
+  const completedActivityCount = orderedActivities.filter((a) => a.is_completed).length;
 
   // Identity comes from the signed-in account, resolved server-side from the Firebase token.
   const displayName = profile?.display_name || profile?.email?.split("@")[0] || "";
@@ -602,7 +609,7 @@ export default function DashboardScreen() {
                     key={mins}
                     style={[
                       styles.goalChip,
-                      currentGoal === mins && styles.goalChipActive,
+                      selectedGoal === mins && styles.goalChipActive,
                     ]}
                     onPress={() => handleGoalChange(mins)}
                     disabled={savingGoal || refreshingPlan}
@@ -610,7 +617,7 @@ export default function DashboardScreen() {
                     <Text
                       style={[
                         styles.goalChipText,
-                        currentGoal === mins && styles.goalChipTextActive,
+                        selectedGoal === mins && styles.goalChipTextActive,
                       ]}
                     >
                       {mins}m
@@ -624,11 +631,18 @@ export default function DashboardScreen() {
                 <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
               </View>
 
-              <Text style={styles.progressSubtext}>
-                {dailyPlan?.activities?.filter((a) => a.is_completed).length || 0} of{" "}
-                {dailyPlan?.activities?.length || 0} exercises finished today
-              </Text>
-              {savingGoal ? <ActivityIndicator size="small" color={theme.colors.paleIris} /> : null}
+              {savingGoal ? (
+                <View style={styles.goalStatusRow}>
+                  <ActivityIndicator size="small" color={theme.colors.paleIris} />
+                  <Text style={styles.progressSubtext}>
+                    Rebuilding today's exercises for {pendingGoal ?? selectedGoal} minutes...
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.progressSubtext}>
+                  {completedActivityCount} of {orderedActivities.length} exercises finished today
+                </Text>
+              )}
             </View>
 
             {/* ACTIVITY SEQUENCE TIMELINE */}
@@ -652,10 +666,7 @@ export default function DashboardScreen() {
 
             {priorityFocus.length > 0 ? (
               <Text style={styles.planRationaleText}>
-                Your current focus: {priorityFocus.slice(0, 2).map((s) => s.title).join(" and ")}
-                {priorityFocus[0].mistake_count > 0
-                  ? ` — your most frequent recent mistakes.`
-                  : ` — your weakest skills so far.`}
+                Built around {priorityFocus.slice(0, 2).map((s) => s.title).join(" and ")}.
               </Text>
             ) : null}
 
@@ -676,6 +687,10 @@ export default function DashboardScreen() {
                       ? "cafe-outline"
                       : activity.mode === "grammar_practice"
                       ? "radio-button-on-outline"
+                      : activity.mode === "roleplay"
+                      ? "people-outline"
+                      : activity.mode === "review"
+                      ? "refresh-outline"
                       : "chatbubble-ellipses-outline";
 
                   return (
@@ -714,18 +729,18 @@ export default function DashboardScreen() {
                             <Ionicons name={modeIcon as any} size={12} color={theme.colors.paleIris} />
                             <Text style={styles.modeTagText}>
                               {activity.mode === "free_conversation"
-                                ? "COACHED CONVERSATION"
+                                ? "CONVERSATION"
                                 : activity.mode === "grammar_practice"
                                 ? "PRECISION"
                                 : activity.mode === "roleplay"
                                 ? "ROLEPLAY"
                                 : activity.mode === "review"
-                                ? "RETRY & REVIEW"
+                                ? "REVIEW"
                                 : "VOCABULARY"}
                             </Text>
                           </View>
                           <Text style={styles.activityDurationText}>
-                            ⏱ {activity.duration_minutes}m
+                            {activity.duration_minutes} min
                           </Text>
                           {activity.is_completed ? (
                             <View style={styles.doneBadge}>
@@ -738,28 +753,19 @@ export default function DashboardScreen() {
                           ) : null}
                         </View>
 
-                        <Text style={styles.activityTitle}>{activity.title}</Text>
+                        <Text style={styles.activityTitle} numberOfLines={2}>
+                          {activity.title}
+                        </Text>
                         <Text style={styles.activityObjective} numberOfLines={2}>
                           {activity.objective}
                         </Text>
-                        {activity.priority_reason ? (
-                          <Text style={styles.focusRuleText}>
-                            {activity.priority_rank != null ? `Skill priority ${activity.priority_rank} · ` : "Why this exercise: "}
-                            {activity.priority_reason.replace(/_/g, " ")}
-                          </Text>
-                        ) : null}
-                        {activity.source_examples?.slice(0, 2).map((example, exampleIndex) => (
-                          <View key={`${activity.activity_id}_evidence_${exampleIndex}`} style={styles.goalTipBox}>
-                            <Text style={styles.goalTipText}>
-                              You said: “{example.original}”{"\n"}
-                              Try: “{example.corrected}”
-                              {example.explanation ? `\nWhy: ${example.explanation}` : ""}
+                        {activity.target_skill ? (
+                          <View style={styles.activitySkillChip}>
+                            <Text style={styles.activitySkillChipText} numberOfLines={1}>
+                              {skillLabel(activity.target_skill)}
                             </Text>
                           </View>
-                        ))}
-                        <Text style={styles.activityObjective} numberOfLines={3}>
-                          {activity.prompt_activity}
-                        </Text>
+                        ) : null}
                       </View>
 
                       <View style={styles.activityCardRight}>
@@ -1324,49 +1330,84 @@ export default function DashboardScreen() {
               {profile?.email ? (
                 <Text style={styles.profileEmail}>{profile.email}</Text>
               ) : null}
-              <Text style={styles.profileSubtitle}>
-                {userLevel === "unassessed"
-                  ? "Diagnostic not taken yet"
-                  : `Level ${userLevel} · ${levelName} · CEFR ${cefrRef}`}
-              </Text>
 
-              <Pressable
-                style={({ pressed }) => [styles.editProfileBtn, pressed && styles.btnPressed]}
-                onPress={() => {
-                  setEditName(profile?.display_name || displayName);
-                  setEditingProfile(true);
-                }}
-              >
-                <Ionicons name="create-outline" size={16} color={theme.colors.cloud} />
-                <Text style={styles.editProfileBtnText}>Edit profile</Text>
-              </Pressable>
+              <View style={styles.profileBadgeRow}>
+                <View style={styles.profileLevelBadge}>
+                  <Ionicons name="ribbon-outline" size={13} color={theme.colors.paleIris} />
+                  <Text style={styles.profileLevelBadgeText}>
+                    {userLevel === "unassessed" ? "Not assessed" : `Level ${userLevel} · ${levelName}`}
+                  </Text>
+                </View>
+                {userLevel !== "unassessed" ? (
+                  <View style={styles.profileCefrBadge}>
+                    <Text style={styles.profileCefrBadgeText}>CEFR {cefrRef}</Text>
+                  </View>
+                ) : null}
+              </View>
 
-              <Pressable
-                style={({ pressed }) => [styles.retakeAssessmentBtn, pressed && styles.btnPressed]}
-                onPress={() => router.push("/assessment")}
-              >
-                <Ionicons name="mic-outline" size={16} color={theme.colors.paleIris} />
-                <Text style={styles.retakeAssessmentBtnText}>
-                  {userLevel === "unassessed"
-                    ? "Take Diagnostic Assessment →"
-                    : "Retake Diagnostic Assessment →"}
-                </Text>
-              </Pressable>
+              <View style={styles.profileActionsRow}>
+                <Pressable
+                  style={({ pressed }) => [styles.editProfileBtn, pressed && styles.btnPressed]}
+                  onPress={() => {
+                    setEditName(profile?.display_name || displayName);
+                    setEditingProfile(true);
+                  }}
+                >
+                  <Ionicons name="create-outline" size={16} color={theme.colors.cloud} />
+                  <Text style={styles.editProfileBtnText}>Edit profile</Text>
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [styles.retakeAssessmentBtn, pressed && styles.btnPressed]}
+                  onPress={() => router.push("/assessment")}
+                >
+                  <Ionicons name="mic-outline" size={16} color={theme.colors.paleIris} />
+                  <Text style={styles.retakeAssessmentBtnText}>
+                    {userLevel === "unassessed" ? "Take assessment" : "Retake assessment"}
+                  </Text>
+                </Pressable>
+              </View>
             </View>
 
             {/* Quick Stats Grid */}
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
+                <Ionicons name="chatbubbles-outline" size={16} color={theme.colors.paleIris} />
                 <Text style={styles.statNum}>{totalSessions}</Text>
                 <Text style={styles.statLbl}>SESSIONS</Text>
               </View>
               <View style={styles.statBox}>
+                <Ionicons name="time-outline" size={16} color={theme.colors.paleIris} />
                 <Text style={styles.statNum}>{totalMinutes}m</Text>
-                <Text style={styles.statLbl}>MINUTES</Text>
+                <Text style={styles.statLbl}>PRACTISED</Text>
               </View>
               <View style={styles.statBox}>
+                <Ionicons name="flame-outline" size={16} color={theme.colors.amberWarning} />
                 <Text style={styles.statNum}>{streakDays}</Text>
                 <Text style={styles.statLbl}>DAY STREAK</Text>
+              </View>
+            </View>
+
+            {/* Learning snapshot from real recorded evidence */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>YOUR LEARNING</Text>
+              <View style={styles.profileInfoRow}>
+                <Text style={styles.profileInfoLabel}>Working on</Text>
+                <Text style={styles.profileInfoValue} numberOfLines={1}>
+                  {priorityFocus[0] ? priorityFocus[0].title : "Start a session to set this"}
+                </Text>
+              </View>
+              <View style={styles.profileInfoRow}>
+                <Text style={styles.profileInfoLabel}>Daily goal</Text>
+                <Text style={styles.profileInfoValue}>{currentGoal} minutes</Text>
+              </View>
+              <View style={styles.profileInfoRow}>
+                <Text style={styles.profileInfoLabel}>Corrections saved</Text>
+                <Text style={styles.profileInfoValue}>{mistakes.length}</Text>
+              </View>
+              <View style={[styles.profileInfoRow, styles.profileInfoRowLast]}>
+                <Text style={styles.profileInfoLabel}>Words collected</Text>
+                <Text style={styles.profileInfoValue}>{vocabulary.length}</Text>
               </View>
             </View>
 
@@ -1374,7 +1415,8 @@ export default function DashboardScreen() {
             <View style={styles.cardContainer}>
               <Text style={styles.settingsGroupTitle}>HINDI EXPLANATION SUPPORT</Text>
               <Text style={styles.settingsGroupDesc}>
-                Controls when Coach Pravaah explains grammatical corrections using Hindi translations.
+                Controls how often Coach Pravaah explains a correction in Hindi. Practice sentences
+                always stay in English.
               </Text>
 
               <View style={styles.supportChipsRow}>
@@ -2237,6 +2279,11 @@ const styles = StyleSheet.create({
     fontSize: theme.fontSizes.micro + 1,
     color: theme.colors.fog,
   },
+  goalStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2391,6 +2438,22 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: theme.colors.cloud,
     marginBottom: 2,
+  },
+  activitySkillChip: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radii.full,
+    backgroundColor: "rgba(132, 125, 255, 0.10)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+  },
+  activitySkillChipText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 11,
+    fontWeight: "600",
+    color: theme.colors.paleIris,
   },
   activityObjective: {
     fontFamily: theme.fonts.sans,
@@ -2701,11 +2764,76 @@ const styles = StyleSheet.create({
     color: theme.colors.pure,
     marginBottom: 2,
   },
-  profileSubtitle: {
+  profileBadgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 4,
+    marginBottom: theme.spacing.md,
+  },
+  profileLevelBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(132, 125, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderIris,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: theme.radii.full,
+  },
+  profileLevelBadgeText: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    fontWeight: "600",
+    color: theme.colors.paleIris,
+  },
+  profileCefrBadge: {
+    backgroundColor: theme.colors.abyss,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: theme.radii.full,
+  },
+  profileCefrBadgeText: {
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.fog,
+  },
+  profileActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+  },
+  profileInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderMuted,
+  },
+  profileInfoRowLast: {
+    borderBottomWidth: 0,
+    paddingBottom: 0,
+  },
+  profileInfoLabel: {
     fontFamily: theme.fonts.sans,
     fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    marginBottom: theme.spacing.md,
+    color: theme.colors.fog,
+  },
+  profileInfoValue: {
+    flexShrink: 1,
+    fontFamily: theme.fonts.sans,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
+    color: theme.colors.cloud,
+    textAlign: "right",
   },
   retakeAssessmentBtn: {
     flexDirection: "row",
@@ -2742,6 +2870,7 @@ const styles = StyleSheet.create({
     fontSize: theme.fontSizes.headingSm,
     fontWeight: "700",
     color: theme.colors.pure,
+    marginTop: 6,
     marginBottom: 2,
   },
   statLbl: {

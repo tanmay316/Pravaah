@@ -2131,37 +2131,49 @@ def compute_focus_ranking(user_id: str, db=None, mistake_limit: int = 200) -> li
 
 
 def _refresh_plan_slots(existing: dict, generated: dict, locked_ids: set[str]) -> dict:
-    """Keep every issued ID. Completed/started records are immutable; repurpose only
-    pending slot content, assigning correction/retry to the first available slot.
+    """Completed/started records are immutable; pending slots follow the new goal.
 
-    A client that did not record a start may hold old content but its completion ID
-    still works. Do not drop slots on goal reduction; redistribute remaining minutes.
-    If locked work leaves no room for all issued slots, retain the old time budget.
+    The plan must match the time the learner committed to, so pending slots are
+    resized to the generated count: a smaller goal retires untouched slots and a
+    larger one adds them. Only unstarted slots are ever retired, so a stale client
+    completing one is a no-op rather than lost progress. Correction/retry content
+    goes to the first available slot. When locked work already exceeds the new
+    goal, keep the old time budget instead of shrinking committed durations.
     """
     old_activities = existing.get("activities") or []
     if not old_activities:
         return generated
     templates = generated["activities"]
-    all_done = all(a.get("is_completed") for a in old_activities)
-    slot_count = len(old_activities) if all_done else max(len(old_activities), len(templates))
+    frozen = [bool(a.get("is_completed") or a.get("activity_id") in locked_ids) for a in old_activities]
+    pending_budget = max(0, len(templates) - sum(frozen))
     activities = []
     pending = []
-    for index in range(slot_count):
-        old = old_activities[index] if index < len(old_activities) else {}
-        if old.get("is_completed") or old.get("activity_id") in locked_ids:
+    for index, old in enumerate(old_activities):
+        if frozen[index]:
             activities.append(dict(old))
-            continue
+        elif len(pending) < pending_budget:
+            template = dict(templates[min(len(pending), len(templates) - 1)])
+            template["activity_id"] = old.get("activity_id")
+            activities.append({**old, **template})
+            pending.append(len(activities) - 1)
+    used = {a.get("activity_id") for a in activities}
+    suffix = 0
+    while len(pending) < pending_budget:
+        suffix += 1
+        while f"{existing['plan_id']}_act_{suffix}" in used:
+            suffix += 1
         template = dict(templates[min(len(pending), len(templates) - 1)])
-        template["activity_id"] = old.get("activity_id") or f"{existing['plan_id']}_act_{index + 1}"
-        activities.append({**old, **template})
-        pending.append(index)
+        template["activity_id"] = f"{existing['plan_id']}_act_{suffix}"
+        used.add(template["activity_id"])
+        activities.append(template)
+        pending.append(len(activities) - 1)
     if pending:
         locked_minutes = sum(a.get("duration_minutes", 0) for i, a in enumerate(activities) if i not in pending)
         budget = generated["planned_minutes"] - locked_minutes
         if budget < len(pending):
             budget = max(len(pending), existing.get("planned_minutes", 0) - locked_minutes)
         # Positive integer allocation, exact total when the requested budget is feasible.
-        weight = sum(activities[i]["duration_minutes"] for i in pending)
+        weight = sum(activities[i]["duration_minutes"] for i in pending) or len(pending)
         available = budget - len(pending)
         allocations = [1 + int(available * activities[i]["duration_minutes"] / weight) for i in pending]
         for offset in range(budget - sum(allocations)):
@@ -2175,7 +2187,7 @@ def _refresh_plan_slots(existing: dict, generated: dict, locked_ids: set[str]) -
     result["planned_minutes"] = sum(a.get("duration_minutes", 0) for a in activities)
     result["completed_activities_count"] = sum(bool(a.get("is_completed")) for a in activities)
     result["current_activity_index"] = next((i for i, a in enumerate(activities) if not a.get("is_completed")), len(activities))
-    result["completion_status"] = "completed" if all_done else (
+    result["completion_status"] = "completed" if all(a.get("is_completed") for a in activities) else (
         "in_progress" if result["completed_activities_count"] or locked_ids else "not_started"
     )
     result["target_skills"] = list(dict.fromkeys(a["target_skill"] for a in activities if a.get("target_skill")))

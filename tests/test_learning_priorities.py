@@ -399,21 +399,61 @@ def test_explicit_in_progress_target_is_frozen(engine, tracking):
     assert refreshed["planned_minutes"] == 30
 
 
-def test_goal_change_preserves_all_issued_ids_and_completed_day(engine):
+@cases((15, 2), (30, 4), (60, 6), (90, 6))
+def test_pending_slots_follow_the_chosen_goal_in_both_directions(engine, minutes, count):
+    _, worker, db = engine
+    for start in (15, 30, 60, 90):
+        worker.get_or_create_daily_plan("learner", DATE, start)
+        plan = worker.get_or_create_daily_plan("learner", DATE, minutes)
+        assert len(plan["activities"]) == count
+        assert plan["planned_minutes"] == minutes
+        assert sum(a["duration_minutes"] for a in plan["activities"]) == minutes
+        assert len({a["activity_id"] for a in plan["activities"]}) == count
+        assert plan["activities"][0]["mode"] in {"grammar_practice", "vocabulary"}
+
+
+def test_shrinking_goal_retires_only_untouched_slots(engine):
     _, worker, db = engine
     plan = worker.get_or_create_daily_plan("learner", DATE, 90)
     ids = [a["activity_id"] for a in plan["activities"]]
-    smaller = worker.get_or_create_daily_plan("learner", DATE, 15, True)
-    assert smaller["planned_minutes"] == 15
-    assert [a["activity_id"] for a in smaller["activities"]] == ids
-    for activity_id in ids:
-        completed = worker.complete_daily_plan_activity("learner", DATE, activity_id)
+    worker.complete_daily_plan_activity("learner", DATE, ids[0], "done-session", 20)
+    started = worker.get_or_create_daily_plan("learner", DATE, 90)
+    started["activities"][1]["status"] = "in_progress"
+    user(db).collection("daily_plans").document(DATE).set(started)
+
+    smaller = worker.get_or_create_daily_plan("learner", DATE, 15)
+    kept = [a["activity_id"] for a in smaller["activities"]]
+    # Finished and started work survives even when it exceeds the smaller goal.
+    assert kept == ids[:2]
+    assert smaller["activities"][0]["is_completed"] and smaller["activities"][1]["status"] == "in_progress"
+    assert smaller["completed_minutes"] == 20
+    assert smaller["completion_status"] == "in_progress"
+    # A stale client completing a retired slot must not corrupt the plan.
+    stale = worker.complete_daily_plan_activity("learner", DATE, ids[5], "stale-session", 15)
+    assert [a["activity_id"] for a in stale["activities"]] == kept
+    assert stale["completed_minutes"] == 20
+
+
+def test_raising_goal_after_finishing_adds_new_practice(engine):
+    _, worker, db = engine
+    plan = worker.get_or_create_daily_plan("learner", DATE, 15)
+    for activity in plan["activities"]:
+        completed = worker.complete_daily_plan_activity("learner", DATE, activity["activity_id"])
+    assert completed["completion_status"] == "completed"
     user(db).collection("vocabulary").document("v1").set(vocab())
-    forced = worker.get_or_create_daily_plan("learner", DATE, 60, True)
-    assert forced["activities"] == completed["activities"]
-    assert forced["completed_minutes"] == completed["completed_minutes"]
-    assert forced["completion_status"] == "completed"
-    assert forced["current_activity_index"] == len(ids)
+
+    raised = worker.get_or_create_daily_plan("learner", DATE, 60)
+    assert raised["activities"][:2] == completed["activities"]
+    assert len(raised["activities"]) == 6
+    assert raised["completed_minutes"] == completed["completed_minutes"]
+    assert raised["completion_status"] == "in_progress"
+    assert raised["current_activity_index"] == 2
+    assert all(not a.get("is_completed") for a in raised["activities"][2:])
+    assert len({a["activity_id"] for a in raised["activities"]}) == 6
+    # Returning to the finished goal leaves the completed day untouched.
+    restored = worker.get_or_create_daily_plan("learner", DATE, 15)
+    assert restored["activities"] == completed["activities"]
+    assert restored["completion_status"] == "completed"
 
 
 def test_mastery_saves_vocabulary_before_canonical_lesson_and_plan(engine):

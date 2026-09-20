@@ -605,7 +605,14 @@ def _resolve_tutor_context(body: CreateSessionRequest, user_ref, profile: dict, 
         plan = (plan_doc.to_dict() or {}) if plan_doc.exists else {}
         source = next((a for a in plan.get("activities", []) if a.get("activity_id") == lesson_id), {})
         if source:
-            context.update(context_source="daily_plan", daily_activity_id=lesson_id, daily_plan_date=today)
+            if source.get("is_completed"):
+                # Repeating a completed exercise is extra practice, not a second
+                # completion of the original daily-plan slot.
+                context["context_source"] = "activity_review"
+                lesson_id = None
+            else:
+                context.update(context_source="daily_plan", daily_activity_id=lesson_id, daily_plan_date=today,
+                               daily_activity_prompt=_compact_text(source.get("prompt_activity"), 700))
             source_skill = source.get("target_skill")
         else:
             lesson_doc = user_ref.collection("lessons").document(lesson_id).get()
@@ -681,12 +688,17 @@ def _session_token_metadata(session_data: dict, uid: str, session_id: str) -> di
     return metadata
 
 
-def _save_started_session(db, user_ref, session_id: str, session_data: dict) -> None:
-    """Commit an activity's start and its session together; never create a lesson stub."""
+def _save_started_session(db, user_ref, session_id: str, session_data: dict) -> dict:
+    """Start once or rejoin an owned unfinished activity, atomically with its slot.
+
+    An earlier POST can have saved the activity before token delivery, room
+    connection or microphone permission failed. Its session ID is a resumable
+    reference, not a permanent lock. Concurrent starts return the same winner.
+    """
     session_ref = user_ref.collection("sessions").document(session_id)
     if session_data.get("context_source") != "daily_plan":
         session_ref.set(session_data)
-        return
+        return session_data
 
     plan_ref = user_ref.collection("daily_plans").document(session_data["daily_plan_date"])
 
@@ -695,19 +707,49 @@ def _save_started_session(db, user_ref, session_id: str, session_data: dict) -> 
         plan = plan_ref.get(transaction=transaction).to_dict() or {}
         activities = plan.get("activities", [])
         activity = next((a for a in activities if a.get("activity_id") == session_data["daily_activity_id"]), None)
+        if not activity or activity.get("is_completed"):
+            raise HTTPException(status_code=409, detail="Daily activity changed or was completed; refresh the plan.")
+
+        previous_id = activity.get("session_id")
+        if previous_id:
+            # Always read beneath the authenticated user; never follow a top-level
+            # session pointer which could belong to somebody else.
+            previous_ref = user_ref.collection("sessions").document(previous_id)
+            previous = previous_ref.get(transaction=transaction).to_dict() or {}
+            if previous:
+                linked_activity = previous.get("daily_activity_id") or previous.get("lesson_id")
+                if (linked_activity != session_data["daily_activity_id"]
+                        or previous.get("user_id", session_data["user_id"]) != session_data["user_id"]
+                        or previous.get("daily_plan_date", session_data["daily_plan_date"]) != session_data["daily_plan_date"]):
+                    raise HTTPException(status_code=409, detail="Daily activity has an inconsistent session link; refresh the plan.")
+                if previous.get("end_time") is None and previous.get("state", "CREATED") in {"CREATED", "IN_PROGRESS"}:
+                    # Keep the original focus, prompt, language and start time.
+                    # A fresh token is minted outside the transaction on every retry.
+                    links = {"session_id": previous_id, "user_id": session_data["user_id"],
+                             "context_source": "daily_plan", "daily_activity_id": session_data["daily_activity_id"],
+                             "daily_plan_date": session_data["daily_plan_date"]}
+                    # Older starts only stored lesson_id; backfill the verified
+                    # link so completion can still credit the original activity.
+                    transaction.set(previous_ref, links, merge=True)
+                    return {**previous, **links}
+                if previous.get("state") == "COMPLETED":
+                    raise HTTPException(status_code=409, detail="The previous session has ended; finish saving it before restarting this activity.")
+            # Missing or failed/abandoned sessions may be replaced. Do not delete
+            # their history or change already completed progress elsewhere.
+
         # A refresh may have changed this slot since context resolution. Do not pin
         # new content while minting a token carrying the previous target/prompt.
-        if (not activity or activity.get("is_completed")
-                or (activity.get("session_id") and activity["session_id"] != session_id)
-                or (activity.get("target_skill") and activity["target_skill"] != session_data["target_skill"])
-                or _compact_text(activity.get("prompt_activity"), 700) != session_data["practice_activity"]):
-            raise HTTPException(status_code=409, detail="Daily activity changed or already started; refresh the plan.")
+        expected_prompt = session_data.get("daily_activity_prompt", session_data["practice_activity"])
+        if ((activity.get("target_skill") and activity["target_skill"] != session_data["target_skill"])
+                or _compact_text(activity.get("prompt_activity"), 700) != expected_prompt):
+            raise HTTPException(status_code=409, detail="Daily activity changed; refresh the plan before starting.")
         activity.update(status="in_progress", completion_status="in_progress", session_id=session_id,
                         started_at=session_data["start_time"].isoformat())
         transaction.set(plan_ref, {"activities": activities, "completion_status": "in_progress"}, merge=True)
         transaction.set(session_ref, session_data)
+        return session_data
 
-    save(db.transaction())
+    return save(db.transaction())
 
 
 @app.post("/api/sessions", response_model=CreateSessionResponse)
@@ -772,24 +814,31 @@ async def create_session(
         "metrics": {},
         "state": "CREATED",
     }
-    await asyncio.to_thread(_save_started_session, db, user_ref, session_id, session_data)
+    session_data = await asyncio.to_thread(_save_started_session, db, user_ref, session_id, session_data)
+    # The transaction may have found an already-started session. Token, room and
+    # response must all use that session's snapshot, never the discarded new ID.
+    session_id = session_data["session_id"]
+    room_name = f"session_{session_id}"
+    metadata = _session_token_metadata(session_data, uid, session_id)
+    lesson_id = metadata.get("lesson_id")
+    target_skill = metadata.get("target_skill")
     try:
         db.collection("sessions").document(session_id).set({
             **metadata,
             "session_context": metadata,
-            "created_at": now,
-        })
+            "created_at": session_data.get("start_time", now),
+        }, merge=True)
     except Exception as exc:
         logging.getLogger("api").warning("Top-level session mirror failed for %s: %s", session_id, exc)
 
     # If launching a targeted lesson, transition lesson to in_progress state
-    if lesson_id and target_skill and context["context_source"] != "daily_plan":
+    if lesson_id and target_skill and session_data.get("context_source") != "daily_plan":
         db.collection("users").document(uid).collection("lessons").document(lesson_id).set({
             "lesson_id": lesson_id,
             "source_skill_id": target_skill,
-            "lesson_title": context["lesson_title"],
-            "rule_summary": context["rule_summary"],
-            "practice_activity": context["practice_activity"],
+            "lesson_title": metadata.get("lesson_title"),
+            "rule_summary": metadata.get("rule_summary"),
+            "practice_activity": metadata.get("practice_activity"),
             "session_id": session_id,
             "start_time": now,
             "completion_status": "in_progress",

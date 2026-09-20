@@ -259,6 +259,124 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plan["activities"][1]["is_completed"])
         self.assertEqual(plan["completed_minutes"], 5)
 
+    async def test_retry_activity_rejoins_same_session_with_saved_context_and_fresh_token(self):
+        today, activity = self.add_activity()
+        first = await self.create(lesson_id=activity["activity_id"], topic="Original topic", speech_language="hi")
+        original = self.saved(first.session_id)
+        self.ns["_mint_livekit_token"].return_value = ("fresh-token", datetime.now(timezone.utc))
+        retry = await self.create(lesson_id=activity["activity_id"], topic="Different topic", speech_language="en")
+        self.assertEqual(retry.session_id, first.session_id)
+        self.assertEqual(retry.room_name, first.room_name)
+        self.assertEqual(retry.livekit_token, "fresh-token")
+        self.assertEqual(self.metadata(), original["session_context"])
+        self.assertEqual(self.saved(first.session_id)["start_time"], original["start_time"])
+        self.assertEqual(len(self.user_ref.collection("sessions").stream()), 1)
+        self.assertEqual(self.user_ref.collection("daily_plans").document(today).get().to_dict()["activities"][0]["session_id"], first.session_id)
+
+    async def test_token_failure_does_not_permanently_lock_daily_activity(self):
+        _, activity = self.add_activity()
+        self.ns["_mint_livekit_token"].side_effect = RuntimeError("Temporary signing failure")
+        with self.assertRaises(RuntimeError):
+            await self.create(lesson_id=activity["activity_id"])
+        saved_id = self.user_ref.collection("sessions").stream()[0].id
+        self.ns["_mint_livekit_token"].side_effect = None
+        retry = await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(retry.session_id, saved_id)
+        self.assertEqual(len(self.user_ref.collection("sessions").stream()), 1)
+
+    async def test_orphan_activity_session_id_can_be_replaced(self):
+        today, activity = self.add_activity()
+        plan_ref = self.user_ref.collection("daily_plans").document(today)
+        plan_ref.set({"activities": [{**activity, "session_id": "missing-session", "status": "in_progress"}]})
+        result = await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(plan_ref.get().to_dict()["activities"][0]["session_id"], result.session_id)
+
+    async def test_concurrent_activity_start_converges_on_one_session(self):
+        today, activity = self.add_activity()
+        plan_ref = self.user_ref.collection("daily_plans").document(today)
+
+        def other_request_wins():
+            self.user_ref.collection("sessions").document("winning-session").set({
+                "session_id": "winning-session", "user_id": self.user["uid"], "state": "CREATED",
+                "context_source": "daily_plan", "daily_activity_id": activity["activity_id"],
+                "daily_plan_date": today, "target_skill": SKILL, "lesson_id": activity["activity_id"],
+                "practice_activity": activity["prompt_activity"], "start_time": datetime.now(timezone.utc),
+                "mode": "grammar_practice", "topic": "Winner's topic",
+            })
+            plan_ref.set({"activities": [{**activity, "session_id": "winning-session", "status": "in_progress"}]})
+
+        self.db.before_commit = other_request_wins
+        result = await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(result.session_id, "winning-session")
+        self.assertEqual(self.metadata()["topic"], "Winner's topic")
+        self.assertEqual(len(self.user_ref.collection("sessions").stream()), 1)
+
+    async def test_completed_activity_starts_separate_review_without_changing_plan(self):
+        today, activity = self.add_activity()
+        plan_ref = self.user_ref.collection("daily_plans").document(today)
+        plan = {"activities": [{**activity, "is_completed": True, "session_id": "finished"}],
+                "completed_minutes": 10, "completion_status": "completed"}
+        plan_ref.set(plan)
+        result = await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(plan_ref.get().to_dict(), plan)
+        self.assertIsNone(self.saved(result.session_id).get("daily_activity_id"))
+        self.assertNotEqual(self.saved(result.session_id)["lesson_id"], activity["activity_id"])
+        self.assertEqual(self.metadata()["practice_activity"], activity["prompt_activity"])
+
+    async def test_legacy_activity_without_prompt_uses_curriculum_fallback(self):
+        today, activity = self.add_activity()
+        activity.pop("prompt_activity")
+        self.user_ref.collection("daily_plans").document(today).set({"activities": [activity]})
+        await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(self.metadata()["practice_activity"], f"Curriculum practice for {SKILL}")
+
+    async def test_legacy_started_activity_backfills_links_without_lesson_stub(self):
+        today, activity = self.add_activity()
+        self.user_ref.collection("sessions").document("legacy-start").set({
+            "state": "IN_PROGRESS", "lesson_id": activity["activity_id"], "target_skill": SKILL,
+            "mode": "grammar_practice", "start_time": datetime.now(timezone.utc),
+        })
+        self.user_ref.collection("daily_plans").document(today).set({
+            "activities": [{**activity, "session_id": "legacy-start"}]})
+        result = await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(result.session_id, "legacy-start")
+        self.assertEqual(self.saved(result.session_id)["daily_activity_id"], activity["activity_id"])
+        self.assertEqual(self.saved(result.session_id)["daily_plan_date"], today)
+        self.assertFalse(self.user_ref.collection("lessons").document(activity["activity_id"]).get().exists)
+
+    async def test_foreign_session_pointer_never_grants_access_to_another_users_room(self):
+        today, activity = self.add_activity()
+        foreign = self.db.collection("users").document("other_user").collection("sessions").document("foreign-start")
+        foreign.set({"state": "CREATED", "lesson_id": activity["activity_id"], "topic": "Private topic"})
+        self.user_ref.collection("daily_plans").document(today).set({
+            "activities": [{**activity, "session_id": "foreign-start"}]})
+        result = await self.create(lesson_id=activity["activity_id"])
+        self.assertNotEqual(result.session_id, "foreign-start")
+        self.assertNotEqual(self.metadata()["topic"], "Private topic")
+        self.assertEqual(foreign.get().to_dict()["topic"], "Private topic")
+
+    async def test_completed_linked_session_is_not_reopened_before_completion_saved(self):
+        today, activity = self.add_activity()
+        first = await self.create(lesson_id=activity["activity_id"])
+        self.user_ref.collection("sessions").document(first.session_id).update({
+            "state": "COMPLETED", "end_time": datetime.now(timezone.utc)})
+        self.ns["_mint_livekit_token"].reset_mock()
+        with self.assertRaises(HTTPException) as caught:
+            await self.create(lesson_id=activity["activity_id"])
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("finish saving", caught.exception.detail)
+        self.ns["_mint_livekit_token"].assert_not_called()
+        self.assertEqual(len(self.user_ref.collection("sessions").stream()), 1)
+
+    async def test_failed_session_can_be_replaced_without_erasing_its_history(self):
+        today, activity = self.add_activity()
+        first = await self.create(lesson_id=activity["activity_id"])
+        self.user_ref.collection("sessions").document(first.session_id).update({"state": "FAILED"})
+        retry = await self.create(lesson_id=activity["activity_id"])
+        self.assertNotEqual(first.session_id, retry.session_id)
+        self.assertEqual(self.saved(first.session_id)["state"], "FAILED")
+        self.assertEqual(self.user_ref.collection("daily_plans").document(today).get().to_dict()["activities"][0]["session_id"], retry.session_id)
+
     async def test_retargeted_activity_is_rejected_without_saving_stale_session(self):
         today, activity = self.add_activity()
         plan_ref = self.user_ref.collection("daily_plans").document(today)
@@ -524,8 +642,14 @@ class SchemaAndExpoContractTests(unittest.TestCase):
         self.assertIn("lessonId: params.lesson_id", session)
         self.assertIn('speech_language: options.speechLanguage || "auto"', api)
         self.assertIn('useState<SpeechLanguage>("auto")', session)
-        for field in ("priority_reason", "priority_rank", "source_examples"):
-            self.assertIn(f"activity.{field}", dashboard)
+        # Today's exercises stay readable: no raw engine instructions or correction
+        # dumps on the cards. Recorded mistakes remain on the Mistakes tab.
+        for field in ("source_examples", "prompt_activity", "priority_reason", "priority_rank"):
+            self.assertNotIn(f"activity.{field}", dashboard)
+        self.assertIn("skillLabel(activity.target_skill)", dashboard)
+        # Exercise counts must come from the plan the server returned for the chosen goal.
+        self.assertIn("orderedActivities.length", dashboard)
+        self.assertIn("setDailyGoal(minutes)", dashboard)
         for option in ("echoCancellation", "noiseSuppression", "autoGainControl"):
             self.assertIn(f"{option}: true", session)
         self.assertIn("MICROPHONE_OPTIONS: AudioCaptureOptions", session)

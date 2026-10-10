@@ -32,6 +32,12 @@ const getApiBase = (): string => {
 
 const API_BASE = getApiBase();
 
+/** Render's free tier sleeps when idle (~30s to wake); start waking it while the user signs in. */
+export function wakeBackend(): void {
+  if (!API_BASE) return;
+  fetch(`${API_BASE}/health`).catch(() => {});
+}
+
 // ---------------------------------------------------------------------------
 // Types & Models
 // ---------------------------------------------------------------------------

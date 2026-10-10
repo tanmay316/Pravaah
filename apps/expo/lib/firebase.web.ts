@@ -122,7 +122,24 @@ export async function sendPasswordReset(email: string) {
 export async function signInWithGoogle() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  return signInWithPopup(requireAuth(), provider);
+  try {
+    return await signInWithPopup(requireAuth(), provider);
+  } catch (err: any) {
+    switch (err?.code) {
+      case "auth/operation-not-allowed":
+      case "auth/configuration-not-found":
+        throw new Error("Google sign-in is not enabled for this app yet. Please use email for now.");
+      case "auth/unauthorized-domain":
+        throw new Error(`This site (${window.location.hostname}) is not authorized for Google sign-in.`);
+      case "auth/popup-blocked":
+        throw new Error("Your browser blocked the Google sign-in popup. Allow popups and try again.");
+      case "auth/popup-closed-by-user":
+      case "auth/cancelled-popup-request":
+        throw new Error("Google sign-in was cancelled.");
+      default:
+        throw err;
+    }
+  }
 }
 
 export async function signOut() {

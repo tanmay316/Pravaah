@@ -24,10 +24,10 @@ ENV/
 env.bak/
 venv.bak/
 
-# Secrets & local environment files
-.env
-.env.local
-.env.*.local
+# Secrets & local environment files (at any depth: services/*/.env holds real keys)
+**/.env
+**/.env.local
+**/.env.*.local
 secrets/
 *.pem
 

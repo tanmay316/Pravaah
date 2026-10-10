@@ -4,7 +4,7 @@ services:
   # -call (Render's "exceeded memory limit" alert), which also took the REST API down with it
   # until Render finished restarting - the cause of "Could not reach the coaching service" on
   # the dashboard right after a call. Deploy the agent separately: LiveKit Cloud Agents
-  # (livekit.toml) or an Oracle Cloud Always-Free VM (scripts/oracle_setup.sh). See
+  # (services/voice-agent/livekit.toml) or an Oracle Cloud Always-Free VM (scripts/oracle_setup.sh). See
   # docs/DEPLOYMENT.md.
   - type: web
     name: pravaah-backend

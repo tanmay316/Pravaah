@@ -32,8 +32,8 @@ services:
 
   voice-agent:
     build:
-      context: .
-      dockerfile: services/voice-agent/Dockerfile
+      context: ./services/voice-agent
+      dockerfile: Dockerfile
     container_name: pravaah-voice-agent
     restart: unless-stopped
     depends_on:

@@ -50,18 +50,24 @@ Note the free plan also sleeps after 15 minutes of inactivity; the first request
 
 ### Deploy the agent to LiveKit Cloud Agents (free tier, recommended)
 
+Run every `lk agent` command from `services/voice-agent` (where `livekit.toml` lives). Running it
+from the repo root builds the root `Dockerfile`, which is the REST API, not the agent: the worker
+never registers and the app shows "Coach Pravaah hasn't joined this room".
+
 ```bash
 npm install -g livekit-cli
 lk cloud auth
-lk agent create --subdomain <your-livekit-subdomain>   # writes/updates livekit.toml
+cd services/voice-agent
 lk agent secrets set \
   GROQ_API_KEY=... \
-  GEMINI_API_KEY=... \
-  TTS_BASE_URL=https://<your-render-app>.onrender.com/v1
+  GEMINI_API_KEY=...
 lk agent deploy
+lk agent status        # expect Running, not CrashLoop
 ```
 
 `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` are injected by LiveKit Cloud.
+The agent synthesizes speech in-process with edge-tts, so `TTS_BASE_URL` is optional (it becomes
+a fallback; set `TTS_PROVIDER=http` to make it primary).
 
 ### Alternative: Oracle Cloud Always-Free VM
 

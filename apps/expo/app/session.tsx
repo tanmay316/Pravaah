@@ -36,8 +36,11 @@ import {
   SpeechLanguage,
 } from "../lib/api";
 import { speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
+// Side effect on native: registerGlobals() installs WebRTC before any Room is created.
+import { startAudioSession, stopAudioSession } from "../lib/livekit";
 import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
+import CoachAvatar, { AgentLevel, CoachAvatarState } from "../components/CoachAvatar";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
 
@@ -232,6 +235,8 @@ export default function SessionScreen() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [learnerSpeaking, setLearnerSpeaking] = useState(false);
   const [coachJoined, setCoachJoined] = useState(false);
+  // LiveKit Agents publish their pipeline state as the `lk.agent.state` participant attribute.
+  const [agentState, setAgentState] = useState<string | null>(null);
   const [deviceVoiceMode, setDeviceVoiceMode] = useState<DeviceVoiceMode>("auto");
   const [deviceVoiceActive, setDeviceVoiceActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -239,6 +244,8 @@ export default function SessionScreen() {
   // LiveKit Room ref
   const roomRef = useRef<Room | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const agentAnalyserRef = useRef<any>(null);
+  const agentLevelBufRef = useRef<Uint8Array | null>(null);
 
   // Web Audio Visualizer refs
   const audioContextRef = useRef<any>(null);
@@ -365,6 +372,40 @@ export default function SessionScreen() {
     audioElement.style.display = "none";
     document.body.appendChild(audioElement);
     audioElement.play().catch((e) => console.debug("Audio play pending gesture:", e));
+
+    // Tap the coach's voice for the avatar's lip-sync.
+    try {
+      const ctx = audioContextRef.current;
+      if (ctx && track.mediaStreamTrack) {
+        const source = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        agentAnalyserRef.current = analyser;
+        agentLevelBufRef.current = new Uint8Array(analyser.fftSize);
+      }
+    } catch (e) {
+      console.debug("Coach audio analyser note:", e);
+    }
+  };
+
+  const getAgentLevel = (): AgentLevel => {
+    const analyser = agentAnalyserRef.current;
+    const buf = agentLevelBufRef.current;
+    if (analyser && buf) {
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      return { value: Math.min(1, Math.sqrt(sum / buf.length) * 5), live: true };
+    }
+    let level = 0;
+    roomRef.current?.remoteParticipants.forEach((p) => {
+      level = Math.max(level, p.audioLevel || 0);
+    });
+    return { value: Math.min(1, level * 2.5), live: false };
   };
 
   /**
@@ -447,7 +488,7 @@ export default function SessionScreen() {
         }
       }
 
-      const sessionRes = await createSession({
+      const sessionPromise = createSession({
         mode: sessionMode,
         targetSkill: params.target_skill,
         lessonId: params.lesson_id,
@@ -456,7 +497,6 @@ export default function SessionScreen() {
         roleplayScenario: goal === "roleplay" ? buildRoleplayScenario(topic, roleplayRole) : undefined,
         speechLanguage,
       });
-      setSessionId(sessionRes.session_id);
 
       const room = new Room({
         adaptiveStream: true,
@@ -464,6 +504,12 @@ export default function SessionScreen() {
         audioCaptureDefaults: MICROPHONE_OPTIONS,
       });
       roomRef.current = room;
+      // Warm DNS/TLS to LiveKit and the native audio session while the API mints the token.
+      room.prepareConnection(LIVEKIT_URL).catch(() => {});
+      await startAudioSession();
+
+      const sessionRes = await sessionPromise;
+      setSessionId(sessionRes.session_id);
 
       room.on(RoomEvent.Reconnecting, () => setReconnecting(true));
       room.on(RoomEvent.Reconnected, () => setReconnecting(false));
@@ -471,12 +517,20 @@ export default function SessionScreen() {
         setSessionStatus((prev) => (prev !== "ended" ? "ended" : prev));
       });
 
-      room.on(RoomEvent.ParticipantConnected, () => setCoachJoined(true));
+      room.on(RoomEvent.ParticipantConnected, (p) => {
+        setCoachJoined(true);
+        setAgentState(p.attributes?.["lk.agent.state"] ?? null);
+      });
+      room.on(RoomEvent.ParticipantAttributesChanged, (_changed, p) => {
+        if (!p.isLocal) setAgentState(p.attributes?.["lk.agent.state"] ?? null);
+      });
 
       room.on(RoomEvent.TrackSubscribed, attachAgentAudio);
 
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const remoteSpeaking = speakers.some((s) => !s.isLocal);
+        // Web derives this from the mic analyser; native has only LiveKit's speaker updates.
+        if (Platform.OS !== "web") setLearnerSpeaking(speakers.some((s) => s.isLocal));
         if (remoteSpeaking) {
           // Real coach audio wins over the device fallback.
           cancelPendingDeviceSpeech();
@@ -572,6 +626,7 @@ export default function SessionScreen() {
 
       setSessionStatus("active");
       setCoachJoined(room.remoteParticipants.size > 0);
+      room.remoteParticipants.forEach((p) => setAgentState(p.attributes?.["lk.agent.state"] ?? null));
 
       // A room with no agent in it looks identical to a working one from the client side,
       // so say so rather than leaving the learner talking to silence.
@@ -599,6 +654,7 @@ export default function SessionScreen() {
         roomRef.current?.disconnect();
       } catch {}
       roomRef.current = null;
+      stopAudioSession().catch(() => {});
       setErrorMessage(
         err?.message === "NOT_AUTHENTICATED"
           ? "Your session expired. Please sign in again."
@@ -626,6 +682,7 @@ export default function SessionScreen() {
       if (roomRef.current) {
         roomRef.current.disconnect();
       }
+      stopAudioSession().catch(() => {});
     };
   }, []);
 
@@ -666,6 +723,7 @@ export default function SessionScreen() {
     if (roomRef.current) {
       roomRef.current.disconnect();
     }
+    stopAudioSession().catch(() => {});
     setSessionStatus("ended");
     setShowSummary(true);
   };
@@ -734,6 +792,16 @@ export default function SessionScreen() {
     if (isMuted) return theme.colors.fog;
     return theme.colors.emeraldSuccess;
   };
+
+  const getAvatarState = (): CoachAvatarState => {
+    if (reconnecting || !coachJoined || agentState === "initializing") return "connecting";
+    if (deviceVoiceActive || agentSpeaking || agentState === "speaking") return "speaking";
+    if (agentState === "thinking") return "thinking";
+    if (isMuted) return "muted";
+    return "listening";
+  };
+
+  const latestTutorLine = [...transcript].reverse().find((t) => t.speaker === "tutor")?.text;
 
   // =========================================================================
   // VIEW 1: TOPIC & GOAL PICKER
@@ -1019,31 +1087,20 @@ export default function SessionScreen() {
           </View>
         ) : null}
 
-        {/* Dynamic Glowing Audio Orb */}
-        <View style={styles.visualizerOrbContainer}>
-          <View style={[styles.visualizerOrb, { borderColor: getSpeakingStateColor() }]}>
-            <View style={styles.waveBarsRow}>
-              <Animated.View style={[styles.waveBar, { height: waveAnim1, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim2, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim3, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim4, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim5, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim6, backgroundColor: getSpeakingStateColor() }]} />
-              <Animated.View style={[styles.waveBar, { height: waveAnim7, backgroundColor: getSpeakingStateColor() }]} />
-            </View>
-          </View>
-          <Text style={styles.visualizerHintText}>
-            {isMuted
+        <CoachAvatar
+          state={getAvatarState()}
+          learnerSpeaking={learnerSpeaking}
+          getLevel={getAgentLevel}
+          caption={latestTutorLine}
+          size={Math.min(188, Math.round(width * 0.42))}
+          hint={
+            isMuted
               ? "Microphone is muted"
-              : agentSpeaking
-              ? "Coach is speaking..."
-              : learnerSpeaking
-              ? "Listening to your voice..."
               : speechLanguage === "hi"
               ? "Speak in Hindi. The coach replies in English."
-              : "Speak in full sentences and pause when you finish."}
-          </Text>
-        </View>
+              : "Speak in full sentences and pause when you finish."
+          }
+        />
 
         {/* Real-time Recast / Translation Floating Card */}
         {activeCorrection ? (

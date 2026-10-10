@@ -12,6 +12,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as Font from "expo-font";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/firebase";
+import { wakeBackend } from "../lib/api";
 import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
 
@@ -47,6 +48,10 @@ export default function RootLayout() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  useEffect(() => {
+    wakeBackend();
+  }, []);
 
   // Inject Mobile Web meta tags, Google Fonts, Favicon, and PWA setup
   useEffect(() => {

@@ -9,8 +9,32 @@
  */
 
 import auth, { FirebaseAuthTypes } from "@react-native-firebase/auth";
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  isSuccessResponse,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
 import { useEffect, useState } from "react";
-import { Platform } from "react-native";
+
+/**
+ * Firebase verifies Google ID tokens against the project's OAuth *web* client. Prefer the
+ * env var; otherwise read it from google-services.json (present once Google sign-in is
+ * enabled in the Firebase console and the file is re-downloaded).
+ */
+function googleWebClientId(): string | undefined {
+  if (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) return process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  try {
+    const services = require("../google-services.json");
+    for (const client of services.client ?? []) {
+      const web = (client.oauth_client ?? []).find((c: any) => c.client_type === 3);
+      if (web?.client_id) return web.client_id;
+    }
+  } catch {}
+  return undefined;
+}
+
+let googleConfigured = false;
 
 /**
  * Resolves once Firebase has finished restoring any persisted session.
@@ -77,36 +101,46 @@ export async function sendPasswordReset(email: string) {
 }
 
 /**
- * Sign in with Google Auth provider.
+ * Native Google sign-in: Google Sign-In SDK for the ID token, then a Firebase credential.
+ * (Web uses lib/firebase.web.ts.)
  */
 export async function signInWithGoogle() {
-  if (Platform.OS === "web") {
-    try {
-      const { getAuth, signInWithPopup, GoogleAuthProvider } = require("firebase/auth");
-      const { initializeApp, getApps } = require("firebase/app");
-      const firebaseConfig = {
-        apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
-        authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
-        projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
-        storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
-        messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-        appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
-      };
-      const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-      const webAuth = getAuth(app);
-      const provider = new GoogleAuthProvider();
-      return await signInWithPopup(webAuth, provider);
-    } catch (err) {
-      console.warn("Web Google Auth error:", err);
-      throw err;
+  if (!googleConfigured) {
+    const webClientId = googleWebClientId();
+    if (!webClientId) {
+      throw new Error(
+        "Google sign-in is not set up yet. Enable Google in Firebase Authentication, then rebuild the app."
+      );
     }
+    GoogleSignin.configure({ webClientId });
+    googleConfigured = true;
   }
 
-  // Native mobile fallback
   try {
-    const provider = new (auth as any).GoogleAuthProvider();
-    return await (auth() as any).signInWithProvider(provider);
-  } catch (err) {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    const response = await GoogleSignin.signIn();
+    if (!isSuccessResponse(response)) {
+      throw new Error("Google sign-in was cancelled.");
+    }
+    const idToken = response.data.idToken;
+    if (!idToken) {
+      throw new Error("Google did not return an ID token. Check the web client ID.");
+    }
+    return await auth().signInWithCredential(auth.GoogleAuthProvider.credential(idToken));
+  } catch (err: any) {
+    if (isErrorWithCode(err)) {
+      if (err.code === statusCodes.SIGN_IN_CANCELLED) throw new Error("Google sign-in was cancelled.");
+      if (err.code === statusCodes.IN_PROGRESS) throw new Error("Google sign-in is already in progress.");
+      if (err.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        throw new Error("Google Play Services is unavailable or outdated on this device.");
+      }
+      // DEVELOPER_ERROR: this build's signing SHA-1 is not registered in Firebase.
+      if (String(err.code) === "10" || /DEVELOPER_ERROR/i.test(err.message ?? "")) {
+        throw new Error(
+          "Google sign-in is misconfigured: add this build's SHA-1 fingerprint to the Firebase Android app."
+        );
+      }
+    }
     console.warn("Native Google Auth error:", err);
     throw err;
   }
@@ -117,6 +151,8 @@ export async function signInWithGoogle() {
  */
 export async function signOut() {
   authReadyPromise = null;
+  // Clear the cached Google account so the account picker shows next time.
+  if (googleConfigured) await GoogleSignin.signOut().catch(() => {});
   return auth().signOut();
 }
 

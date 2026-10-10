@@ -28,7 +28,9 @@ load_dotenv(env_path)
 
 voice_agent_dir = os.path.join(os.path.dirname(__file__), "..", "services", "voice-agent")
 sys.path.insert(0, os.path.abspath(voice_agent_dir))
-from agent import TUTOR_SYSTEM_PROMPT
+from agent import build_mode_instructions
+
+TUTOR_SYSTEM_PROMPT = build_mode_instructions("free_conversation", None, {})
 
 
 @pytest.mark.asyncio

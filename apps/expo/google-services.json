@@ -7,20 +7,61 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:190737957549:android:644750a62cd69c203f3c24",
+        "mobilesdk_app_id": "1:190737957549:android:a94c766c8ca5e98b3f3c24",
         "android_client_info": {
           "package_name": "com.pravaah.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "190737957549-e347f9cnm4ngruotqmh5inbi3e6unjsu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pravaah.app",
+            "certificate_hash": "39ea8fefc827ee3e9f874854023dcc4ba5b8cf0f"
+          }
+        },
+        {
+          "client_id": "190737957549-e3vi21g00117grtspmaf30p07goblp8c.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pravaah.app",
+            "certificate_hash": "0a94835f26db4ed89ab5a24afb272f384c81b137"
+          }
+        },
+        {
+          "client_id": "190737957549-jqo001qf35l5h226v2869qu0smsfkkk6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pravaah.app",
+            "certificate_hash": "453904baf1af45ec27e3b1e5ad10c34f75759bf1"
+          }
+        },
+        {
+          "client_id": "190737957549-nvl5tibmef57595i2gkd5od73a8ul8dl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
-          "current_key": "AIzaSyDzic6wOIx8ypkQijHIe3UB72MEoqXUy8c"
+          "current_key": "AIzaSyCOTeuTG_0RQa8TjFtrYSDBWc1S01kyE7Y"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "190737957549-nvl5tibmef57595i2gkd5od73a8ul8dl.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "190737957549-003qafir261s47i1hh7b1qnpc5jdq7f2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.pravaah.app"
+              }
+            }
+          ]
         }
       }
     }

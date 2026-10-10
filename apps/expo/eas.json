@@ -3,17 +3,27 @@
     "version": ">= 14.0.0"
   },
   "build": {
+    "base": {
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://pravaah-backend-ntlz.onrender.com",
+        "EXPO_PUBLIC_LIVEKIT_URL": "wss://pravaah-qj6q5gxo.livekit.cloud",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "190737957549-nvl5tibmef57595i2gkd5od73a8ul8dl.apps.googleusercontent.com"
+      }
+    },
     "development": {
+      "extends": "base",
       "developmentClient": true,
       "distribution": "internal"
     },
     "preview": {
+      "extends": "base",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
+      "extends": "base",
       "android": {
         "buildType": "app-bundle"
       }

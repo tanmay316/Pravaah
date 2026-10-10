@@ -44,6 +44,7 @@ from livekit.plugins import google, groq, openai, silero
 from openai import AsyncOpenAI
 
 from coaching import CARD_INSTRUCTIONS, CorrectionCard, is_meaningful_speech, stt_options, tts_options
+from edge_tts_plugin import EdgeTTS
 
 load_dotenv()
 
@@ -609,8 +610,14 @@ async def entrypoint(ctx: JobContext):
             "GROQ_MODEL_CHAIN",
             os.getenv("GROQ_VOICE_MODEL", "openai/gpt-oss-20b") + ",llama-3.3-70b-versatile",
         ):
+            # gpt-oss is a reasoning model: at the default effort it thinks for hundreds of
+            # tokens before the first spoken word. Spoken replies are <=40 words anyway.
+            extra = {"reasoning_effort": "low"} if groq_model.startswith("openai/gpt-oss") else {}
             try:
-                llm_candidates.append(groq.LLM(model=groq_model, api_key=groq_key, temperature=0.3))
+                llm_candidates.append(groq.LLM(
+                    model=groq_model, api_key=groq_key, temperature=0.3,
+                    max_completion_tokens=400, **extra,
+                ))
             except Exception as exc:
                 logger.warning("Groq LLM %s unavailable: %s", groq_model, exc)
 
@@ -637,20 +644,17 @@ async def entrypoint(ctx: JobContext):
         llm_candidates, attempt_timeout=3.0, max_retry_per_llm=0,
     )
 
-    # 4. TTS: Neural Indian English voice over an OpenAI-compatible /v1/audio/speech endpoint,
-    # with Groq's hosted TTS behind it so a dead edge-tts host doesn't mute the coach.
-    # TTS_BASE_URL must point at a host that is not competing with the agent for CPU.
-    tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL") or "http://127.0.0.1:10000/v1"
+    # 4. TTS: Edge neural voices streamed in-process (no extra HTTP hop or cold start), then
+    # an optional OpenAI-compatible /v1/audio/speech host, then Groq's hosted TTS.
+    # TTS_PROVIDER=http restores the old remote-first order.
     voices = tts_options(lesson_context)
-    logger.info("Primary TTS endpoint: %s (voice=%s)", tts_base_url, voices["neural"])
-    tts_candidates = [
-        openai.TTS(
-            model="tts-1",
-            voice=voices["neural"],
-            api_key="not-needed",
-            base_url=tts_base_url,
-        )
-    ]
+    tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL")
+    remote_tts = [
+        openai.TTS(model="tts-1", voice=voices["neural"], api_key="not-needed", base_url=tts_base_url)
+    ] if tts_base_url else []
+    edge = [EdgeTTS(voice=voices["neural"])]
+    tts_candidates = remote_tts + edge if os.getenv("TTS_PROVIDER", "edge").lower() == "http" else edge + remote_tts
+    logger.info("TTS chain: %s (voice=%s)", [type(t).__name__ for t in tts_candidates], voices["neural"])
 
     if groq_key:
         try:

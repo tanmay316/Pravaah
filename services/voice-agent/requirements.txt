@@ -6,6 +6,7 @@
 #   litellm        - ~200MB RSS on import, and the agent talks to Groq/Gemini directly
 #   kokoro-onnx    - only needed by the standalone kokoro_server.py TTS container
 livekit-agents[google,groq,openai,silero]~=1.5
+edge-tts>=7.0.0
 python-dotenv>=1.0
 google-generativeai>=0.8.0
 websockets>=12.0

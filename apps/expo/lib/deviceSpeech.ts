@@ -26,33 +26,45 @@ async function resolveVoice(): Promise<VoiceMatch> {
   if (cachedVoice !== undefined) return cachedVoice ?? {};
   try {
     const voices = await Speech.getAvailableVoicesAsync();
-    // 1. Prefer Indian English Male voice
-    const inMale = voices.find(
+    if (!voices || voices.length === 0) {
+      return { language: "en-IN" };
+    }
+    // 1. Prefer high-quality / neural Indian English voice
+    const inNeuralOrMale = voices.find(
       (v) =>
         v.language?.toLowerCase().startsWith("en-in") &&
-        (v.name?.toLowerCase().includes("male") ||
+        (v.name?.toLowerCase().includes("neural") ||
+          v.name?.toLowerCase().includes("natural") ||
           v.name?.toLowerCase().includes("prabhat") ||
+          v.name?.toLowerCase().includes("neerja") ||
           v.name?.toLowerCase().includes("ravi") ||
+          v.name?.toLowerCase().includes("male") ||
+          (v as any).quality === "Enhanced" ||
           (v as any).gender === "male")
     );
-    if (inMale) {
-      cachedVoice = { language: inMale.language, voice: inMale.identifier };
+    if (inNeuralOrMale) {
+      cachedVoice = { language: inNeuralOrMale.language, voice: inNeuralOrMale.identifier };
       return cachedVoice;
     }
 
-    // 2. Prefer any English Male voice
-    const enMale = voices.find(
+    // 2. Prefer any natural/neural English voice
+    const enNatural = voices.find(
       (v) =>
         v.language?.toLowerCase().startsWith("en") &&
-        (v.name?.toLowerCase().includes("male") ||
+        (v.name?.toLowerCase().includes("natural") ||
+          v.name?.toLowerCase().includes("neural") ||
+          v.name?.toLowerCase().includes("andrew") ||
+          v.name?.toLowerCase().includes("ava") ||
+          v.name?.toLowerCase().includes("male") ||
           v.name?.toLowerCase().includes("david") ||
           v.name?.toLowerCase().includes("george") ||
           v.name?.toLowerCase().includes("mark") ||
           v.name?.toLowerCase().includes("guy") ||
+          (v as any).quality === "Enhanced" ||
           (v as any).gender === "male")
     );
-    if (enMale) {
-      cachedVoice = { language: enMale.language, voice: enMale.identifier };
+    if (enNatural) {
+      cachedVoice = { language: enNatural.language, voice: enNatural.identifier };
       return cachedVoice;
     }
 
@@ -69,6 +81,14 @@ async function resolveVoice(): Promise<VoiceMatch> {
     cachedVoice = null;
   }
   return cachedVoice ?? {};
+}
+
+/**
+ * Pre-warms the OS / browser TTS voice catalogue off the critical audio path so the first
+ * on-device utterance starts immediately with zero voice-enumeration delay.
+ */
+export function prewarmDeviceSpeech(): void {
+  resolveVoice().catch(() => {});
 }
 
 export async function isDeviceSpeechAvailable(): Promise<boolean> {

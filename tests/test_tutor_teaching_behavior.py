@@ -33,27 +33,39 @@ from agent import build_mode_instructions
 TUTOR_SYSTEM_PROMPT = build_mode_instructions("free_conversation", None, {})
 
 
+async def _call_tutor_llm(messages: list[dict], temperature: float = 0.25) -> str:
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        from openai import AsyncOpenAI
+        async with AsyncOpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1") as client:
+            resp = await client.chat.completions.create(
+                model=os.getenv("GROQ_VOICE_MODEL", "qwen/qwen3.8-27b"),
+                messages=messages,
+                temperature=temperature,
+                max_tokens=200,
+                reasoning_effort="none",
+            )
+            return resp.choices[0].message.content or ""
+    import litellm
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    response = await litellm.acompletion(
+        model="gemini/gemini-3.5-flash-lite",
+        api_key=gemini_key,
+        messages=messages,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content or ""
+
+
 @pytest.mark.asyncio
 async def test_tutor_exact_correction_flow():
-    import litellm
-
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    assert gemini_key and not gemini_key.startswith("REPLACE"), "Valid GEMINI_API_KEY required"
-
     messages = [
         {"role": "system", "content": TUTOR_SYSTEM_PROMPT},
         {"role": "user", "content": "Yesterday I am go market and buy one shirt."},
     ]
 
     # Step 1: Get AI correction response
-    response = await litellm.acompletion(
-        model="gemini/gemini-3.5-flash-lite",
-        api_key=gemini_key,
-        messages=messages,
-        temperature=0.3,
-    )
-
-    tutor_reply = response.choices[0].message.content
+    tutor_reply = await _call_tutor_llm(messages, temperature=0.25)
     print("\n--- Turn 1 (Correction) ---")
     print(tutor_reply)
 
@@ -77,14 +89,7 @@ async def test_tutor_exact_correction_flow():
     messages.append({"role": "assistant", "content": tutor_reply})
     messages.append({"role": "user", "content": "Yesterday I went to the market and bought a shirt."})
 
-    response2 = await litellm.acompletion(
-        model="gemini/gemini-3.5-flash-lite",
-        api_key=gemini_key,
-        messages=messages,
-        temperature=0.3,
-    )
-
-    tutor_reply2 = response2.choices[0].message.content
+    tutor_reply2 = await _call_tutor_llm(messages, temperature=0.25)
     print("\n--- Turn 2 (Reinforcement & Continuation) ---")
     print(tutor_reply2)
 

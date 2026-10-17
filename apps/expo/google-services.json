@@ -38,6 +38,14 @@
           }
         },
         {
+          "client_id": "190737957549-r7ci46hgcomeuougg8e8pgddj8upge5f.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pravaah.app",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
           "client_id": "190737957549-nvl5tibmef57595i2gkd5od73a8ul8dl.apps.googleusercontent.com",
           "client_type": 3
         }

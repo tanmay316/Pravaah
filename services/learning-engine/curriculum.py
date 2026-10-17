@@ -643,8 +643,38 @@ def evaluate_assessment_rubric(
             level = "S"
 
     rubric_entry = ASSESSMENT_RUBRIC[level]
-    weaknesses = list(kwargs.get("weaknesses") or rubric_entry["weaknesses"])
-    strengths = list(kwargs.get("strengths") or rubric_entry["strengths"])
+    raw_weaknesses = list(kwargs.get("weaknesses") or [])
+    grammatical_breakdowns = list(kwargs.get("grammatical_breakdowns") or [])
+
+    mapped_weaknesses: list[str] = []
+    for w in raw_weaknesses:
+        w_str = str(w).strip()
+        if not w_str:
+            continue
+        skill_key = w_str if w_str in CURRICULUM_SKILLS else map_to_curriculum_skill(w_str, w_str, w_str)
+        if skill_key in CURRICULUM_SKILLS and skill_key not in mapped_weaknesses:
+            mapped_weaknesses.append(skill_key)
+
+    for gb in grammatical_breakdowns:
+        if isinstance(gb, dict):
+            err_txt = str(gb.get("error", ""))
+            expl_txt = str(gb.get("explanation", ""))
+            if err_txt or expl_txt:
+                skill_key = map_to_curriculum_skill(expl_txt, err_txt, expl_txt)
+                if skill_key in CURRICULUM_SKILLS and skill_key not in mapped_weaknesses:
+                    mapped_weaknesses.append(skill_key)
+
+    weaknesses = mapped_weaknesses if mapped_weaknesses else list(rubric_entry["weaknesses"])
+
+    raw_strengths = list(kwargs.get("strengths") or [])
+    mapped_strengths: list[str] = []
+    for s in raw_strengths:
+        s_str = str(s).strip()
+        if s_str in CURRICULUM_SKILLS and s_str not in weaknesses and s_str not in mapped_strengths:
+            mapped_strengths.append(s_str)
+    strengths = mapped_strengths if mapped_strengths else [
+        s for s in rubric_entry["strengths"] if s not in weaknesses
+    ]
 
     # Priority ordering for selecting immediate current_focus among diagnosed weaknesses
     focus_priority = [
@@ -659,10 +689,10 @@ def evaluate_assessment_rubric(
         "sentence_structure",
     ]
     selected_focus = None
-    if kwargs.get("current_focus"):
-        selected_focus = kwargs["current_focus"]
-    elif kwargs.get("initial_focus"):
-        selected_focus = kwargs["initial_focus"]
+    explicit_focus = kwargs.get("current_focus") or kwargs.get("initial_focus")
+    if explicit_focus:
+        ef_str = str(explicit_focus).strip()
+        selected_focus = ef_str if ef_str in CURRICULUM_SKILLS else map_to_curriculum_skill(ef_str, ef_str, ef_str)
     elif weaknesses:
         for p_skill in focus_priority:
             if p_skill in weaknesses:
@@ -671,6 +701,9 @@ def evaluate_assessment_rubric(
         if not selected_focus:
             selected_focus = weaknesses[0]
     else:
+        selected_focus = rubric_entry["initial_focus"]
+
+    if selected_focus not in CURRICULUM_SKILLS:
         selected_focus = rubric_entry["initial_focus"]
 
     current_focus = selected_focus
@@ -794,18 +827,37 @@ def generate_daily_plan(
     primary = ranked[0]
     secondary = ranked[1] if len(ranked) > 1 else primary
     third = ranked[2] if len(ranked) > 2 else secondary
-    # Retain the supported duration buckets and number of slots. Focus before fluency.
-    if goal_minutes <= 15:
-        slots = [(primary, "retry", 10), (primary, "transfer", 5)]
-    elif goal_minutes <= 30:
-        slots = [(primary, "retry", 10), (secondary, "retry", 5),
-             (primary, "transfer", 10), (primary, "review", 5)]
+    vocab_focus = next(
+        (r for r in ranked if CURRICULUM_SKILLS.get(r["skill_id"], {}).get("category") == "vocabulary"),
+        {"skill_id": "collocations", "reason": "vocabulary_focus", "mastery": (skill_mastery or {}).get("collocations", 0.5), "priority_rank": len(ranked) + 1},
+    )
+
+    if priority_focus is None and current_focus is None:
+        # Legacy caller sequence (Warmup Conversation -> Targeted Grammar -> Vocabulary -> Review)
+        if goal_minutes <= 15:
+            slots = [(primary, "transfer", 5), (primary, "retry", 10)]
+        elif goal_minutes <= 30:
+            slots = [(primary, "transfer", 10), (primary, "retry", 10), (vocab_focus, "retry", 5), (primary, "review", 5)]
+        else:
+            durations = [10, 15, 10, 10, 10, 5] if goal_minutes <= 60 else [15, 20, 15, 15, 15, 10]
+            slots = list(zip(
+                [primary, primary, primary, vocab_focus, secondary, primary],
+                ["transfer", "retry", "roleplay", "retry", "retry", "review"],
+                durations,
+            ))
     else:
-        durations = [15, 10, 10, 10, 10, 5] if goal_minutes <= 60 else [20, 15, 15, 15, 15, 10]
-        slots = list(zip(
-            [primary, secondary, third, primary, primary, primary],
-            ["retry", "retry", "retry", "transfer", "roleplay", "review"], durations,
-        ))
+        # Canonical ranked sequence: Focus before fluency (Correction/Retry -> Transfer -> Review)
+        if goal_minutes <= 15:
+            slots = [(primary, "retry", 10), (primary, "transfer", 5)]
+        elif goal_minutes <= 30:
+            slots = [(primary, "retry", 10), (secondary, "retry", 5),
+                 (primary, "transfer", 10), (primary, "review", 5)]
+        else:
+            durations = [15, 10, 10, 10, 10, 5] if goal_minutes <= 60 else [20, 15, 15, 15, 15, 10]
+            slots = list(zip(
+                [primary, secondary, third, primary, primary, primary],
+                ["retry", "retry", "retry", "transfer", "roleplay", "review"], durations,
+            ))
 
     activities: list[DailyPlanActivity] = []
     for index, (focus, phase, duration) in enumerate(slots, 1):

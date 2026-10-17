@@ -19,8 +19,10 @@ API = "https://firebasehosting.googleapis.com/v1beta1"
 
 CONFIG = {
     "rewrites": [{"glob": "**", "path": "/index.html"}],
-    "headers": [
-        {
+    "headers": [        # HTML must revalidate: a cached page pointing at a bundle hash that a later deploy
+        # removed gets index.html back for its script (via the rewrite) and renders blank.
+        {"glob": "**", "headers": {"Cache-Control": "no-cache"}},
+        {"glob": "/@(_expo|assets)/**", "headers": {"Cache-Control": "public, max-age=31536000, immutable"}},        {
             "glob": "**/*.@(ttf|woff|woff2|eot)",
             "headers": {"Access-Control-Allow-Origin": "*", "Cache-Control": "max-age=31536000, immutable"},
         }

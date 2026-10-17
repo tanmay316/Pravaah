@@ -9,6 +9,10 @@
  * - Fixed bottom call controls with large thumb-accessible buttons
  */
 
+// Must load before livekit-client: Hermes lacks TextDecoder/DOMException it needs at import.
+import "../lib/polyfills";
+// Side effect on native: registerGlobals() installs WebRTC before any Room is created.
+import { startAudioSession, stopAudioSession } from "../lib/livekit";
 import { useState, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
@@ -35,12 +39,12 @@ import {
   ConversationGoal,
   SpeechLanguage,
 } from "../lib/api";
-import { speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
-// Side effect on native: registerGlobals() installs WebRTC before any Room is created.
-import { startAudioSession, stopAudioSession } from "../lib/livekit";
+import { prewarmDeviceSpeech, speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
 import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 import CoachAvatar, { AgentLevel, CoachAvatarState } from "../components/CoachAvatar";
+
+export { default as ErrorBoundary } from "../components/ScreenError";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
 
@@ -139,31 +143,6 @@ function normalizeSessionMode(mode?: string, targetSkill?: string): string {
   return mode || "free_conversation";
 }
 
-/**
- * The learner already chose a specific skill or lesson to open this session, so the topic
- * step defaults to that skill or lesson name instead of asking them to type it again.
- */
-function defaultTopicFor(
-  mode?: string,
-  targetSkill?: string,
-  activityTitle?: string,
-  lessonId?: string
-): string {
-  if (activityTitle && activityTitle.trim() && activityTitle !== "Spoken Practice") {
-    return activityTitle.trim();
-  }
-  if (targetSkill && targetSkill.trim()) {
-    return skillLabel(targetSkill);
-  }
-  if (lessonId && lessonId.trim()) {
-    return lessonId
-      .replace(/^lesson_/, "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-  return "";
-}
-
 /** Combines the chosen role and situation into the single scenario string the agent reads. */
 function buildRoleplayScenario(topic: string, role: string): string | undefined {
   const t = topic.trim();
@@ -207,19 +186,11 @@ export default function SessionScreen() {
   const [sessionStatus, setSessionStatus] = useState<
     "choosing" | "starting" | "active" | "ended"
   >("choosing");
-  const [topic, setTopic] = useState(() =>
-    defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id)
-  );
+  // A skill or activity title is the lesson, not a conversation subject, so the topic starts empty.
+  const [topic, setTopic] = useState("");
   const [goal, setGoal] = useState<ConversationGoal>(defaultGoalForMode(sessionMode));
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("en");
 
-  // Sync topic whenever incoming params update or load
-  useEffect(() => {
-    const def = defaultTopicFor(sessionMode, params.target_skill, params.activity_title, params.lesson_id);
-    if (def && (!topic || topic.trim() === "")) {
-      setTopic(def);
-    }
-  }, [params.target_skill, params.activity_title, params.lesson_id, sessionMode]);
   const [roleplayRole, setRoleplayRole] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -413,9 +384,11 @@ export default function SessionScreen() {
    * so the phone's own speaker doesn't get transcribed back as learner speech.
    */
   const speakTurnOnDevice = async (text: string) => {
-    if (speakingOnDeviceRef.current) return;
-    // Never speak on device if remote audio is playing or coach is present
-    if (hasRemoteAudioRef.current && agentSpeakingRef.current) return;
+    if (speakingOnDeviceRef.current) {
+      await stopDeviceSpeech().catch(() => {});
+    }
+    // In auto mode, never speak on device if remote audio is actively playing
+    if (deviceVoiceModeRef.current === "auto" && hasRemoteAudioRef.current) return;
 
     speakingOnDeviceRef.current = true;
     setDeviceVoiceActive(true);
@@ -448,15 +421,15 @@ export default function SessionScreen() {
   const queueDeviceSpeech = (id: string, text: string) => {
     const mode = deviceVoiceModeRef.current;
     if (mode === "off") return;
-    // When connected to LiveKit room with an agent, NEVER talk over the server agent!
-    if (mode === "auto" && (hasRemoteAudioRef.current || coachJoined || !!roomRef.current)) return;
+    // In auto mode, if remote audio track is already subscribed and active, let server TTS play.
+    if (mode === "auto" && hasRemoteAudioRef.current) return;
 
-    const delay = mode === "on" ? 150 : 8000;
+    const delay = mode === "on" ? 30 : DEVICE_SPEECH_GRACE_MS;
     const handle = setTimeout(() => {
       pendingSpeechRef.current.delete(id);
       if (deviceVoiceModeRef.current === "off") return;
       // The agent found its voice in the meantime; let it speak.
-      if (deviceVoiceModeRef.current === "auto" && (hasRemoteAudioRef.current || agentSpeakingRef.current || coachJoined)) return;
+      if (deviceVoiceModeRef.current === "auto" && (hasRemoteAudioRef.current || agentSpeakingRef.current)) return;
       speakTurnOnDevice(text);
     }, delay);
     pendingSpeechRef.current.set(id, handle);
@@ -549,14 +522,14 @@ export default function SessionScreen() {
           const data = JSON.parse(new TextDecoder().decode(payload));
           if (data.type === "correction") {
             setActiveCorrection({
-              card_type: data.card_type || "correction",
-              original: data.original,
-              corrected: data.corrected,
-              explanation: data.explanation,
+              card_type: data.card_type === "translation" ? "translation" : "correction",
+              original: String(data.original ?? ""),
+              corrected: String(data.corrected ?? ""),
+              explanation: String(data.explanation ?? ""),
               target_skill: data.target_skill,
             });
             setCorrectionCount((prev) => prev + 1);
-          } else if (data.type === "turn" && data.text) {
+          } else if (data.type === "turn" && typeof data.text === "string" && data.text.trim()) {
             setTranscript((prev) => {
               const spk: "learner" | "tutor" = data.speaker === "learner" ? "learner" : "tutor";
               const last = prev[prev.length - 1];
@@ -650,14 +623,20 @@ export default function SessionScreen() {
     } catch (err: any) {
       console.warn("Start conversation error:", err);
       preconnectedRef.current = false;
-      try {
-        roomRef.current?.disconnect();
-      } catch {}
+      if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
+      const failedRoom = roomRef.current;
       roomRef.current = null;
+      // Detach first: its Disconnected event would otherwise flip this screen to "ended".
+      failedRoom?.removeAllListeners();
+      try {
+        failedRoom?.disconnect();
+      } catch {}
       stopAudioSession().catch(() => {});
       setErrorMessage(
         err?.message === "NOT_AUTHENTICATED"
           ? "Your session expired. Please sign in again."
+          : err?.name === "NotAllowedError"
+          ? "Microphone access is blocked. Allow microphone access for Pravaah and try again."
           : err?.message || "Could not start the conversation. Please try again."
       );
       setSessionStatus("choosing");
@@ -665,6 +644,7 @@ export default function SessionScreen() {
   };
 
   useEffect(() => {
+    prewarmDeviceSpeech();
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
@@ -706,6 +686,9 @@ export default function SessionScreen() {
     const next: DeviceVoiceMode = deviceVoiceMode === "on" ? "auto" : "on";
     deviceVoiceModeRef.current = next;
     setDeviceVoiceMode(next);
+    if (audioElementRef.current) {
+      audioElementRef.current.muted = next === "on";
+    }
     if (next === "auto") {
       cancelPendingDeviceSpeech();
       stopDeviceSpeech();

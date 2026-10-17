@@ -1,4 +1,22 @@
 model_list:
+  - model_name: qwen-3.8-27b-groq
+    litellm_params:
+      model: groq/qwen/qwen3.8-27b
+      api_key: "os.environ/GROQ_API_KEY"
+      reasoning_effort: "none"
+
+  - model_name: gpt-oss-20b-groq
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: "os.environ/GROQ_API_KEY"
+      reasoning_effort: "low"
+
+  - model_name: llama-3.2-11b-nim
+    litellm_params:
+      model: openai/meta/llama-3.2-11b-vision-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: "os.environ/NVIDIA_API_KEY"
+
   - model_name: gemini-3.5-flash-lite
     litellm_params:
       model: gemini/gemini-3.5-flash-lite
@@ -22,7 +40,8 @@ model_list:
 
 router_settings:
   fallbacks:
-    - gemini-2.5-flash: ["minimax-m3", "nemotron-3.5-lightning"]
-    - gemini-3.5-flash-lite: ["minimax-m3", "nemotron-3.5-lightning", "gemini-2.5-flash"]
+    - qwen-3.8-27b-groq: ["gpt-oss-20b-groq", "llama-3.2-11b-nim", "gemini-3.5-flash-lite"]
+    - gemini-2.5-flash: ["qwen-3.8-27b-groq", "minimax-m3", "llama-3.2-11b-nim"]
+    - gemini-3.5-flash-lite: ["qwen-3.8-27b-groq", "gpt-oss-20b-groq", "llama-3.2-11b-nim", "minimax-m3", "gemini-2.5-flash"]
   retry_after: 5
   num_retries: 3

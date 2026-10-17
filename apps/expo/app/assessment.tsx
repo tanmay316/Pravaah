@@ -15,6 +15,9 @@
  * - Native diagnostic report card with CEFR reference and daily plan generator
  */
 
+// Must load before livekit-client: Hermes lacks TextDecoder/DOMException it needs at import.
+import "../lib/polyfills";
+import { startAudioSession, stopAudioSession } from "../lib/livekit";
 import { useState, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
@@ -39,6 +42,7 @@ import {
   ProficiencyAssessmentRecord,
   PRAVAAH_LEVEL_NAMES,
 } from "../lib/api";
+import { skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
@@ -176,27 +180,38 @@ export default function AssessmentScreen() {
           setLivekitConnected(false);
         });
 
-        room.on(RoomEvent.TrackSubscribed, (track) => {
-          if (track.kind === Track.Kind.Audio && Platform.OS === "web") {
-            const audioElement = track.attach();
-            audioElementRef.current = audioElement;
-            document.body.appendChild(audioElement);
-          }
+        room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+          if (!isRecordingRef.current) return;
+          try {
+            const data = JSON.parse(new TextDecoder().decode(payload));
+            if (data.type === "turn" && data.speaker === "learner" && typeof data.text === "string") {
+              const incoming = data.text.trim();
+              if (!incoming) return;
+              const now = Date.now();
+              if (!speechStartTimeRef.current) speechStartTimeRef.current = now;
+              if (lastSpeechTimeRef.current > 0) {
+                const gap = now - lastSpeechTimeRef.current;
+                if (gap > 650) {
+                  pauseCountRef.current += 1;
+                  if (gap > 1600) {
+                    longPauseCountRef.current += 1;
+                  }
+                }
+              }
+              lastSpeechTimeRef.current = now;
+              // On native Android/iOS (or browsers without Web Speech API), LiveKit Whisper STT
+              // is the primary verbatim transcript source. Avoid duplicating if Web Speech already appended it.
+              if (!recognitionRef.current || !committedTextRef.current.toLowerCase().includes(incoming.toLowerCase())) {
+                committedTextRef.current = (committedTextRef.current + " " + incoming).trim();
+                setCurrentTranscript(committedTextRef.current);
+              }
+            }
+          } catch {}
         });
 
+        await startAudioSession();
         await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
-        await room.localParticipant.setMicrophoneEnabled(true, {
-          noiseSuppression: true,
-          echoCancellation: true,
-          autoGainControl: true,
-        });
-
-        const audioTracks = room.localParticipant.audioTrackPublications;
-        audioTracks.forEach((pub) => {
-          if (pub.track?.mediaStream) {
-            mediaStreamRef.current = pub.track.mediaStream;
-          }
-        });
+        await room.localParticipant.setMicrophoneEnabled(false);
       } catch (err: any) {
         console.warn("LiveKit assessment room notice:", err);
       }
@@ -207,6 +222,7 @@ export default function AssessmentScreen() {
     return () => {
       if (audioElementRef.current) audioElementRef.current.remove();
       if (roomInstance) roomInstance.disconnect();
+      stopAudioSession().catch(() => {});
     };
   }, []);
 
@@ -301,6 +317,22 @@ export default function AssessmentScreen() {
     isRecordingRef.current = true;
     setCurrentTranscript("");
     setLiveInterim("");
+    if (roomRef.current) {
+      roomRef.current.localParticipant
+        .setMicrophoneEnabled(true, {
+          noiseSuppression: true,
+          echoCancellation: true,
+          autoGainControl: true,
+        })
+        .then(() => {
+          roomRef.current?.localParticipant.audioTrackPublications.forEach((pub) => {
+            if (pub.track?.mediaStream) {
+              mediaStreamRef.current = pub.track.mediaStream;
+            }
+          });
+        })
+        .catch(() => {});
+    }
     await setupAudioCapture();
 
     const recognition = getSpeechRecognition();
@@ -366,6 +398,9 @@ export default function AssessmentScreen() {
   };
 
   const stopRecording = () => {
+    if (roomRef.current) {
+      roomRef.current.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -589,7 +624,7 @@ export default function AssessmentScreen() {
                 {strengths && strengths.length > 0 ? (
                   strengths.map((str: string, idx: number) => (
                     <View key={idx} style={styles.strengthChip}>
-                      <Text style={styles.strengthChipText}>✓ {str.replace(/_/g, " ")}</Text>
+                      <Text style={styles.strengthChipText}>✓ {skillLabel(str)}</Text>
                     </View>
                   ))
                 ) : (
@@ -606,7 +641,7 @@ export default function AssessmentScreen() {
                 {weaknesses && weaknesses.length > 0 ? (
                   weaknesses.map((weak: string, idx: number) => (
                     <View key={idx} style={styles.weaknessChip}>
-                      <Text style={styles.weaknessChipText}>⚠ {weak.replace(/_/g, " ")}</Text>
+                      <Text style={styles.weaknessChipText}>⚠ {skillLabel(weak)}</Text>
                     </View>
                   ))
                 ) : (

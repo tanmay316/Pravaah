@@ -81,6 +81,7 @@ from curriculum import (
     EVIDENCE_DELTAS,
 )
 
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -418,50 +419,65 @@ async def analyze_session_messages(
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 
     if groq_key and not analysis_succeeded:
-        try:
-            from groq import Groq
-            gclient = Groq(api_key=groq_key)
-            groq_analysis_model = os.getenv("GROQ_ANALYSIS_MODEL", "openai/gpt-oss-120b")
-            g_resp = await asyncio.wait_for(
-                asyncio.to_thread(
-                    gclient.chat.completions.create,
-                    model=groq_analysis_model,
-                    messages=[
-                        {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                    max_tokens=1500,
-                    temperature=0.1,
-                ),
-                timeout=12.0
-            )
-            raw_text = g_resp.choices[0].message.content or "{}"
-            raw_json = json.loads(raw_text.strip())
-            for m in raw_json.get("mistakes", []):
-                if not m.get("session_id"):
-                    m["session_id"] = session_id
-                if not m.get("message_id") and user_turns:
-                    m["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
-                if not m.get("curriculum_skill_id"):
-                    m["curriculum_skill_id"] = map_to_curriculum_skill(m.get("category", ""), m.get("original", ""), m.get("short_explanation", ""))
-                if not m.get("fact_type"):
-                    m["fact_type"] = "grammar_error"
+        groq_analysis_candidates = [
+            os.getenv("GROQ_ANALYSIS_MODEL", "qwen/qwen3.8-27b"),
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+        ]
+        for groq_analysis_model in dict.fromkeys(groq_analysis_candidates):
+            try:
+                from openai import AsyncOpenAI
+                async with AsyncOpenAI(
+                    api_key=groq_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    max_retries=0,
+                ) as gclient:
+                    extra_kwargs = (
+                        {"reasoning_effort": "none"}
+                        if groq_analysis_model.startswith("qwen/")
+                        else ({"reasoning_effort": "low"} if groq_analysis_model.startswith("openai/gpt-oss") else {})
+                    )
+                    g_resp = await asyncio.wait_for(
+                        gclient.chat.completions.create(
+                            model=groq_analysis_model,
+                            messages=[
+                                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            response_format={"type": "json_object"},
+                            max_tokens=1500,
+                            temperature=0.1,
+                            **extra_kwargs,
+                        ),
+                        timeout=10.0,
+                    )
+                raw_text = g_resp.choices[0].message.content or "{}"
+                raw_json = json.loads(raw_text.strip())
+                for m in raw_json.get("mistakes", []):
+                    if not m.get("session_id"):
+                        m["session_id"] = session_id
+                    if not m.get("message_id") and user_turns:
+                        m["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                    if not m.get("curriculum_skill_id"):
+                        m["curriculum_skill_id"] = map_to_curriculum_skill(m.get("category", ""), m.get("original", ""), m.get("short_explanation", ""))
+                    if not m.get("fact_type"):
+                        m["fact_type"] = "grammar_error"
 
-            for v in raw_json.get("vocabulary", []):
-                if not v.get("session_id"):
-                    v["session_id"] = session_id
-                if not v.get("message_id") and user_turns:
-                    v["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
-                if not v.get("curriculum_skill_id"):
-                    v["curriculum_skill_id"] = "collocations"
-                if not v.get("fact_type"):
-                    v["fact_type"] = "natural_alternative"
+                for v in raw_json.get("vocabulary", []):
+                    if not v.get("session_id"):
+                        v["session_id"] = session_id
+                    if not v.get("message_id") and user_turns:
+                        v["message_id"] = user_turns[0].get("message_id", f"{session_id}_seq_0001_user")
+                    if not v.get("curriculum_skill_id"):
+                        v["curriculum_skill_id"] = "collocations"
+                    if not v.get("fact_type"):
+                        v["fact_type"] = "natural_alternative"
 
-            parsed_result = SessionAnalysisResult.model_validate(raw_json)
-            analysis_succeeded = True
-        except Exception as groq_err:
-            logger.warning("Groq session analysis notice: %s; trying Gemini fallback", groq_err)
+                parsed_result = SessionAnalysisResult.model_validate(raw_json)
+                analysis_succeeded = True
+                break
+            except Exception as groq_err:
+                logger.warning("Groq session analysis notice (%s): %s; trying next fallback", groq_analysis_model, groq_err)
 
     if not analysis_succeeded and api_key:
         for genai_model_name in _gemini_chain_for(model, GEMINI_CHAIN):
@@ -789,6 +805,15 @@ def _error_key(error: dict) -> tuple:
             _normalise(error["original"]), _normalise(error["corrected"]))
 
 
+def _core_phrase(norm_text: str) -> str:
+    """Strip leading pronouns or time words so 'I didn't go' also matches 'Use didn't go'."""
+    tokens = norm_text.split()
+    leading = {"i", "you", "we", "they", "he", "she", "it", "yesterday", "today", "tomorrow"}
+    while len(tokens) > 2 and tokens[0] in leading:
+        tokens.pop(0)
+    return " ".join(tokens)
+
+
 def _repetition_evidence(
     analysis: SessionAnalysisResult, messages: list[dict]
 ) -> tuple[dict[str, int], dict[str, int]]:
@@ -800,7 +825,19 @@ def _repetition_evidence(
     ordered = sorted(messages, key=lambda item: item.get("sequence", 0))
     successes: dict[str, int] = {}
     failures: dict[str, int] = {}
-    for fact in _analysis_errors(analysis, messages):
+
+    candidate_facts = list(_analysis_errors(analysis, messages))
+    # Support explicit target repetition facts (e.g. guided practice without a prior error turn)
+    for m in analysis.mistakes:
+        if (
+            m.fact_type == "natural_alternative"
+            and m.confidence >= max(0.75, CONFIDENCE_THRESHOLD)
+            and m.short_explanation.strip().lower() == "target repetition"
+        ):
+            candidate_facts.append(m)
+
+    for fact in candidate_facts:
+        is_target_rep_only = (fact.fact_type == "natural_alternative")
         source_index = next((i for i, item in enumerate(ordered) if item.get("message_id") == fact.message_id), -1)
         # Models occasionally omit or alter the supplied message id. Fall
         # back to the learner utterance containing the observed original so a
@@ -814,11 +851,25 @@ def _repetition_evidence(
         if source_index < 0:
             continue
         corrected = _normalise(fact.corrected)
+        core_corrected = _core_phrase(corrected)
+        original = _normalise(fact.original)
+        core_original = _core_phrase(original)
+        prompt_tokens = (
+            "repeat", "try saying", "try again", "say that again",
+            "say ", "say:", "say'", 'say"', "correction", "once more",
+        )
         prompt_index = next((
             i for i in range(source_index + 1, len(ordered))
             if ordered[i].get("role") == "assistant"
-            and any(token in ordered[i].get("text", "").lower() for token in ("repeat", "try saying", "say ", "say'", "correction"))
-            and corrected in _normalise(ordered[i].get("text", ""))
+            and any(token in ordered[i].get("text", "").lower() for token in prompt_tokens)
+            and (
+                (corrected and corrected in _normalise(ordered[i].get("text", "")))
+                or (
+                    core_corrected
+                    and core_corrected != core_original
+                    and core_corrected in _normalise(ordered[i].get("text", ""))
+                )
+            )
         ), -1)
         if prompt_index < 0:
             continue
@@ -826,46 +877,22 @@ def _repetition_evidence(
         if not reply or not _normalise(reply.get("text", "")) or _is_hindi_evidence(reply.get("text", ""), reply):
             continue
         skill_id = fact.curriculum_skill_id or map_to_curriculum_skill(fact.category, fact.original, fact.short_explanation)
-        corrected = _normalise(fact.corrected)
-        original = _normalise(fact.original)
         reply_text = _normalise(reply.get("text", ""))
         prompt_text = ordered[prompt_index].get("text", "")
         quoted_targets = [_normalise(value) for value in re.findall(r"['\u2018\u2019\"\u201c\u201d]([^'\u2018\u2019\"\u201c\u201d]+)['\u2018\u2019\"\u201c\u201d]", prompt_text)]
+        say_colon_targets = [
+            _normalise(m.group(1))
+            for m in re.finditer(r"\bsay:\s*([^.?!]+)", prompt_text, flags=re.IGNORECASE)
+        ]
         # Prefer structured analysis' correction, but accept the tutor's
         # explicitly quoted target as the authoritative event-level fallback.
-        # This keeps learner-event evidence robust when an LLM paraphrases its
-        # fact while the tutor correctly asks for a concrete repetition.
-        targets = [corrected, *quoted_targets]
+        targets = [t for t in [corrected, core_corrected, *quoted_targets, *say_colon_targets] if t]
         repeated_target = any(target and target in reply_text for target in targets)
         if repeated_target and original not in reply_text:
             successes[skill_id] = successes.get(skill_id, 0) + 1
-        else:
+        elif not is_target_rep_only:
             failures[skill_id] = failures.get(skill_id, 0) + 1
     return successes, failures
-
-
-async def apply_proficiency_assessment(user_id: str, assessment: ProficiencyAssessment) -> dict:
-    """Persist a dedicated multi-dimensional assessment and change overall level.
-
-    This is the only code path that changes ``pravaah_level`` or its internal
-    ``cefr_reference``. Ordinary learning sessions never call it.
-    """
-    db = get_firestore_client()
-    user_ref = db.collection("users").document(user_id)
-    cefr_reference = cefr_reference_for_pravaah_level(assessment.pravaah_level)
-    assessment_data = assessment.model_dump()
-    assessment_data["cefr_reference"] = cefr_reference
-    assessment_data["created_at"] = datetime.now(timezone.utc)
-    user_ref.collection("proficiency_assessments").document(assessment.assessment_id).set(assessment_data, merge=True)
-    user_ref.set({
-        "pravaah_level": assessment.pravaah_level,
-        "cefr_reference": cefr_reference,
-        # Retained internally for legacy consumers; this is not a UI label.
-        "cefr_level": cefr_reference,
-        "last_proficiency_assessment_id": assessment.assessment_id,
-        "updated_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    return {"pravaah_level": assessment.pravaah_level, "cefr_reference": cefr_reference}
 
 
 async def update_learner_mastery(
@@ -919,16 +946,28 @@ async def update_learner_mastery(
             skill_errors[skill_id].append(m)
 
     # 2. Correct repetitions require an actual tutor prompt followed by learner evidence.
-    admitted_analysis = SessionAnalysisResult(mistakes=[m for errors in skill_errors.values() for m in errors])
+    target_rep_facts = [
+        m for m in analysis.mistakes
+        if m.fact_type == "natural_alternative"
+        and m.confidence >= max(0.75, CONFIDENCE_THRESHOLD)
+        and m.short_explanation.strip().lower() == "target repetition"
+    ]
+    admitted_analysis = SessionAnalysisResult(
+        mistakes=[m for errors in skill_errors.values() for m in errors] + target_rep_facts
+    )
     skill_corrections, skill_failed_repetitions = _repetition_evidence(admitted_analysis, messages)
     learner_turns = [turn for turn in messages if turn.get("role", "user") in {"user", "learner"}
                      and _normalise(turn.get("text", "")) and not _is_hindi_evidence(turn.get("text", ""), turn)]
 
     # 3. Determine active skills in this session
     active_skills = set(skill_errors.keys()) | set(skill_corrections.keys()) | set(skill_failed_repetitions.keys())
+    session_target_skill = session_data.get("target_skill")
     if not active_skills and learner_turns:
-        # If clean conversational session with no errors, reward general past/sentence structure
-        active_skills.add("sentence_structure")
+        if session_target_skill and session_target_skill in CURRICULUM_SKILLS:
+            active_skills.add(session_target_skill)
+        else:
+            # If clean conversational session with no errors, reward general past/sentence structure
+            active_skills.add("sentence_structure")
 
     # 4. Update each active skill in Firestore under users/{uid}/skills/{skill_id}
     all_skill_mastery: dict[str, float] = {}
@@ -1193,7 +1232,7 @@ async def update_learner_mastery(
         "updated_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
 
-    # 8. Calculate Dynamic Progressive Pravaah Level as learner improves
+    # 8. Preserve overall Pravaah level and CEFR reference (changed only via dedicated assessment)
     existing_user_doc = user_ref.get()
     existing_user_data = existing_user_doc.to_dict() if existing_user_doc.exists else {}
 
@@ -1222,23 +1261,11 @@ async def update_learner_mastery(
             except Exception as assess_lookup_err:
                 logger.warning("Assessment subcollection lookup notice: %s", assess_lookup_err)
 
-    # If still unassessed but has practiced sessions, compute from evidence
     if not pravaah_level or pravaah_level == "unassessed":
-        if len(learner_turns) > 0 or len(active_skills) > 0:
-            pravaah_level = calculate_progressive_level("unassessed", all_skill_mastery, updated_skill_stats)
-            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
-        else:
-            pravaah_level = "unassessed"
-            cefr_reference = "unassessed"
-    else:
-        # User has an established level; calculate progressive advancement (e.g. C -> B -> A -> S)
-        progressive_level = calculate_progressive_level(pravaah_level, all_skill_mastery, updated_skill_stats)
-        if progressive_level != pravaah_level:
-            logger.info("Learner %s advanced from %s to %s through practice!", user_id, pravaah_level, progressive_level)
-            pravaah_level = progressive_level
-            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
-        elif not cefr_reference or cefr_reference == "unassessed":
-            cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
+        pravaah_level = "unassessed"
+        cefr_reference = "unassessed"
+    elif not cefr_reference or cefr_reference == "unassessed":
+        cefr_reference = cefr_reference_for_pravaah_level(pravaah_level)
 
     # 9. Update top-level profile in Firestore
     user_ref.set({
@@ -1373,8 +1400,8 @@ Return ONLY a valid JSON object with this exact structure:
   "grammatical_breakdowns": [
     {"error": "exact learner error or clause", "correction": "natural native correction", "explanation": "specific grammar rule violated"}
   ],
-  "strengths": ["specific strength 1", "specific strength 2"],
-  "weaknesses": ["specific weakness 1", "specific weakness 2"],
+  "strengths": ["curriculum skill ID from: past_simple_auxiliary, past_simple, stative_verbs, subject_verb_agreement, be_verb_misuse, prepositions, articles, collocations, sentence_structure"],
+  "weaknesses": ["curriculum skill ID from: past_simple_auxiliary, past_simple, stative_verbs, subject_verb_agreement, be_verb_misuse, prepositions, articles, collocations, sentence_structure"],
   "criteria": "A 1-sentence tailored qualitative summary evaluating the speaker's true communicative ability without boilerplate text.",
   "analysis_notes": "A rigorous 3-4 sentence PhD-level linguistic diagnostic diagnosing sentence architecture, fluency rhythm, vocalized hesitation sounds (ah, umm, ehh), filler interference, and syntax stability."
 }
@@ -1537,32 +1564,41 @@ async def analyze_assessment_evidence(
         }
         return res
 
-    # 1. Primary: Groq Cloud (Ultra-fast PhD evaluation using openai/gpt-oss-120b, openai/gpt-oss-20b, or qwen/qwen3.8-27b)
+    # 1. Primary: Groq Cloud (Ultra-fast PhD evaluation using qwen/qwen3.8-27b, openai/gpt-oss-120b, or openai/gpt-oss-20b)
     groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
         groq_candidates = [
-            os.getenv("GROQ_ASSESSMENT_MODEL", "openai/gpt-oss-120b"),
+            os.getenv("GROQ_ASSESSMENT_MODEL", "qwen/qwen3.8-27b"),
+            "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
-            "qwen/qwen3.8-27b",
         ]
-        for model_name in groq_candidates:
+        for model_name in dict.fromkeys(groq_candidates):
             try:
-                from groq import Groq
-                gclient = Groq(api_key=groq_key)
-                g_resp = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        gclient.chat.completions.create,
-                        model=model_name,
-                        messages=[
-                            {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
-                            {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
-                        ],
-                        response_format={"type": "json_object"},
-                        max_tokens=2800,
-                        temperature=0.2,
-                    ),
-                    timeout=7.0
-                )
+                from openai import AsyncOpenAI
+                async with AsyncOpenAI(
+                    api_key=groq_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    max_retries=0,
+                ) as gclient:
+                    extra_kwargs = (
+                        {"reasoning_effort": "none"}
+                        if model_name.startswith("qwen/")
+                        else ({"reasoning_effort": "low"} if model_name.startswith("openai/gpt-oss") else {})
+                    )
+                    g_resp = await asyncio.wait_for(
+                        gclient.chat.completions.create(
+                            model=model_name,
+                            messages=[
+                                {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
+                                {"role": "user", "content": f"Evidence for Evaluation:\n{evidence_text}"},
+                            ],
+                            response_format={"type": "json_object"},
+                            max_tokens=2000,
+                            temperature=0.2,
+                            **extra_kwargs,
+                        ),
+                        timeout=8.0,
+                    )
                 raw_text = g_resp.choices[0].message.content or "{}"
                 parsed = json.loads(raw_text.strip())
                 validated = AssessmentObservationOutput.model_validate(parsed)
@@ -1794,23 +1830,24 @@ async def apply_proficiency_assessment(
 
     # Run structured rubric evaluation for curriculum mapping
     eval_result = evaluate_assessment_rubric(
-        grammar_rating=input_dict.get("grammar_rating") or "elementary",
-        vocabulary_rating=input_dict.get("vocabulary_rating") or "elementary",
-        fluency_rating=input_dict.get("fluency_rating") or "elementary",
-        comprehension_rating=input_dict.get("comprehension_rating") or "elementary",
+        grammar_rating=input_dict.get("grammar_rating") or input_dict.get("grammar") or "elementary",
+        vocabulary_rating=input_dict.get("vocabulary_rating") or input_dict.get("vocabulary") or "elementary",
+        fluency_rating=input_dict.get("fluency_rating") or input_dict.get("fluency") or "elementary",
+        comprehension_rating=input_dict.get("comprehension_rating") or input_dict.get("comprehension") or "elementary",
         speaking_complexity=input_dict.get("speaking_complexity") or "elementary",
         conversation_ability=input_dict.get("conversation_ability") or "elementary",
         pronunciation_rating=input_dict.get("pronunciation_rating") or "not_assessed",
         assigned_level=input_dict.get("assigned_level") or input_dict.get("pravaah_level"),
         weaknesses=input_dict.get("weaknesses"),
         strengths=input_dict.get("strengths"),
+        grammatical_breakdowns=input_dict.get("grammatical_breakdowns"),
         current_focus=input_dict.get("current_focus") or input_dict.get("initial_focus"),
     )
 
     pravaah_level = input_dict.get("pravaah_level") or eval_result["pravaah_level"]
     cefr_reference = cefr_reference_for_pravaah_level(pravaah_level) if pravaah_level in {"E", "D", "C", "B", "A", "S"} else eval_result["cefr_reference"]
-    weaknesses = input_dict.get("weaknesses") or eval_result["weaknesses"]
-    strengths = input_dict.get("strengths") or eval_result["strengths"]
+    weaknesses = eval_result["weaknesses"]
+    strengths = eval_result["strengths"]
     initial_focus = eval_result["current_focus"]
 
     assessment_id = input_dict.get("assessment_id") or f"assess_{uuid.uuid4().hex[:8]}"

@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 
 from livekit import rtc
-from livekit.agents import stt
+from livekit.agents import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS, stt
 
 logger = logging.getLogger("pravaah-sherpa-stt")
 
@@ -42,7 +42,7 @@ class SherpaStreamingSTT(stt.STT):
         buffer: rtc.AudioFrame,
         *,
         language: Optional[str] = None,
-        conn_options: Optional[stt.STTConnectOptions] = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> stt.SpeechEvent:
         # Fallback offline recognize over a single buffer
         stream = self.stream(language=language, conn_options=conn_options)
@@ -61,10 +61,11 @@ class SherpaStreamingSTT(stt.STT):
         self,
         *,
         language: Optional[str] = None,
-        conn_options: Optional[stt.STTConnectOptions] = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> stt.SpeechStream:
         return SherpaSpeechStream(
             stt=self,
+            conn_options=conn_options,
             server_url=self.server_url,
             sample_rate=self.sample_rate,
             language=language or "en",
@@ -82,8 +83,9 @@ class SherpaSpeechStream(stt.SpeechStream):
         server_url: str,
         sample_rate: int,
         language: str,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> None:
-        super().__init__(stt)
+        super().__init__(stt=stt, conn_options=conn_options, sample_rate=sample_rate)
         self.server_url = server_url
         self.sample_rate = sample_rate
         self.language = language

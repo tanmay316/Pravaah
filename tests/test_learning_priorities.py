@@ -164,6 +164,9 @@ def offline_engine():
         stack.enter_context(patch.object(socket.socket, "connect", forbidden))
         original_path = list(sys.path)
         stack.callback(lambda: sys.path.__setitem__(slice(None), original_path))
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
         stack.enter_context(patch.dict(sys.modules))
         # External adapters are inert even if their packages are not installed.
         # Curriculum/worker and their Pydantic validation remain real code.

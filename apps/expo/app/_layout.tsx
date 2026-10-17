@@ -4,6 +4,7 @@
  * Configures SafeAreaProvider, Expo Router, obsidian dark theme styling, status bar, and auth gating.
  */
 
+import "../lib/polyfills";
 import { useEffect } from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
@@ -15,6 +16,8 @@ import { useAuth } from "../lib/firebase";
 import { wakeBackend } from "../lib/api";
 import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
+
+export { default as ErrorBoundary } from "../components/ScreenError";
 
 // @expo/vector-icons relies on fontfaceobserver on web, which tests latin glyphs (BESbswy).
 // Icon fonts only contain private-use unicode glyphs, causing fontfaceobserver to timeout

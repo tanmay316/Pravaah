@@ -3,7 +3,13 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    JOB_EXECUTOR=process
+    JOB_EXECUTOR=process \
+    STT_PROVIDER=groq_turbo \
+    VAD_MIN_SILENCE=0.38 \
+    MIN_ENDPOINTING_DELAY=0.22 \
+    MAX_ENDPOINTING_DELAY=0.85 \
+    GROQ_VOICE_MODEL=qwen/qwen3.8-27b \
+    GROQ_FAST_MODEL=qwen/qwen3.8-27b
 
 WORKDIR /app
 

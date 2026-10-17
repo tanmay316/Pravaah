@@ -17,6 +17,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ from livekit.agents import (
     cli,
 )
 from livekit.agents import llm as agent_llm
+from livekit.agents import stt as agent_stt
 from livekit.agents import tts as agent_tts
 from livekit.plugins import google, groq, openai, silero
 from openai import AsyncOpenAI
@@ -118,7 +120,27 @@ def parse_session_context(raw_metadata: str | None) -> dict:
     ):
         if parsed.get(key):
             ctx[key] = parsed[key]
+    raw_title = str(ctx.get("lesson_title") or "")
+    if raw_title:
+        ctx["lesson_title"] = spoken_title(raw_title)
+    topic = str(ctx.get("topic") or "").strip()
+    # Older clients sent the plan activity title as the topic; it is not a conversation subject.
+    if topic and (":" in topic or spoken_title(topic).lower() in {spoken_title(raw_title).lower(), str(ctx.get("lesson_title") or "").lower()}):
+        ctx["topic"] = None
     return ctx
+
+
+_PLAN_LABELS = {"targeted correction & retry", "conversation transfer", "real-world transfer",
+                "retention review", "fix", "targeted grammar practice"}
+
+
+def spoken_title(title: str) -> str:
+    """'Targeted Correction & Retry: Past Simple: did/didn't + base verb' -> 'Past Simple'."""
+    parts = [p.strip() for p in str(title).split(":") if p.strip()]
+    if len(parts) > 1 and parts[0].lower() in _PLAN_LABELS:
+        parts = parts[1:]
+    name = parts[0] if parts else str(title).strip()
+    return re.sub(r"\s*\([^)]*\)", "", name).strip() or name
 
 
 def first_name(full_name: str | None) -> str | None:
@@ -172,25 +194,29 @@ RULES:
     base += """
 ## SPOKEN TEACHING LOOP (all practice modes)
 - Listen to the learner's meaning. For a clear grammar or word-choice error, correct ONE important
-    error in your very next spoken response. Prioritize the target skill or an error changing meaning.
-- Briefly acknowledge meaning, model the corrected phrase, give a tiny rule if useful, and ask:
+    error (or closely linked tense pair in the same clause) in your very next spoken response. Prioritize the target skill or an error changing meaning.
+- Briefly acknowledge meaning, model the complete corrected sentence (e.g. "Say: Yesterday I went to the market and bought a shirt."), give a tiny 1-line rule explaining why (e.g. "Use went and bought for the past, and say the market."), and ask:
     "Can you say that again?" Do NOT ask a new conversation question in this correction turn.
 - Example: learner "Yesterday I go to market." Tutor: "Say: Yesterday I went to the market.
     Use went for the past. Can you say that again?"
-- On the next turn, evaluate the retry before moving on. If corrected, acknowledge the specific
-    improvement and ask for ONE new sentence applying it to their life. If still wrong, model it
-    more simply; after two attempts offer support and move on, without claiming mastery.
-- If English is already correct, respond naturally and ask one topic question. Do not invent
-    errors, demand exact wording, correct an accent from text, or label style preferences as mistakes.
-- Hindi/Hinglish is a bridge, not a grammar error. Model the natural English equivalent and ask
-    the learner to try it in English. Never pretend uncertain transcription is a grammar mistake;
-    ask for clarification when the meaning is unclear.
+- On the next turn, evaluate the retry before moving on. If corrected, praise warmly (e.g. "Perfect! Well done.") and ask ONE natural follow-up question or ask for one new sentence applying it. If still wrong, explain the rule more clearly and model it again; after two attempts offer support and move on, without claiming mastery.
+- If the learner's English is already grammatically correct and natural, NEVER say "correction", "you should say", or "mistake". Respond naturally to their meaning and ask one open follow-up question. Do not invent errors, demand exact wording, correct an accent from text, or label style preferences as mistakes.
+- Hindi/Hinglish is a bridge, not a grammar error. If the learner speaks in Hindi or asks a question in Hindi/Hinglish (e.g. "Mujhe samajh nahi aaya"), clarify the concept warmly, model the natural English equivalent, and ask the learner to try it in English. Never pretend uncertain transcription is a grammar mistake; ask for clarification when the meaning is unclear.
 - Occasionally teach ONE useful word or collocation in context, explain it simply, and request
     their own example. Do not replace simple valid English with unnecessarily complex words.
 - YOU own the spoken correction. Background cards are visual notes only: never wait for them.
 """
-    if lesson_context.get("hindi_support") == "off":
+    level = str(lesson_context.get("pravaah_level") or "").upper()
+    if level in {"E", "D"}:
+        base += "\nLearner level: Beginner/Basic (A1-A2). Use simple everyday words, short clear sentences, and gentle scaffolding.\n"
+    elif level in {"A", "S"}:
+        base += "\nLearner level: Advanced/Mastery (B2-C2). Use natural idiomatic English and focus on nuanced collocations and precision.\n"
+
+    hindi_pref = lesson_context.get("hindi_support")
+    if hindi_pref == "off":
         base += "\nExplain rules in simple English only; do not add Hindi explanations.\n"
+    elif hindi_pref == "high":
+        base += "\nUse a short Hinglish rule or memory hook when explaining a correction or when the learner needs help; model practice sentences in English.\n"
     else:
         base += "\nUse a short Hinglish rule only when the learner needs help; model practice sentences in English.\n"
     if target_skill:
@@ -270,6 +296,9 @@ CONVERSATIONAL STEERING RULES (CRITICAL):
 - Concise spoken turns: 1 to 3 sentences maximum (25-35 words).
 - On correct turns ask an open topic question. On error turns the retry is your only prompt.
 """
+
+
+TUTOR_SYSTEM_PROMPT = build_mode_instructions("free_conversation", None, DEFAULT_CONTEXT)
 
 
 def build_greeting(lesson_context: dict, target_skill: str | None) -> str:
@@ -392,6 +421,9 @@ async def run_parallel_accuracy_check(room, client, model: str, text: str, turn_
     try:
         # Async HTTP can actually be cancelled; cancelling to_thread left old requests
         # running and accumulating while the learner kept talking.
+        extra_kwargs = {"reasoning_effort": "none"} if model.startswith("qwen/") else (
+            {"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {}
+        )
         response = await asyncio.wait_for(client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": CARD_INSTRUCTIONS},
@@ -399,6 +431,7 @@ async def run_parallel_accuracy_check(room, client, model: str, text: str, turn_
             response_format={"type": "json_object"},
             max_tokens=320,
             temperature=0.1,
+            **extra_kwargs,
         ), timeout=3.0)
         content = response.choices[0].message.content
         if not content:
@@ -494,7 +527,7 @@ class EnglishTutor(Agent):
                     timeout=3.0,
                     max_retries=0,
                 )
-            model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant") if groq_key else GEMINI_CARD_CHAIN[0]
+            model = os.getenv("GROQ_FAST_MODEL", "qwen/qwen3.8-27b") if groq_key else GEMINI_CARD_CHAIN[0]
             self._card_task = asyncio.create_task(run_parallel_accuracy_check(
                 self.room, self._card_client, model, user_text, self._turn_id
             ))
@@ -550,6 +583,24 @@ async def entrypoint(ctx: JobContext):
     room_name = room.name or ""
     session_id = room_name.removeprefix("session_") if room_name.startswith("session_") else room_name
 
+    # Pre-warm the shared Groq HTTP/2 keep-alive pool in parallel with participant join so
+    # Turn 1 does not pay ~1.1s of cold DNS/TCP/TLS negotiation on the critical speech path.
+    groq_key = os.getenv("GROQ_API_KEY")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    nvidia_key = os.getenv("NVIDIA_API_KEY")
+    shared_groq_client = (
+        AsyncOpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1", max_retries=0)
+        if groq_key
+        else None
+    )
+    if shared_groq_client is not None:
+        async def _warm_groq():
+            try:
+                await asyncio.wait_for(shared_groq_client.models.list(), timeout=3.0)
+            except Exception as exc:
+                logger.debug("Groq socket warmup note: %s", exc)
+        asyncio.create_task(_warm_groq())
+
     # Wait briefly for the learner, then read the session context straight off their join
     # token. This replaces a Firestore round trip that used to run on the realtime loop.
     participant = None
@@ -581,45 +632,101 @@ async def entrypoint(ctx: JobContext):
         logger.warning("VAD was not prewarmed; loading it on the join path.")
         vad = load_vad()
 
-    # 2. Hindi can be explicitly selected instead of guessing language on tiny turns.
+    # 2. STT: Open-source Whisper Large v3 Turbo (~180ms on Groq) + Whisper v3 fallback +
+    # optional self-hosted Sherpa-ONNX streaming WebSocket or local faster-whisper server.
     stt_provider = os.getenv("STT_PROVIDER", "groq_turbo").lower()
     if stt_provider == "sherpa_streaming" and lesson_context.get("speech_language") != "en":
         logger.info("Using multilingual Groq STT for Hindi/auto recognition.")
         stt_provider = "groq_turbo"
+
+    stt_candidates = []
     if stt_provider == "sherpa_streaming":
         try:
             from sherpa_stt import SherpaStreamingSTT
             sherpa_url = os.getenv("SHERPA_WS_URL", "ws://localhost:6006")
             logger.info("Using Sherpa-ONNX streaming ASR server at %s", sherpa_url)
-            stt = SherpaStreamingSTT(server_url=sherpa_url)
+            stt_candidates.append(SherpaStreamingSTT(server_url=sherpa_url))
         except Exception as s_err:
             logger.warning("Failed to initialize SherpaStreamingSTT (%s), falling back to Groq Turbo", s_err)
-            stt_provider = "groq_turbo"
 
-    if stt_provider != "sherpa_streaming":
-        stt = groq.STT(**stt_options(lesson_context))
+    local_stt_base = os.getenv("STT_BASE_URL")
+    if local_stt_base:
+        try:
+            base_opts = stt_options(lesson_context)
+            stt_candidates.append(
+                openai.STT(
+                    model=os.getenv("LOCAL_STT_MODEL", "Systran/faster-distil-whisper-large-v3"),
+                    language=base_opts["language"],
+                    detect_language=base_opts["detect_language"],
+                    base_url=local_stt_base,
+                    api_key=os.getenv("LOCAL_STT_API_KEY", "not-needed"),
+                )
+            )
+        except Exception as l_err:
+            logger.warning("Local STT endpoint unavailable: %s", l_err)
 
-    # 3. LLM: Groq first for latency, then the Gemini chain. FallbackAdapter switches
-    # providers per-request, so one model's quota running out doesn't end the session.
-    groq_key = os.getenv("GROQ_API_KEY")
-    gemini_key = os.getenv("GEMINI_API_KEY")
+    if groq_key:
+        primary_opts = stt_options(lesson_context)
+        if stt_provider == "groq_turbo" and not os.getenv("GROQ_STT_MODEL") and not os.getenv("GROQ_STT_HINDI_MODEL"):
+            primary_opts["model"] = "whisper-large-v3-turbo"
+        stt_candidates.append(groq.STT(client=shared_groq_client, **primary_opts))
+        # Second Groq Whisper model has a separate free-tier rate-limit bucket
+        alt_model = "whisper-large-v3" if primary_opts["model"] == "whisper-large-v3-turbo" else "whisper-large-v3-turbo"
+        alt_opts = {**primary_opts, "model": alt_model}
+        stt_candidates.append(groq.STT(client=shared_groq_client, **alt_opts))
+
+    if not stt_candidates:
+        stt_candidates.append(groq.STT(**stt_options(lesson_context)))
+
+    stt = stt_candidates[0] if len(stt_candidates) == 1 else agent_stt.FallbackAdapter(
+        stt_candidates, vad=vad, attempt_timeout=4.5, max_retry_per_stt=0,
+    )
+
+    # 3. LLM: Ultra-fast open-weight Qwen 3.8 27B (non-thinking, ~140ms TTFT on warm socket),
+    # then GPT-OSS 20B/120B, then NVIDIA NIM Llama 3.2 11B (~230ms TTFT), then Gemini chain.
     llm_candidates = []
 
     if groq_key:
-        for groq_model in _model_chain(
-            "GROQ_MODEL_CHAIN",
-            os.getenv("GROQ_VOICE_MODEL", "openai/gpt-oss-20b") + ",llama-3.3-70b-versatile",
-        ):
-            # gpt-oss is a reasoning model: at the default effort it thinks for hundreds of
-            # tokens before the first spoken word. Spoken replies are <=40 words anyway.
-            extra = {"reasoning_effort": "low"} if groq_model.startswith("openai/gpt-oss") else {}
+        default_groq_chain = (
+            os.getenv("GROQ_VOICE_MODEL", "qwen/qwen3.8-27b")
+            + ",openai/gpt-oss-20b,openai/gpt-oss-120b"
+        )
+        for groq_model in _model_chain("GROQ_MODEL_CHAIN", default_groq_chain):
+            # Disable hidden chain-of-thought on Qwen 3.8 (~140ms TTFT) and minimize it on gpt-oss
+            extra = (
+                {"reasoning_effort": "none"}
+                if groq_model.startswith("qwen/")
+                else ({"reasoning_effort": "low"} if groq_model.startswith("openai/gpt-oss") else {})
+            )
             try:
                 llm_candidates.append(groq.LLM(
-                    model=groq_model, api_key=groq_key, temperature=0.3,
-                    max_completion_tokens=400, **extra,
+                    model=groq_model,
+                    api_key=groq_key,
+                    client=shared_groq_client,
+                    temperature=0.25,
+                    max_completion_tokens=220,
+                    **extra,
                 ))
             except Exception as exc:
                 logger.warning("Groq LLM %s unavailable: %s", groq_model, exc)
+
+    if nvidia_key:
+        for nv_model in _model_chain(
+            "NVIDIA_VOICE_MODEL_CHAIN",
+            "meta/llama-3.2-11b-vision-instruct,google/diffusiongemma-26b-a4b-it",
+        ):
+            try:
+                llm_candidates.append(
+                    openai.LLM(
+                        model=nv_model,
+                        base_url="https://integrate.api.nvidia.com/v1",
+                        api_key=nvidia_key,
+                        temperature=0.25,
+                        max_completion_tokens=220,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("NVIDIA NIM LLM %s unavailable: %s", nv_model, exc)
 
     if gemini_key:
         for gemini_model in GEMINI_VOICE_CHAIN:
@@ -632,7 +739,7 @@ async def entrypoint(ctx: JobContext):
 
     if not llm_candidates:
         logger.error(
-            "No GROQ_API_KEY or GEMINI_API_KEY set; falling back to the LiteLLM proxy at %s",
+            "No GROQ_API_KEY, NVIDIA_API_KEY, or GEMINI_API_KEY set; falling back to LiteLLM at %s",
             LITELLM_PROXY_URL,
         )
         llm_candidates.append(
@@ -641,22 +748,31 @@ async def entrypoint(ctx: JobContext):
 
     logger.info("LLM chain: %s", [c.model for c in llm_candidates])
     llm = llm_candidates[0] if len(llm_candidates) == 1 else agent_llm.FallbackAdapter(
-        llm_candidates, attempt_timeout=3.0, max_retry_per_llm=0,
+        llm_candidates, attempt_timeout=2.5, max_retry_per_llm=0,
     )
 
-    # 4. TTS: Edge neural voices streamed in-process (no extra HTTP hop or cold start), then
-    # an optional OpenAI-compatible /v1/audio/speech host, then Groq's hosted TTS.
-    # TTS_PROVIDER=http restores the old remote-first order.
+    # 4. TTS: Edge neural voices with persistent pre-warmed WebSocket pool & in-process LRU cache,
+    # then optional OpenAI-compatible local/remote TTS server (Kokoro ONNX / Render).
     voices = tts_options(lesson_context)
+    greeting_text = build_greeting(lesson_context, target_skill)
+
+    edge_primary = EdgeTTS(voice=voices["neural"])
+    # Pre-connect Edge TTS WebSocket pool & pre-synthesize the greeting immediately in background
+    asyncio.create_task(edge_primary.warm_up([
+        greeting_text,
+        "Can you say that again?",
+        "Great job! Let's keep going.",
+    ]))
+
     tts_base_url = os.getenv("TTS_BASE_URL") or os.getenv("KOKORO_BASE_URL")
     remote_tts = [
         openai.TTS(model="tts-1", voice=voices["neural"], api_key="not-needed", base_url=tts_base_url)
     ] if tts_base_url else []
-    edge = [EdgeTTS(voice=voices["neural"])]
+    edge = [edge_primary]
     tts_candidates = remote_tts + edge if os.getenv("TTS_PROVIDER", "edge").lower() == "http" else edge + remote_tts
     logger.info("TTS chain: %s (voice=%s)", [type(t).__name__ for t in tts_candidates], voices["neural"])
 
-    if groq_key:
+    if groq_key and os.getenv("GROQ_TTS_ENABLED", "false").lower() in {"1", "true", "yes"}:
         try:
             tts_candidates.append(
                 groq.TTS(
@@ -672,15 +788,15 @@ async def entrypoint(ctx: JobContext):
         tts_candidates, max_retry_per_tts=0,
     )
 
-    # 5. AgentSession: Low-latency turn-around + outdoor false-interruption defense
+    # 5. AgentSession: Ultra-low-latency turn-around + outdoor false-interruption defense
     session = AgentSession(
         stt=stt,
         vad=vad,
         llm=llm,
         tts=tts,
         turn_detection="vad",
-        min_endpointing_delay=_tuning("MIN_ENDPOINTING_DELAY", 0.40),
-        max_endpointing_delay=_tuning("MAX_ENDPOINTING_DELAY", 1.20),
+        min_endpointing_delay=_tuning("MIN_ENDPOINTING_DELAY", 0.22),
+        max_endpointing_delay=_tuning("MAX_ENDPOINTING_DELAY", 0.85),
         preemptive_generation=True,
         allow_interruptions=True,
         min_interruption_duration=0.35,  # Protects against wind puffs or breath bursts during walking/running
@@ -696,6 +812,8 @@ async def entrypoint(ctx: JobContext):
         target_skill=target_skill,
         lesson_context=lesson_context,
     )
+    if shared_groq_client is not None:
+        tutor._card_client = shared_groq_client
 
     # Keep track of transcript messages for persistence & analysis
     session_messages = []

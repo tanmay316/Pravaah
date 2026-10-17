@@ -1,0 +1,11 @@
+# Used instead of the root .dockerignore when building deploy/web/Dockerfile (BuildKit).
+**
+!apps/expo/**
+!deploy/web/nginx.conf
+apps/expo/node_modules
+apps/expo/dist
+apps/expo/.expo
+apps/expo/android
+apps/expo/ios
+apps/expo/**/.env
+apps/expo/*.jks

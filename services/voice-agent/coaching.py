@@ -39,8 +39,13 @@ def stt_options(context: dict) -> dict:
     language = context.get("speech_language", "en")
     if language not in {"auto", "en", "hi"}:
         language = "en"
-    model = os.getenv("GROQ_STT_HINDI_MODEL", "whisper-large-v3") if language == "hi" else os.getenv(
-        "GROQ_STT_MODEL", "whisper-large-v3"
+    default_model = (
+        "whisper-large-v3-turbo"
+        if os.getenv("STT_PROVIDER", "").lower() == "groq_turbo"
+        else "whisper-large-v3"
+    )
+    model = os.getenv("GROQ_STT_HINDI_MODEL", default_model) if language == "hi" else os.getenv(
+        "GROQ_STT_MODEL", default_model
     )
     return {
         "model": model,

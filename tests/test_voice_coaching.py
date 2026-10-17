@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 from types import SimpleNamespace
 import unittest
@@ -38,10 +39,10 @@ def agent_namespace(silero=None):
     tree = ast.parse((VOICE / "agent.py").read_text(encoding="utf-8"))
     names = {"DEFAULT_CONTEXT", "first_name", "parse_session_context", "build_mode_instructions",
              "build_greeting", "EnglishTutor", "run_parallel_accuracy_check",
-             "_tuning", "load_vad", "prewarm"}
+             "_tuning", "load_vad", "prewarm", "spoken_title", "_PLAN_LABELS"}
     nodes = [n for n in tree.body if getattr(n, "name", None) in names or (
         isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names for t in n.targets))]
-    namespace = {"asyncio": asyncio, "os": os, "json": json, "time": time, "Agent": StubAgent,
+    namespace = {"asyncio": asyncio, "os": os, "json": json, "time": time, "re": re, "Agent": StubAgent,
                  "agent_llm": SimpleNamespace(StopResponse=StopResponse),
                  "logger": logging.getLogger("test-voice"), "AsyncOpenAI": Mock(),
                  "silero": silero or SimpleNamespace(VAD=SimpleNamespace(load=Mock())),
@@ -100,6 +101,9 @@ class SpeechPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {"GROQ_STT_HINDI_MODEL": "custom", "GROQ_STT_MODEL": "fast"}):
             self.assertEqual(policy.stt_options({"speech_language": "hi"})["model"], "custom")
             self.assertEqual(policy.stt_options({})["model"], "fast")
+        with patch.dict(os.environ, {"STT_PROVIDER": "groq_turbo"}, clear=True):
+            self.assertEqual(policy.stt_options({})["model"], "whisper-large-v3-turbo")
+            self.assertEqual(policy.stt_options({"speech_language": "hi"})["model"], "whisper-large-v3-turbo")
     def test_card_requires_confidence_and_exact_evidence(self):
         card = {"has_card": True, "original": "I go yesterday", "corrected": "I went yesterday", "confidence": 0.95}
         self.assertIsNotNone(policy.CorrectionCard(**card).for_utterance("I go yesterday."))
@@ -187,6 +191,16 @@ class PromptTests(unittest.TestCase):
         greeting = self.ns["build_greeting"]({"mode": "grammar_practice", "practice_activity": "SECRET INTERNAL RULE"}, "past_simple")
         self.assertNotIn("SECRET INTERNAL RULE", greeting)
 
+    def test_plan_activity_title_is_spoken_cleanly_and_not_used_as_topic(self):
+        title = "Targeted Correction & Retry: Past Simple: did/didn't + base verb"
+        context = self.ns["parse_session_context"](json.dumps(
+            {"mode": "grammar_practice", "conversation_goal": "grammar", "lesson_title": title, "topic": title}))
+        self.assertEqual(context["lesson_title"], "Past Simple")
+        self.assertIsNone(context["topic"])
+        greeting = self.ns["build_greeting"](context, "past_simple_auxiliary")
+        self.assertIn("practising Past Simple", greeting)
+        self.assertNotIn(":", greeting)
+
 
 class VoiceHookTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -234,7 +248,8 @@ class VoiceHookTests(unittest.IsolatedAsyncioTestCase):
         })))])
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=response))))
         room = SimpleNamespace(local_participant=SimpleNamespace(publish_data=AsyncMock()))
-        await self.ns["run_parallel_accuracy_check"](room, client, "model", "I go yesterday", 2)
+        await self.ns["run_parallel_accuracy_check"](room, client, "qwen/qwen3.8-27b", "I go yesterday", 2)
+        self.assertEqual(client.chat.completions.create.call_args.kwargs.get("reasoning_effort"), "none")
         payload = json.loads(room.local_participant.publish_data.call_args.args[0])
         self.assertEqual(payload["turn_id"], 2)
         self.assertEqual(payload["corrected"], "I went yesterday")

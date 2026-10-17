@@ -1,0 +1,22 @@
+# Apache / shared hosting (cPanel, Hostinger, ...): upload the contents of apps/expo/dist to
+# public_html together with this file (needs mod_rewrite and mod_headers).
+
+<IfModule mod_headers.c>
+  Header set Cache-Control "no-cache"
+  Header set X-Content-Type-Options "nosniff"
+  Header set Permissions-Policy "microphone=(self), camera=()"
+  <If "%{REQUEST_URI} =~ m#^/(_expo|assets)/#">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+    Header set Access-Control-Allow-Origin "*"
+  </If>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  # A missing bundle must 404, not fall back to index.html (that renders a blank page).
+  RewriteRule ^(_expo|assets)/ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>

@@ -43,6 +43,9 @@ apps/expo/ios/
 apps/expo/.expo/
 apps/expo/dist/
 apps/expo/web-build/
+apk/
+*.apk
+*.aab
 
 # === Python ===
 __pycache__/

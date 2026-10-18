@@ -71,12 +71,13 @@ DEFAULT_VOICE = "warm_male"
 
 def tts_options(context: dict) -> dict:
     """Resolve the learner's chosen coach voice for both TTS providers."""
-    choice = context.get("tts_voice")
-    voice = VOICE_CHOICES.get(choice) or VOICE_CHOICES[os.getenv("TTS_VOICE_DEFAULT", DEFAULT_VOICE)
-                                                      if os.getenv("TTS_VOICE_DEFAULT") in VOICE_CHOICES
-                                                      else DEFAULT_VOICE]
-    return {"neural": os.getenv("TTS_VOICE") or voice["neural"],
-            "groq": os.getenv("GROQ_TTS_VOICE") or voice["groq"]}
+    chosen = VOICE_CHOICES.get(context.get("tts_voice"))
+    if chosen:
+        # The learner's pick must win; TTS_VOICE is only a deployment-wide default.
+        return {"neural": chosen["neural"], "groq": chosen["groq"]}
+    default = VOICE_CHOICES.get(os.getenv("TTS_VOICE_DEFAULT", ""), VOICE_CHOICES[DEFAULT_VOICE])
+    return {"neural": os.getenv("TTS_VOICE") or default["neural"],
+            "groq": os.getenv("GROQ_TTS_VOICE") or default["groq"]}
 
 
 class CorrectionCard(BaseModel):

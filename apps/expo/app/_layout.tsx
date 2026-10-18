@@ -276,6 +276,7 @@ function RootLayoutNav() {
         <Stack.Screen name="auth" />
         <Stack.Screen name="assessment" />
         <Stack.Screen name="session" />
+        <Stack.Screen name="voice" />
       </Stack>
     </>
   );

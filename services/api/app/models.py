@@ -156,7 +156,8 @@ class LearnerProfile(BaseModel):
     daily_goal_minutes: int = 15
     tutor_style: str = "encouraging"
     hindi_support: str = "high"  # high | occasional | minimal | off
-    tts_voice: TtsVoice = "warm_male"
+    # None until the learner picks a coach voice; sessions fall back to DEFAULT_TTS_VOICE.
+    tts_voice: Optional[TtsVoice] = None
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     developing_skills: list[str] = Field(default_factory=list)

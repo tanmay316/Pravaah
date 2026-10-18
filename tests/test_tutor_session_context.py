@@ -607,7 +607,8 @@ class SchemaAndExpoContractTests(unittest.TestCase):
 
     def test_coach_voice_is_an_allowlisted_profile_preference(self):
         profile = MODELS["LearnerProfile"](uid="u1")
-        self.assertEqual(profile.tts_voice, "warm_male")
+        self.assertIsNone(profile.tts_voice)
+        self.assertEqual(MODELS["LearnerProfile"](uid="u1", tts_voice="us_female").tts_voice, "us_female")
         self.assertEqual(MODELS["UpdateProfileRequest"](tts_voice="indian_male").tts_voice, "indian_male")
         self.assertIsNone(MODELS["UpdateProfileRequest"]().tts_voice)
         for voice in ("nope", "../etc", "en-IN-PrabhatNeural"):
@@ -662,7 +663,7 @@ class SchemaAndExpoContractTests(unittest.TestCase):
         # dumps on the cards. Recorded mistakes remain on the Mistakes tab.
         for field in ("source_examples", "prompt_activity", "priority_reason", "priority_rank"):
             self.assertNotIn(f"activity.{field}", dashboard)
-        self.assertIn("skillLabel(activity.target_skill)", dashboard)
+        self.assertIn("activityTitle(activity.title)", dashboard)
         # Exercise counts must come from the plan the server returned for the chosen goal.
         self.assertIn("orderedActivities.length", dashboard)
         self.assertIn("setDailyGoal(minutes)", dashboard)

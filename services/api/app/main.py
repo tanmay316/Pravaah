@@ -805,7 +805,7 @@ async def create_session(
         "roleplay_scenario": roleplay_scenario,
         "pravaah_level": profile_data.get("pravaah_level", "unassessed"),
         "hindi_support": profile_data.get("hindi_support", "high"),
-        "tts_voice": profile_data.get("tts_voice", DEFAULT_TTS_VOICE),
+        "tts_voice": profile_data.get("tts_voice") or DEFAULT_TTS_VOICE,
         "speech_language": body.speech_language,
     }, uid, session_id)
 

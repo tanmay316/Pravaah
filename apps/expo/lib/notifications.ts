@@ -10,6 +10,7 @@
 
 import { Platform } from "react-native";
 import { PRAVAAH_FAVICON_DATA_URI } from "./brand";
+import { skillLabel } from "./skills";
 
 export type NotificationPermissionStatus = "granted" | "denied" | "default" | "unsupported";
 
@@ -188,9 +189,10 @@ export async function scheduleDailyPracticeReminder(
   minute: number,
   focusSkill?: string
 ): Promise<boolean> {
-  const title = "🎙️ Pravaah — Time for Today's Speaking Practice!";
-  const focusText = focusSkill ? `Today's priority: ${focusSkill.replace(/_/g, " ")}.` : "Keep your English fluency streak alive!";
-  const body = `Your daily practice session is ready. ${focusText}`;
+  const title = "Time for your English practice";
+  const body = focusSkill
+    ? `Your coach is ready. Today's focus: ${skillLabel(focusSkill)}.`
+    : "Your coach is ready for today's speaking practice.";
 
   // Save preference in localStorage for Web/PWA
   if (Platform.OS === "web" && typeof window !== "undefined" && window.localStorage) {
@@ -229,6 +231,21 @@ export async function scheduleDailyPracticeReminder(
   }
 
   return true;
+}
+
+export async function getDailyPracticeReminder(): Promise<{ hour: number; minute: number } | null> {
+  if (!ExpoNotifications || Platform.OS === "web") return null;
+  try {
+    const scheduled: any[] = await ExpoNotifications.getAllScheduledNotificationsAsync();
+    const reminder = scheduled.find((n) => n?.content?.data?.type === "daily_practice");
+    const trigger = reminder?.trigger;
+    if (typeof trigger?.hour === "number" && typeof trigger?.minute === "number") {
+      return { hour: trigger.hour, minute: trigger.minute };
+    }
+  } catch (err) {
+    console.warn("Read scheduled reminder error:", err);
+  }
+  return null;
 }
 
 export async function cancelDailyPracticeReminders(): Promise<void> {

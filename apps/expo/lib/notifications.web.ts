@@ -130,6 +130,17 @@ export async function scheduleDailyPracticeReminder(
   return true;
 }
 
+export async function getDailyPracticeReminder(): Promise<{ hour: number; minute: number } | null> {
+  if (typeof window === "undefined" || !window.localStorage) return null;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem("pravaah_reminder_config") || "null");
+    if (saved?.enabled && typeof saved.hour === "number" && typeof saved.minute === "number") {
+      return { hour: saved.hour, minute: saved.minute };
+    }
+  } catch {}
+  return null;
+}
+
 /**
  * Remove scheduled reminder preferences from localStorage.
  */

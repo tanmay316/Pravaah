@@ -91,11 +91,14 @@ class SpeechPolicyTests(unittest.TestCase):
             for voice in policy.VOICE_CHOICES.values():
                 self.assertTrue(voice["neural"] and voice["groq"] and voice["label"])
 
-    def test_operator_overrides_win_over_learner_choice(self):
+    def test_learner_choice_wins_over_deployment_default(self):
         with patch.dict(os.environ, {"TTS_VOICE": "en-IN-PrabhatNeural", "GROQ_TTS_VOICE": "autumn"}):
-            forced = policy.tts_options({"tts_voice": "us_female"})
-            self.assertEqual(forced["neural"], "en-IN-PrabhatNeural")
-            self.assertEqual(forced["groq"], "autumn")
+            chosen = policy.tts_options({"tts_voice": "us_female"})
+            self.assertEqual(chosen["neural"], "en-US-AvaNeural")
+            self.assertEqual(chosen["groq"], "autumn")
+            fallback = policy.tts_options({})
+            self.assertEqual(fallback["neural"], "en-IN-PrabhatNeural")
+            self.assertEqual(fallback["groq"], "autumn")
 
     def test_model_overrides(self):
         with patch.dict(os.environ, {"GROQ_STT_HINDI_MODEL": "custom", "GROQ_STT_MODEL": "fast"}):

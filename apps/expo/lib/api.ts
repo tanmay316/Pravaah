@@ -62,14 +62,14 @@ export type TtsVoice =
   | "us_female";
 
 /** Must stay in sync with VOICE_CHOICES in services/voice-agent/coaching.py. */
-export const COACH_VOICES: { value: TtsVoice; label: string }[] = [
-  { value: "warm_male", label: "Arjun · warm male" },
-  { value: "casual_male", label: "Neil · relaxed male" },
-  { value: "british_male", label: "Oliver · British male" },
-  { value: "indian_male", label: "Prabhat · Indian male" },
-  { value: "indian_female", label: "Ananya · Indian female" },
-  { value: "british_female", label: "Sophie · British female" },
-  { value: "us_female", label: "Ava · American female" },
+export const COACH_VOICES: { value: TtsVoice; name: string; description: string }[] = [
+  { value: "warm_male", name: "Arjun", description: "Warm, steady · American accent" },
+  { value: "casual_male", name: "Neil", description: "Relaxed, friendly · American accent" },
+  { value: "british_male", name: "Oliver", description: "Clear, calm · British accent" },
+  { value: "indian_male", name: "Prabhat", description: "Easy to follow · Indian accent" },
+  { value: "indian_female", name: "Ananya", description: "Gentle, clear · Indian accent" },
+  { value: "british_female", name: "Sophie", description: "Bright, precise · British accent" },
+  { value: "us_female", name: "Ava", description: "Upbeat, natural · American accent" },
 ];
 
 export interface CreateSessionResponse {

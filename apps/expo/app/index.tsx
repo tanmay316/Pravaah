@@ -19,6 +19,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -48,13 +49,15 @@ import {
   VocabularyEntry,
   ProgressSummary,
   PRAVAAH_LEVEL_NAMES,
-  COACH_VOICES,
   TtsVoice,
 } from "../lib/api";
+import VoicePicker from "../components/VoicePicker";
 import { signOut } from "../lib/firebase";
 import { activityObjective, activityTitle, skillLabel } from "../lib/skills";
 import { AppTheme, ThemeColors, theme, useTheme } from "../lib/theme";
 import {
+  cancelDailyPracticeReminders,
+  getDailyPracticeReminder,
   getNotificationPermissionStatus,
   requestNotificationPermission,
   sendLocalNotification,
@@ -62,6 +65,25 @@ import {
 } from "../lib/notifications";
 
 type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
+
+const HINDI_SUPPORT_OPTIONS = [
+  { value: "high", label: "Often", description: "Most corrections are also explained in Hindi" },
+  { value: "occasional", label: "Occasionally", description: "Hindi only when a rule is tricky" },
+  { value: "minimal", label: "Rarely", description: "Mostly English, Hindi if you're stuck" },
+  { value: "off", label: "Never", description: "Everything stays in English" },
+] as const;
+
+const REMINDER_SLOTS = [
+  { label: "Morning", hour: 8, minute: 0, icon: "sunny-outline" },
+  { label: "Afternoon", hour: 13, minute: 0, icon: "partly-sunny-outline" },
+  { label: "Evening", hour: 20, minute: 0, icon: "moon-outline" },
+  { label: "Night", hour: 21, minute: 30, icon: "cloudy-night-outline" },
+] as const;
+
+function formatClock(hour: number, minute: number): string {
+  const period = hour >= 12 ? "PM" : "AM";
+  return `${hour % 12 || 12}:${minute.toString().padStart(2, "0")} ${period}`;
+}
 
 const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
   recent_mistakes: "Recent mistakes",
@@ -193,6 +215,11 @@ export default function DashboardScreen() {
         ]);
 
       if (profData) setProfile(profData);
+      // New learners pick their coach voice once, before their first session.
+      if (profData && !profData.tts_voice) {
+        router.replace("/voice");
+        return;
+      }
       if (planData) setDailyPlan(planData);
       setMistakes(mstkData);
       setVocabulary(vocData);
@@ -321,47 +348,61 @@ export default function DashboardScreen() {
   };
 
   const [notificationPermission, setNotificationPermission] = useState<string>("default");
-  const [reminderTime, setReminderTime] = useState<string>("20:00");
-  const [reminderEnabled, setReminderEnabled] = useState<boolean>(true);
+  const [reminder, setReminder] = useState({ enabled: false, hour: 20, minute: 0 });
   const [notificationFeedback, setNotificationFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    getNotificationPermissionStatus().then((status) => {
-      setNotificationPermission(status);
+    getNotificationPermissionStatus().then(setNotificationPermission);
+    getDailyPracticeReminder().then((saved) => {
+      if (saved) setReminder({ enabled: true, ...saved });
     });
   }, []);
 
-  const handleRequestNotification = async () => {
-    const granted = await requestNotificationPermission();
-    const status = await getNotificationPermissionStatus();
-    setNotificationPermission(status);
-    if (granted) {
-      setNotificationFeedback("Reminders enabled! You will receive daily practice alerts.");
-      setTimeout(() => setNotificationFeedback(null), 4000);
+  const showReminderFeedback = (message: string) => {
+    setNotificationFeedback(message);
+    setTimeout(() => setNotificationFeedback(null), 4000);
+  };
+
+  const enableReminder = async (hour: number, minute: number) => {
+    if (notificationPermission !== "granted") {
+      const granted = await requestNotificationPermission();
+      setNotificationPermission(await getNotificationPermissionStatus());
+      if (!granted) {
+        showReminderFeedback("Notifications are blocked. Allow them for Pravaah in your settings.");
+        return;
+      }
+    }
+    const scheduled = await scheduleDailyPracticeReminder(hour, minute, profile?.current_focus || undefined);
+    if (!scheduled) {
+      showReminderFeedback("Could not schedule the reminder. Please try again.");
+      return;
+    }
+    setReminder({ enabled: true, hour, minute });
+    showReminderFeedback(`You'll be reminded every day at ${formatClock(hour, minute)}.`);
+  };
+
+  const handleToggleReminder = async (on: boolean) => {
+    if (on) {
+      await enableReminder(reminder.hour, reminder.minute);
+    } else {
+      await cancelDailyPracticeReminders();
+      setReminder((prev) => ({ ...prev, enabled: false }));
+      setNotificationFeedback(null);
     }
   };
 
   const handleTestNotification = async () => {
-    const focusSkill = profile?.current_focus || "past_simple_auxiliary";
+    const focusSkill = profile?.current_focus;
     const sent = await sendLocalNotification(
-      "🎙️ Pravaah — Daily Practice Reminder",
-      `Your English session is ready. Today's focus: ${focusSkill.replace(/_/g, " ")}.`,
+      "Time for your English practice",
+      focusSkill
+        ? `Your coach is ready. Today's focus: ${skillLabel(focusSkill)}.`
+        : "Your coach is ready for today's speaking practice.",
       { type: "test_notification" }
     );
-    if (sent) {
-      setNotificationFeedback("Test reminder sent! Check your notifications.");
-    } else {
-      setNotificationFeedback("Please enable notification permissions in your device settings.");
-    }
-    setTimeout(() => setNotificationFeedback(null), 4500);
-  };
-
-  const handleSelectReminderTime = async (time: string, hour: number, min: number) => {
-    setReminderTime(time);
-    setReminderEnabled(true);
-    await scheduleDailyPracticeReminder(hour, min, profile?.current_focus || undefined);
-    setNotificationFeedback(`Daily reminder scheduled for ${time}!`);
-    setTimeout(() => setNotificationFeedback(null), 3500);
+    showReminderFeedback(
+      sent ? "Test notification sent." : "Notifications are blocked. Allow them for Pravaah in your settings."
+    );
   };
 
   const handleDeleteAccount = () => {
@@ -1346,9 +1387,9 @@ export default function DashboardScreen() {
             {/* Learning snapshot from real recorded evidence */}
             <View style={styles.cardContainer}>
               <Text style={styles.settingsGroupTitle}>Your learning</Text>
-              <View style={styles.profileInfoRow}>
+              <View style={[styles.profileInfoRow, styles.profileInfoRowStacked]}>
                 <Text style={styles.profileInfoLabel}>Working on</Text>
-                <Text style={styles.profileInfoValue} numberOfLines={1}>
+                <Text style={styles.profileInfoValueStacked}>
                   {priorityFocus[0] ? priorityFocus[0].title : "Start a session to set this"}
                 </Text>
               </View>
@@ -1396,122 +1437,128 @@ export default function DashboardScreen() {
             <View style={styles.cardContainer}>
               <Text style={styles.settingsGroupTitle}>Coach voice</Text>
               <Text style={styles.settingsGroupDesc}>
-                Choose who you practise with. This applies to your next session.
+                Tap a voice to hear a sample. Your choice applies from your next session.
               </Text>
 
-              <View style={styles.voiceList}>
-                {COACH_VOICES.map((voice) => {
-                  const active = (profile?.tts_voice || "warm_male") === voice.value;
-                  return (
-                    <Pressable
-                      key={voice.value}
-                      style={[styles.voiceRow, active && styles.voiceRowActive]}
-                      onPress={() => handleVoiceChange(voice.value)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: active }}
-                    >
-                      <Ionicons
-                        name={active ? "radio-button-on" : "radio-button-off"}
-                        size={18}
-                        color={active ? colors.irisBlue : colors.fog}
-                      />
-                      <Text style={[styles.voiceRowText, active && styles.voiceRowTextActive]}>
-                        {voice.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+              <VoicePicker value={profile?.tts_voice || "warm_male"} onChange={handleVoiceChange} />
             </View>
 
             {/* Preferences Group: Hindi Support */}
             <View style={styles.cardContainer}>
               <Text style={styles.settingsGroupTitle}>Hindi explanations</Text>
               <Text style={styles.settingsGroupDesc}>
-                Controls how often Coach Pravaah explains a correction in Hindi. Practice sentences
-                always stay in English.
+                How often Coach Pravaah explains a correction in Hindi. Practice sentences always
+                stay in English.
               </Text>
 
-              <View style={styles.supportChipsRow}>
-                {["high", "occasional", "minimal", "off"].map((lvl) => (
-                  <Pressable
-                    key={lvl}
-                    style={[
-                      styles.supportChip,
-                      profile?.hindi_support === lvl && styles.supportChipActive,
-                    ]}
-                    onPress={() => handleHindiSupportChange(lvl)}
-                  >
-                    <Text
-                      style={[
-                        styles.supportChipText,
-                        profile?.hindi_support === lvl && styles.supportChipTextActive,
+              <View style={styles.optionList}>
+                {HINDI_SUPPORT_OPTIONS.map((opt) => {
+                  const active = (profile?.hindi_support || "high") === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      style={({ pressed }) => [
+                        styles.optionRow,
+                        active && styles.optionRowActive,
+                        pressed && styles.btnPressed,
                       ]}
+                      onPress={() => handleHindiSupportChange(opt.value)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
                     >
-                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                    </Text>
-                  </Pressable>
-                ))}
+                      <View style={styles.optionTextCol}>
+                        <Text style={[styles.optionLabel, active && styles.optionLabelActive]}>
+                          {opt.label}
+                        </Text>
+                        <Text style={styles.optionDescription}>{opt.description}</Text>
+                      </View>
+                      <Ionicons
+                        name={active ? "radio-button-on" : "radio-button-off"}
+                        size={20}
+                        color={active ? colors.irisBlue : colors.fog}
+                      />
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
 
-            {/* Notifications & Reminders */}
+            {/* Practice reminder */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>Practice reminders</Text>
-              <Text style={styles.settingsGroupDesc}>
-                Set a regular time to receive a push notification for your daily speaking practice.
-              </Text>
+              <View style={styles.reminderHeader}>
+                <View style={styles.reminderIconTile}>
+                  <Ionicons name="notifications-outline" size={20} color={colors.irisBlue} />
+                </View>
+                <View style={styles.reminderHeaderText}>
+                  <Text style={styles.settingsGroupTitle}>Daily practice reminder</Text>
+                  <Text style={styles.reminderStatus}>
+                    {reminder.enabled
+                      ? `Every day at ${formatClock(reminder.hour, reminder.minute)}`
+                      : "Off"}
+                  </Text>
+                </View>
+                <Switch
+                  value={reminder.enabled}
+                  onValueChange={handleToggleReminder}
+                  trackColor={{ false: colors.border, true: colors.irisBlue }}
+                  thumbColor="#ffffff"
+                  accessibilityLabel="Daily practice reminder"
+                />
+              </View>
+
+              <Text style={styles.reminderSectionLabel}>Remind me</Text>
+              <View style={styles.reminderSlotGrid}>
+                {REMINDER_SLOTS.map((slot) => {
+                  const active =
+                    reminder.enabled && reminder.hour === slot.hour && reminder.minute === slot.minute;
+                  return (
+                    <Pressable
+                      key={slot.label}
+                      style={({ pressed }) => [
+                        styles.reminderSlot,
+                        active && styles.reminderSlotActive,
+                        pressed && styles.btnPressed,
+                      ]}
+                      onPress={() => enableReminder(slot.hour, slot.minute)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
+                    >
+                      <Ionicons
+                        name={slot.icon}
+                        size={18}
+                        color={active ? colors.irisBlue : colors.textSecondary}
+                      />
+                      <Text style={[styles.reminderSlotLabel, active && styles.reminderSlotLabelActive]}>
+                        {slot.label}
+                      </Text>
+                      <Text style={styles.reminderSlotTime}>{formatClock(slot.hour, slot.minute)}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
 
               {notificationFeedback ? (
                 <View style={styles.feedbackBanner}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
                   <Text style={styles.feedbackBannerText}>{notificationFeedback}</Text>
                 </View>
               ) : null}
 
-              <View style={styles.timeChipsRow}>
-                {[
-                  { time: "08:00 AM", h: 8, m: 0 },
-                  { time: "01:00 PM", h: 13, m: 0 },
-                  { time: "08:00 PM", h: 20, m: 0 },
-                  { time: "09:30 PM", h: 21, m: 30 },
-                ].map((slot) => (
-                  <Pressable
-                    key={slot.time}
-                    style={[
-                      styles.timeChip,
-                      reminderTime === slot.time && styles.timeChipActive,
-                    ]}
-                    onPress={() => handleSelectReminderTime(slot.time, slot.h, slot.m)}
-                  >
-                    <Text
-                      style={[
-                        styles.timeChipText,
-                        reminderTime === slot.time && styles.timeChipTextActive,
-                      ]}
-                    >
-                      {slot.time}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+              {notificationPermission === "denied" ? (
+                <Text style={styles.reminderNote}>
+                  Notifications are blocked for Pravaah. Turn them on in your device or browser settings.
+                </Text>
+              ) : Platform.OS === "web" ? (
+                <Text style={styles.reminderNote}>
+                  Daily reminders are delivered by the Android app. The web app saves your preferred time.
+                </Text>
+              ) : null}
 
-              <View style={styles.notifActionsRow}>
-                {notificationPermission !== "granted" ? (
-                  <Pressable
-                    style={styles.notifActionBtn}
-                    onPress={handleRequestNotification}
-                  >
-                    <Text style={styles.notifActionBtnText}>Enable reminders</Text>
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    style={styles.notifActionBtn}
-                    onPress={handleTestNotification}
-                  >
-                    <Text style={styles.notifActionBtnText}>Send test reminder</Text>
-                  </Pressable>
-                )}
-              </View>
+              {reminder.enabled && notificationPermission === "granted" ? (
+                <Pressable style={styles.reminderTestLink} onPress={handleTestNotification} hitSlop={6}>
+                  <Text style={styles.reminderTestLinkText}>Send a test notification</Text>
+                </Pressable>
+              ) : null}
             </View>
 
             {/* Account Actions */}
@@ -2614,6 +2661,20 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
       borderBottomWidth: 0,
       paddingBottom: 0,
     },
+    profileInfoRowStacked: {
+      flexDirection: "column",
+      alignItems: "flex-start",
+      justifyContent: "flex-start",
+      gap: 4,
+    },
+    profileInfoValueStacked: {
+      alignSelf: "stretch",
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      lineHeight: 21,
+      color: colors.textPrimary,
+    },
     profileInfoLabel: {
       ...label,
       fontSize: 14,
@@ -2678,31 +2739,42 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
       flexDirection: "row",
       gap: 8,
     },
-    voiceList: {
+    optionList: {
       gap: 8,
     },
-    voiceRow: {
+    optionRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 10,
+      gap: 12,
       paddingVertical: 12,
       paddingHorizontal: 14,
-      borderRadius: 12,
+      borderRadius: 14,
       borderWidth: 1,
       borderColor: colors.border,
     },
-    voiceRowActive: {
+    optionRowActive: {
       borderColor: colors.irisBlue,
       backgroundColor: colors.primarySoft,
     },
-    voiceRowText: {
-      fontFamily: theme.fonts.sans,
-      fontSize: 14,
-      color: colors.textSecondary,
+    optionTextCol: {
+      flex: 1,
+      minWidth: 0,
     },
-    voiceRowTextActive: {
+    optionLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "500",
       color: colors.textPrimary,
+    },
+    optionLabelActive: {
       fontWeight: "600",
+    },
+    optionDescription: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: colors.textSecondary,
+      marginTop: 2,
     },
     supportChip: {
       ...chip,
@@ -2726,53 +2798,98 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
       color: colors.irisBlue,
       fontWeight: "600",
     },
-    timeChipsRow: {
+    reminderHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 18,
+    },
+    reminderIconTile: {
+      width: 40,
+      height: 40,
+      borderRadius: 12,
+      backgroundColor: colors.primarySoft,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    reminderHeaderText: {
+      flex: 1,
+      minWidth: 0,
+    },
+    reminderStatus: {
+      ...label,
+      marginTop: -2,
+    },
+    reminderSectionLabel: {
+      ...label,
+      marginBottom: 8,
+    },
+    reminderSlotGrid: {
       flexDirection: "row",
       flexWrap: "wrap",
       gap: 8,
-      marginBottom: 14,
     },
-    timeChip: {
-      ...chip,
+    reminderSlot: {
+      flexGrow: 1,
+      flexBasis: "45%",
+      paddingVertical: 12,
       paddingHorizontal: 14,
-      paddingVertical: 8,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      gap: 4,
     },
-    timeChipActive: chipActive,
-    timeChipText: {
+    reminderSlotActive: {
+      borderColor: colors.irisBlue,
+      backgroundColor: colors.primarySoft,
+    },
+    reminderSlotLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "500",
+      color: colors.textPrimary,
+      marginTop: 4,
+    },
+    reminderSlotLabelActive: {
+      fontWeight: "600",
+      color: colors.irisBlue,
+    },
+    reminderSlotTime: {
       fontFamily: theme.fonts.sans,
       fontSize: 13,
-      fontWeight: "500",
       color: colors.textSecondary,
     },
-    timeChipTextActive: {
-      color: colors.irisBlue,
-      fontWeight: "600",
+    reminderNote: {
+      ...label,
+      fontSize: 12,
+      lineHeight: 17,
+      marginTop: 12,
     },
-    feedbackBanner: {
-      backgroundColor: colors.emeraldWash,
-      borderRadius: 10,
-      padding: 12,
-      marginBottom: 12,
+    reminderTestLink: {
+      alignSelf: "flex-start",
+      marginTop: 12,
     },
-    feedbackBannerText: {
-      fontFamily: theme.fonts.sans,
-      fontSize: 13,
-      color: colors.mintText,
-    },
-    notifActionsRow: {
-      flexDirection: "row",
-    },
-    notifActionBtn: {
-      backgroundColor: colors.primary,
-      paddingHorizontal: 18,
-      paddingVertical: 11,
-      borderRadius: 12,
-    },
-    notifActionBtnText: {
+    reminderTestLinkText: {
       fontFamily: theme.fonts.sans,
       fontSize: 14,
       fontWeight: "600",
-      color: colors.textOnPrimary,
+      color: colors.irisBlue,
+    },
+    feedbackBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      backgroundColor: colors.cardSubtle,
+      borderRadius: 10,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      marginTop: 12,
+    },
+    feedbackBannerText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textPrimary,
     },
     signOutBtn: {
       flexDirection: "row",

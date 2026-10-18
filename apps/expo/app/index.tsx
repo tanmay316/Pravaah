@@ -52,7 +52,7 @@ import {
   TtsVoice,
 } from "../lib/api";
 import { signOut } from "../lib/firebase";
-import { skillLabel } from "../lib/skills";
+import { activityObjective, activityTitle, skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 import {
   getNotificationPermissionStatus,
@@ -595,7 +595,7 @@ export default function DashboardScreen() {
                   <Ionicons name="mic" size={20} color={theme.colors.void} />
                   <Text style={styles.primaryHeroBtnText}>
                     {nextUnfinishedActivity
-                      ? `Continue: ${nextUnfinishedActivity.title.split(":")[0]} (${nextUnfinishedActivity.duration_minutes}m) →`
+                      ? `Continue: ${activityTitle(nextUnfinishedActivity.title).split(":")[0]} (${nextUnfinishedActivity.duration_minutes}m) →`
                       : "Start Daily Spoken Practice →"}
                   </Text>
                 </Pressable>
@@ -768,10 +768,10 @@ export default function DashboardScreen() {
                         </View>
 
                         <Text style={styles.activityTitle} numberOfLines={2}>
-                          {activity.title}
+                          {activityTitle(activity.title)}
                         </Text>
                         <Text style={styles.activityObjective} numberOfLines={2}>
-                          {activity.objective}
+                          {activityObjective(activity.objective)}
                         </Text>
                         {activity.target_skill ? (
                           <View style={styles.activitySkillChip}>

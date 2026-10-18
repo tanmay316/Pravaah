@@ -70,7 +70,8 @@ export const theme = {
     mono: Platform.select({
       web: "'Roboto Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace",
       ios: "Menlo",
-      default: "monospace",
+      // Android's "monospace" (Droid Sans Mono) renders bold button labels and chips blocky.
+      default: "sans-serif-medium",
     }),
   },
 

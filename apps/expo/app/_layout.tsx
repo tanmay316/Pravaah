@@ -6,7 +6,7 @@
 
 import "../lib/polyfills";
 import { useEffect } from "react";
-import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -18,6 +18,13 @@ import { theme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
 
 export { default as ErrorBoundary } from "../components/ScreenError";
+
+// Large OS font settings otherwise make fixed-height buttons clip or wrap their labels.
+if (Platform.OS !== "web") {
+  for (const C of [Text, TextInput] as any[]) {
+    C.defaultProps = { ...(C.defaultProps || {}), maxFontSizeMultiplier: 1.2 };
+  }
+}
 
 // @expo/vector-icons relies on fontfaceobserver on web, which tests latin glyphs (BESbswy).
 // Icon fonts only contain private-use unicode glyphs, causing fontfaceobserver to timeout

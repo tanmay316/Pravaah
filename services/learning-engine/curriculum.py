@@ -867,12 +867,16 @@ def generate_daily_plan(
             "transfer": "free_conversation", "roleplay": "roleplay", "review": "review",
         }[phase]
         stage = "guided_practice" if phase == "retry" else "review" if phase == "review" else "conversational_practice"
-        label = {"retry": "Targeted Correction & Retry", "transfer": "Conversation Transfer",
-                 "roleplay": "Real-World Transfer", "review": "Retention Review"}[phase]
+        objective = {
+            "retry": "Learn the fix, then say it correctly yourself.",
+            "transfer": "Use it naturally while you chat.",
+            "roleplay": "Use it in a real-life situation.",
+            "review": "Quick check so it sticks.",
+        }[phase]
         activities.append(DailyPlanActivity(
-            activity_id=f"{plan_id}_act_{index}", title=f"{label}: {meta['title']}",
+            activity_id=f"{plan_id}_act_{index}", title=meta["title"],
             mode=mode, target_skill=skill_id, duration_minutes=duration, stage=stage,
-            objective=f"{label} for {meta['title']}.",
+            objective=objective,
             prompt_activity=priority_practice_prompt(focus, phase),
             priority_reason=focus.get("reason"), priority_rank=focus["priority_rank"],
             source_examples=focus.get("recent_examples") or focus.get("source_examples") or [],

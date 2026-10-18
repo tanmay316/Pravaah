@@ -85,4 +85,28 @@ if (typeof g.TextDecoder === "undefined") {
   g.TextDecoder = TextDecoderPolyfill;
 }
 
+// @expo/metro-runtime installs a lazy `ReadableStream` getter that requires
+// "web-streams-polyfill/ponyfill/es6", a path removed in web-streams-polyfill v4 (used by
+// LiveKit). In release APKs that require resolves to an unknown module, so the first read of
+// `global.ReadableStream` (inside LiveKit's registerGlobals) throws and React Native tears the
+// whole app down: blank white session screen. Swap any lazy stream getters for real classes
+// before LiveKit loads. Browsers expose these as plain values, so this is a no-op there.
+const STREAM_GLOBALS = ["ReadableStream", "WritableStream", "TransformStream", "CountQueuingStrategy"];
+const lazyStreamGlobals = STREAM_GLOBALS.filter((name) => {
+  const desc = Object.getOwnPropertyDescriptor(g, name);
+  return !desc || typeof desc.get === "function";
+});
+if (lazyStreamGlobals.length > 0) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const streams = require("web-streams-polyfill");
+  for (const name of lazyStreamGlobals) {
+    Object.defineProperty(g, name, {
+      value: streams[name],
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
+}
+
 export {};

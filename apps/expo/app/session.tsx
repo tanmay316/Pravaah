@@ -40,7 +40,7 @@ import {
   SpeechLanguage,
 } from "../lib/api";
 import { prewarmDeviceSpeech, speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
-import { skillLabel } from "../lib/skills";
+import { activityTitle, skillLabel } from "../lib/skills";
 import { theme } from "../lib/theme";
 import CoachAvatar, { AgentLevel, CoachAvatarState } from "../components/CoachAvatar";
 
@@ -826,7 +826,7 @@ export default function SessionScreen() {
         >
           <View style={styles.preSessionHero}>
             <Text style={styles.preSessionTitle}>
-              {params.activity_title || "What shall we talk about?"}
+              {activityTitle(params.activity_title) || "What shall we talk about?"}
             </Text>
             <Text style={styles.preSessionSubhead}>
               Pick a subject and a goal. Practise your English with corrections,
@@ -1056,7 +1056,7 @@ export default function SessionScreen() {
       {params.activity_title ? (
         <View style={styles.activeActivityBar}>
           <Text style={styles.activeActivityTitle} numberOfLines={1}>
-            {params.activity_title}
+            {activityTitle(params.activity_title)}
           </Text>
         </View>
       ) : null}
@@ -1203,11 +1203,13 @@ export default function SessionScreen() {
           ]}
           onPress={handleToggleMute}
         >
-          <Ionicons
-            name={isMuted ? "mic-off" : "mic"}
-            size={24}
-            color={isMuted ? theme.colors.crimsonError : theme.colors.pure}
-          />
+          <View style={[styles.roundCallCircle, isMuted && styles.roundCallCircleActive]}>
+            <Ionicons
+              name={isMuted ? "mic-off" : "mic"}
+              size={24}
+              color={isMuted ? theme.colors.crimsonError : theme.colors.pure}
+            />
+          </View>
           <Text style={styles.roundCallBtnLabel}>{isMuted ? "Unmute" : "Mute"}</Text>
         </Pressable>
 
@@ -1221,23 +1223,28 @@ export default function SessionScreen() {
           onPress={handleToggleDeviceVoice}
           accessibilityLabel="Read the coach's replies using the device voice"
         >
-          <Ionicons
-            name={deviceVoiceMode === "on" ? "volume-high" : "phone-portrait-outline"}
-            size={22}
-            color={deviceVoiceMode === "on" ? theme.colors.emeraldSuccess : theme.colors.pure}
-          />
+          <View style={[styles.roundCallCircle, deviceVoiceMode === "on" && styles.roundCallCircleOn]}>
+            <Ionicons
+              name={deviceVoiceMode === "on" ? "volume-high" : "phone-portrait-outline"}
+              size={22}
+              color={deviceVoiceMode === "on" ? theme.colors.emeraldSuccess : theme.colors.pure}
+            />
+          </View>
           <Text style={styles.roundCallBtnLabel}>
-            {deviceVoiceMode === "on" ? "Device" : "Auto"}
+            {deviceVoiceMode === "on" ? "Device voice" : "Auto voice"}
           </Text>
         </Pressable>
 
         {/* End Call Button */}
         <Pressable
-          style={({ pressed }) => [styles.roundEndBtn, pressed && styles.btnPressed]}
+          style={({ pressed }) => [styles.roundCallBtn, pressed && styles.btnPressed]}
           onPress={handleEndSession}
+          accessibilityLabel="End session"
         >
-          <Ionicons name="call" size={26} color={theme.colors.pure} style={{ transform: [{ rotate: "135deg" }] }} />
-          <Text style={styles.roundEndBtnLabel}>End Session</Text>
+          <View style={styles.roundEndBtn}>
+            <Ionicons name="call" size={26} color={theme.colors.pure} style={{ transform: [{ rotate: "135deg" }] }} />
+          </View>
+          <Text style={styles.roundEndBtnLabel}>End</Text>
         </Pressable>
       </View>
 
@@ -1253,7 +1260,7 @@ export default function SessionScreen() {
               <Text style={styles.heroHeadlineItalic}>Great</Text> practice session!
             </Text>
             <Text style={styles.summarySubtitle}>
-              {params.activity_title || "Spoken Conversation"}
+              {activityTitle(params.activity_title) || "Spoken Conversation"}
             </Text>
 
             {/* 4-Stat Mobile Grid */}
@@ -1902,7 +1909,8 @@ const styles = StyleSheet.create({
   roundCallBtn: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
+    gap: 6,
+    minWidth: 80,
   },
   roundCallBtnActive: {
     opacity: 0.9,
@@ -1910,15 +1918,32 @@ const styles = StyleSheet.create({
   roundCallBtnOn: {
     opacity: 1,
   },
+  roundCallCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  roundCallCircleActive: {
+    borderColor: theme.colors.crimsonError,
+  },
+  roundCallCircleOn: {
+    borderColor: theme.colors.emeraldSuccess,
+  },
   roundCallBtnLabel: {
     fontFamily: theme.fonts.sans,
-    fontSize: 11,
+    fontSize: 12,
+    fontWeight: "600",
     color: theme.colors.ash,
   },
   roundEndBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: theme.colors.crimsonError,
     alignItems: "center",
     justifyContent: "center",
@@ -1926,10 +1951,9 @@ const styles = StyleSheet.create({
   },
   roundEndBtnLabel: {
     fontFamily: theme.fonts.sans,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "700",
-    color: theme.colors.pure,
-    marginTop: 1,
+    color: theme.colors.crimsonError,
   },
   modalBackdrop: {
     flex: 1,

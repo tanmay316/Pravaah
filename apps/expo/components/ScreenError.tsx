@@ -5,24 +5,41 @@
 
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router, type ErrorBoundaryProps } from "expo-router";
-import { theme } from "../lib/theme";
+import { theme, useTheme } from "../lib/theme";
 
 export default function ScreenError({ error, retry }: ErrorBoundaryProps) {
+  const { colors } = useTheme();
   return (
-    <View style={styles.screen}>
-      <Text style={styles.title}>Something went wrong</Text>
-      <Text style={styles.body}>
-        This screen could not be displayed. Try again, or go back to the dashboard.
-      </Text>
-      <Text style={styles.detail} numberOfLines={4}>
-        {error?.message || String(error)}
-      </Text>
-      <Pressable style={styles.primaryBtn} onPress={() => retry()}>
-        <Text style={styles.primaryBtnText}>Try again</Text>
-      </Pressable>
-      <Pressable style={styles.secondaryBtn} onPress={() => router.replace("/")}>
-        <Text style={styles.secondaryBtnText}>Back to dashboard</Text>
-      </Pressable>
+    <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.cardElevated,
+            borderColor: colors.border,
+          },
+        ]}
+      >
+        <Text style={[styles.title, { color: colors.textPrimary }]}>Something went wrong</Text>
+        <Text style={[styles.body, { color: colors.textSecondary }]}>
+          This screen could not be displayed. Try again, or go back to the dashboard.
+        </Text>
+        <Text style={[styles.detail, { color: colors.textMuted, backgroundColor: colors.cardSubtle }]} numberOfLines={4}>
+          {error?.message || String(error)}
+        </Text>
+        <Pressable
+          style={[
+            styles.primaryBtn,
+            { backgroundColor: colors.primary },
+          ]}
+          onPress={() => retry()}
+        >
+          <Text style={[styles.primaryBtnText, { color: colors.textOnPrimary }]}>Try again</Text>
+        </Pressable>
+        <Pressable style={styles.secondaryBtn} onPress={() => router.replace("/")}>
+          <Text style={[styles.secondaryBtnText, { color: colors.irisBlue }]}>Back to dashboard</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -30,39 +47,45 @@ export default function ScreenError({ error, retry }: ErrorBoundaryProps) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.colors.abyss,
     alignItems: "center",
     justifyContent: "center",
-    padding: theme.spacing.xxl,
+    padding: theme.spacing.xl,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 440,
+    borderRadius: 20,
+    padding: theme.spacing.xl,
+    borderWidth: 1,
+    alignItems: "center",
   },
   title: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingMd,
-    color: theme.colors.cloud,
+    fontFamily: theme.fonts.display,
+    fontSize: theme.fontSizes.headingSm,
+    fontWeight: "600",
     marginBottom: theme.spacing.sm,
     textAlign: "center",
   },
   body: {
     fontFamily: theme.fonts.sans,
     fontSize: theme.fontSizes.body,
-    color: theme.colors.ash,
     textAlign: "center",
     marginBottom: theme.spacing.md,
-    maxWidth: 420,
+    lineHeight: 22,
   },
   detail: {
     fontFamily: theme.fonts.mono,
-    fontSize: theme.fontSizes.monoLabel,
-    color: theme.colors.fog,
+    fontSize: theme.fontSizes.xs2,
     textAlign: "center",
     marginBottom: theme.spacing.xl,
-    maxWidth: 420,
+    padding: 12,
+    borderRadius: theme.radii.md,
+    width: "100%",
   },
   primaryBtn: {
-    minWidth: 220,
-    minHeight: theme.mobile.minTouchSize,
-    borderRadius: theme.radii.full,
-    backgroundColor: theme.colors.pure,
+    width: "100%",
+    minHeight: 52,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: theme.spacing.sm,
@@ -70,18 +93,17 @@ const styles = StyleSheet.create({
   primaryBtnText: {
     fontFamily: theme.fonts.sans,
     fontSize: theme.fontSizes.body,
-    fontWeight: "700",
-    color: theme.colors.void,
+    fontWeight: "600",
   },
   secondaryBtn: {
     minWidth: 220,
-    minHeight: theme.mobile.minTouchSize,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
   },
   secondaryBtnText: {
     fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    color: theme.colors.paleIris,
+    fontSize: theme.fontSizes.bodySm,
+    fontWeight: "600",
   },
 });

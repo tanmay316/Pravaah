@@ -20,7 +20,7 @@ import Svg, {
   Rect,
   Stop,
 } from "react-native-svg";
-import { theme } from "../lib/theme";
+import { theme, useTheme } from "../lib/theme";
 
 export type CoachAvatarState = "connecting" | "listening" | "thinking" | "speaking" | "muted";
 
@@ -358,9 +358,17 @@ export default function CoachAvatar({
   hint,
   size = 188,
 }: Props) {
+  const { colors } = useTheme();
   const f = useFace(state, learnerSpeaking, getLevel);
-  const meta = STATE_META[state];
-  const ringColor = state === "listening" && learnerSpeaking ? theme.colors.irisGleam : meta.color;
+  const stateColors: Record<CoachAvatarState, { label: string; color: string }> = {
+    connecting: { label: "Joining", color: colors.amberWarning },
+    listening: { label: "Listening", color: colors.skyBlue },
+    thinking: { label: "Thinking", color: colors.irisBlue },
+    speaking: { label: "Speaking", color: colors.emeraldSuccess },
+    muted: { label: "You're muted", color: colors.fog },
+  };
+  const meta = stateColors[state];
+  const ringColor = state === "listening" && learnerSpeaking ? colors.irisBlue : meta.color;
 
   const spin = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -400,11 +408,11 @@ export default function CoachAvatar({
             <Defs>
               <LinearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
                 <Stop offset="0" stopColor={ringColor} stopOpacity={1} />
-                <Stop offset="0.5" stopColor={theme.colors.irisGleam} stopOpacity={0.35} />
+                <Stop offset="0.5" stopColor={colors.irisBlue} stopOpacity={0.35} />
                 <Stop offset="1" stopColor={ringColor} stopOpacity={0.05} />
               </LinearGradient>
             </Defs>
-            <Circle cx={50} cy={50} r={48.5} stroke="url(#ringGrad)" strokeWidth={1.6} fill="none" />
+            <Circle cx={50} cy={50} r={48.5} stroke="url(#ringGrad)" strokeWidth={1.8} fill="none" />
           </Svg>
         </Animated.View>
 
@@ -425,7 +433,15 @@ export default function CoachAvatar({
 
         {state === "thinking" ? <ThinkingDots color={meta.color} /> : null}
 
-        <View style={[styles.statusPill, { borderColor: ringColor }]}>
+        <View
+          style={[
+            styles.statusPill,
+            {
+              borderColor: ringColor,
+              backgroundColor: colors.cardElevated,
+            },
+          ]}
+        >
           <View style={[styles.statusDot, { backgroundColor: ringColor }]} />
           <Text style={[styles.statusLabel, { color: ringColor }]}>
             {state === "listening" && learnerSpeaking ? "Hearing you" : meta.label}
@@ -433,17 +449,26 @@ export default function CoachAvatar({
         </View>
       </View>
 
-      <Text style={styles.name}>Coach Pravaah</Text>
-      <Text style={styles.role}>Your English coach</Text>
+      <Text style={[styles.name, { color: colors.textPrimary }]}>Coach Pravaah</Text>
+      <Text style={[styles.role, { color: colors.textSecondary }]}>Your English coach</Text>
 
       {caption ? (
-        <Animated.View style={[styles.caption, { opacity: captionFade }]}>
-          <Text style={styles.captionText} numberOfLines={3}>
+        <Animated.View
+          style={[
+            styles.caption,
+            {
+              opacity: captionFade,
+              backgroundColor: colors.cardElevated,
+              borderColor: colors.border,
+            },
+          ]}
+        >
+          <Text style={[styles.captionText, { color: colors.textPrimary }]} numberOfLines={3}>
             {caption}
           </Text>
         </Animated.View>
       ) : hint ? (
-        <Text style={styles.hint}>{hint}</Text>
+        <Text style={[styles.hint, { color: colors.textSecondary }]}>{hint}</Text>
       ) : null}
     </View>
   );
@@ -461,7 +486,7 @@ const styles = StyleSheet.create({
   },
   portrait: {
     overflow: "hidden",
-    borderWidth: 2,
+    borderWidth: 3,
     backgroundColor: "#0b0c18",
     ...theme.shadows.card,
   },
@@ -493,7 +518,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    backgroundColor: theme.colors.glassNav,
   },
   statusDot: {
     width: 7,
@@ -503,44 +527,41 @@ const styles = StyleSheet.create({
   statusLabel: {
     fontFamily: theme.fonts.sans,
     fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 0.4,
+    fontWeight: "500",
   },
   name: {
-    marginTop: 16,
-    fontFamily: theme.fonts.serif,
+    marginTop: 14,
+    fontFamily: theme.fonts.display,
     fontSize: 20,
-    color: theme.colors.pure,
+    fontWeight: "600",
   },
   role: {
     fontFamily: theme.fonts.sans,
     fontSize: 12,
-    color: theme.colors.ash,
+    fontWeight: "500",
     marginTop: 2,
   },
   caption: {
-    marginTop: 12,
+    marginTop: 10,
     maxWidth: 520,
     alignSelf: "stretch",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: theme.radii.lg,
-    backgroundColor: theme.colors.glassFill,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
   },
   captionText: {
     fontFamily: theme.fonts.sans,
     fontSize: 15,
-    lineHeight: 21,
-    color: theme.colors.cloud,
+    fontWeight: "500",
+    lineHeight: 22,
     textAlign: "center",
   },
   hint: {
-    marginTop: 12,
+    marginTop: 10,
     fontFamily: theme.fonts.sans,
     fontSize: 12,
-    color: theme.colors.ash,
+    fontWeight: "500",
     textAlign: "center",
   },
 });

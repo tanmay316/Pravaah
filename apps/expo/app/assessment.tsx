@@ -18,7 +18,7 @@
 // Must load before livekit-client: Hermes lacks TextDecoder/DOMException it needs at import.
 import "../lib/polyfills";
 import { startAudioSession, stopAudioSession } from "../lib/livekit";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -43,7 +43,7 @@ import {
   PRAVAAH_LEVEL_NAMES,
 } from "../lib/api";
 import { skillLabel } from "../lib/skills";
-import { theme } from "../lib/theme";
+import { AppTheme, ThemeColors, theme, useTheme } from "../lib/theme";
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || "wss://pravaah-qj6q5gxo.livekit.cloud";
 
@@ -61,7 +61,7 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   {
     id: "task_1_intro",
     stage: 1,
-    stageTitle: "1. INTRODUCTION & DAILY ROUTINE",
+    stageTitle: "Introduction and daily routine",
     question: "Tell me about yourself, what you do every day, and why you want to improve your spoken English.",
     hindiHint: "अपने बारे में बताइए, आपका दैनिक काम क्या है, और आप अंग्रेज़ी क्यों सुधारना चाहते हैं।",
     evalTarget: "Present simple stability, basic everyday vocabulary, and immediate responsiveness.",
@@ -70,7 +70,7 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   {
     id: "task_2_past",
     stage: 2,
-    stageTitle: "2. PAST EXPERIENCE & STORYTELLING",
+    stageTitle: "Past experience and storytelling",
     question: "Describe a memorable day from your past, or explain a challenge you recently overcame.",
     hindiHint: "अपने अतीत का कोई यादगार दिन बताइए या हाल ही में सुलझाई किसी समस्या के बारे में बात करें।",
     evalTarget: "Past tense auxiliaries (did/didn't + base verb), irregular verbs, and narrative sequencing.",
@@ -79,7 +79,7 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   {
     id: "task_3_opinion",
     stage: 3,
-    stageTitle: "3. OPINION & REASONING",
+    stageTitle: "Opinion and reasoning",
     question: "Do you prefer working from home or from an office? Explain your reasons with clear examples.",
     hindiHint: "क्या आपको घर से काम करना पसंद है या दफ़्तर से? अपने कारणों को उदाहरण सहित समझाइए।",
     evalTarget: "Stative verbs (agree, prefer), comparative structures, and connecting phrases.",
@@ -88,7 +88,7 @@ const ASSESSMENT_QUESTIONS: AssessmentQuestion[] = [
   {
     id: "task_4_hypothetical",
     stage: 4,
-    stageTitle: "4. HYPOTHETICAL & COMPLEX DISCUSSION",
+    stageTitle: "Hypothetical discussion",
     question: "If you could change one thing about how people communicate in modern workplaces, what would it be and why?",
     hindiHint: "यदि आप आधुनिक कार्यस्थलों में लोगों के बातचीत करने के तरीके में कोई बदलाव कर सकें, तो वह क्या होगा और क्यों?",
     evalTarget: "Conditionals, modal verbs, complex syntax, and professional nuance.",
@@ -104,6 +104,8 @@ function getSpeechRecognition(): any | null {
 
 export default function AssessmentScreen() {
   const insets = useSafeAreaInsets();
+  const { colors, isDark, toggleTheme, theme: activeTheme } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark, activeTheme), [colors, isDark, activeTheme]);
   const [currentStep, setCurrentStep] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedSeconds, setRecordedSeconds] = useState(0);
@@ -560,10 +562,10 @@ export default function AssessmentScreen() {
     return (
       <View style={[styles.screen, styles.centerView]}>
         <View style={styles.analyzingCard}>
-          <ActivityIndicator size="large" color={theme.colors.irisGleam} />
-          <Text style={styles.analyzingHeading}>Evaluating Spoken Evidence</Text>
+          <ActivityIndicator size="large" color={colors.irisBlue} />
+          <Text style={styles.analyzingHeading}>Analysing your answers</Text>
           <Text style={styles.analyzingDesc}>
-            AI is analyzing your spoken fluency, grammar stability, pauses, and vocabulary complexity...
+            Checking fluency, grammar, pauses and vocabulary. This takes a few seconds.
           </Text>
         </View>
       </View>
@@ -589,16 +591,16 @@ export default function AssessmentScreen() {
           {/* Header */}
           <View style={styles.resultHeaderCard}>
             <View style={styles.scorePill}>
-              <Text style={styles.scorePillText}>DIAGNOSTIC REPORT</Text>
+              <Text style={styles.scorePillText}>Assessment complete</Text>
             </View>
 
             <Text style={styles.resultHeadline}>
               Level {pravaah_level}{" "}
-              <Text style={styles.resultHeadlineSub}>({levelName})</Text>
+              <Text style={styles.resultHeadlineSub}>· {levelName}</Text>
             </Text>
 
             <View style={styles.cefrBadgeRow}>
-              <Text style={styles.cefrBadgeText}>CEFR EQUIVALENT: {cefr_reference}</Text>
+              <Text style={styles.cefrBadgeText}>CEFR {cefr_reference}</Text>
             </View>
 
             <Text style={styles.resultOverviewText}>
@@ -609,7 +611,7 @@ export default function AssessmentScreen() {
           {/* AI Diagnostic Notes */}
           {notes ? (
             <View style={styles.cardBox}>
-              <Text style={styles.cardBoxLabel}>AI DIAGNOSTIC OBSERVATIONS</Text>
+              <Text style={styles.cardBoxLabel}>Observations</Text>
               <Text style={styles.cardBoxText}>{notes}</Text>
             </View>
           ) : null}
@@ -617,14 +619,12 @@ export default function AssessmentScreen() {
           {/* Strengths & Focus Skills */}
           <View style={styles.strengthsWeaknessesRow}>
             <View style={styles.halfCard}>
-              <Text style={[styles.cardBoxLabel, { color: theme.colors.emeraldSuccess }]}>
-                DIAGNOSED STRENGTHS
-              </Text>
+              <Text style={styles.cardBoxLabel}>Strengths</Text>
               <View style={styles.chipWrap}>
                 {strengths && strengths.length > 0 ? (
                   strengths.map((str: string, idx: number) => (
                     <View key={idx} style={styles.strengthChip}>
-                      <Text style={styles.strengthChipText}>✓ {skillLabel(str)}</Text>
+                      <Text style={styles.strengthChipText}>{skillLabel(str)}</Text>
                     </View>
                   ))
                 ) : (
@@ -634,14 +634,12 @@ export default function AssessmentScreen() {
             </View>
 
             <View style={styles.halfCard}>
-              <Text style={[styles.cardBoxLabel, { color: theme.colors.amberWarning }]}>
-                IMMEDIATE FOCUS
-              </Text>
+              <Text style={styles.cardBoxLabel}>Focus areas</Text>
               <View style={styles.chipWrap}>
                 {weaknesses && weaknesses.length > 0 ? (
                   weaknesses.map((weak: string, idx: number) => (
                     <View key={idx} style={styles.weaknessChip}>
-                      <Text style={styles.weaknessChipText}>⚠ {skillLabel(weak)}</Text>
+                      <Text style={styles.weaknessChipText}>{skillLabel(weak)}</Text>
                     </View>
                   ))
                 ) : (
@@ -654,11 +652,11 @@ export default function AssessmentScreen() {
           {/* Filler Words */}
           {assessmentResult.filler_words_detected && assessmentResult.filler_words_detected.length > 0 ? (
             <View style={styles.cardBox}>
-              <Text style={styles.cardBoxLabel}>SPEECH HESITATION & FILLER WORDS</Text>
+              <Text style={styles.cardBoxLabel}>Filler words</Text>
               <View style={styles.chipWrap}>
                 {assessmentResult.filler_words_detected.map((filler, idx) => (
                   <View key={idx} style={styles.fillerChip}>
-                    <Text style={styles.fillerChipText}>💬 "{filler}"</Text>
+                    <Text style={styles.fillerChipText}>"{filler}"</Text>
                   </View>
                 ))}
               </View>
@@ -667,7 +665,7 @@ export default function AssessmentScreen() {
 
           {/* Daily Goal Commitment */}
           <View style={styles.cardBox}>
-            <Text style={styles.cardBoxLabel}>SELECT DAILY PRACTICE GOAL</Text>
+            <Text style={styles.cardBoxLabel}>Daily practice goal</Text>
             <View style={styles.goalChipsRow}>
               {[15, 30, 60, 90].map((mins) => (
                 <Pressable
@@ -681,7 +679,7 @@ export default function AssessmentScreen() {
                       selectedGoal === mins && styles.goalChipTextActive,
                     ]}
                   >
-                    {mins}m / day
+                    {mins} min
                   </Text>
                 </Pressable>
               ))}
@@ -694,7 +692,7 @@ export default function AssessmentScreen() {
             onPress={handleFinishAndStartPlan}
           >
             <Text style={styles.finishBtnText}>
-              Start Today's Practice Plan ({selectedGoal}m) →
+              Start today's practice
             </Text>
           </Pressable>
         </ScrollView>
@@ -715,7 +713,7 @@ export default function AssessmentScreen() {
           style={({ pressed }) => [styles.exitBtn, pressed && styles.btnPressed]}
           onPress={() => router.replace("/")}
         >
-          <Ionicons name="close" size={20} color={theme.colors.pure} />
+          <Ionicons name="close" size={20} color={colors.textPrimary} />
         </Pressable>
 
         {/* 4-Step Progress Indicator */}
@@ -735,6 +733,15 @@ export default function AssessmentScreen() {
         <View style={styles.stepNumPill}>
           <Text style={styles.stepNumPillText}>{currentStep + 1}/4</Text>
         </View>
+
+        <Pressable
+          style={({ pressed }) => [styles.exitBtn, pressed && styles.btnPressed]}
+          onPress={toggleTheme}
+          accessibilityRole="button"
+          accessibilityLabel={isDark ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          <Ionicons name={isDark ? "sunny-outline" : "moon-outline"} size={18} color={colors.textSecondary} />
+        </Pressable>
       </View>
 
       <ScrollView
@@ -746,7 +753,9 @@ export default function AssessmentScreen() {
       >
         {/* Stage Eyebrow */}
         <View style={styles.stageEyebrow}>
-          <Text style={styles.stageEyebrowText}>{currentQ.stageTitle}</Text>
+          <Text style={styles.stageEyebrowText}>
+            Task {currentStep + 1} of {ASSESSMENT_QUESTIONS.length} · {currentQ.stageTitle}
+          </Text>
         </View>
 
         {/* Question Prompt */}
@@ -757,14 +766,14 @@ export default function AssessmentScreen() {
           style={styles.hindiAccordionHeader}
           onPress={() => setShowHindi(!showHindi)}
         >
-          <Ionicons name="language" size={16} color={theme.colors.paleIris} />
+          <Ionicons name="language" size={18} color={colors.irisBlue} />
           <Text style={styles.hindiAccordionTitle}>
-            {showHindi ? "Hide Hindi Guide" : "View Hindi Translation"}
+            {showHindi ? "Hide Hindi guide" : "Show Hindi translation"}
           </Text>
           <Ionicons
             name={showHindi ? "chevron-up" : "chevron-down"}
-            size={16}
-            color={theme.colors.fog}
+            size={18}
+            color={colors.textSecondary}
           />
         </Pressable>
 
@@ -794,12 +803,12 @@ export default function AssessmentScreen() {
         {/* Live Verbatim Speech Preview */}
         {displayTranscript ? (
           <View style={styles.liveTranscriptCard}>
-            <Text style={styles.liveTranscriptLabel}>VERBATIM TRANSCRIPT</Text>
+            <Text style={styles.liveTranscriptLabel}>Transcript</Text>
             <Text style={styles.liveTranscriptText}>"{displayTranscript}"</Text>
           </View>
         ) : isRecording ? (
           <View style={styles.liveTranscriptCard}>
-            <Text style={styles.liveTranscriptLabel}>LISTENING...</Text>
+            <Text style={styles.liveTranscriptLabel}>Listening</Text>
             <Text style={styles.liveTranscriptText}>Speak naturally — speech will appear here.</Text>
           </View>
         ) : null}
@@ -817,7 +826,7 @@ export default function AssessmentScreen() {
             <Ionicons
               name={isRecording ? "stop" : "mic"}
               size={22}
-              color={isRecording ? theme.colors.pure : theme.colors.void}
+              color="#ffffff"
             />
             <Text
               style={[
@@ -825,7 +834,7 @@ export default function AssessmentScreen() {
                 isRecording && styles.recordActionBtnTextActive,
               ]}
             >
-              {isRecording ? "Finish Speaking →" : "Tap to Speak"}
+              {isRecording ? "Finish speaking" : "Tap to speak"}
             </Text>
           </Pressable>
 
@@ -834,7 +843,7 @@ export default function AssessmentScreen() {
             onPress={handleSkipQuestion}
           >
             <Text style={styles.skipTaskBtnText}>
-              {currentStep < ASSESSMENT_QUESTIONS.length - 1 ? "Skip to Next Task →" : "Finish Assessment →"}
+              {currentStep < ASSESSMENT_QUESTIONS.length - 1 ? "Skip this task" : "Finish assessment"}
             </Text>
           </Pressable>
         </View>
@@ -843,410 +852,412 @@ export default function AssessmentScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: theme.colors.obsidian,
-  },
-  centerView: {
-    alignItems: "center",
-    justifyContent: "center",
-    padding: theme.spacing.xl,
-  },
-  analyzingCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    maxWidth: 400,
-    width: "100%",
-    gap: 12,
-  },
-  analyzingHeading: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingSm,
-    color: theme.colors.pure,
-    textAlign: "center",
-  },
-  analyzingDesc: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  assessmentHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: 12,
-    gap: 12,
-  },
-  exitBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: theme.colors.surfaceElevated,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stepperContainer: {
-    flex: 1,
-    flexDirection: "row",
-    gap: 6,
-  },
-  stepperBar: {
-    flex: 1,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: theme.colors.steel,
-  },
-  stepperBarActive: {
-    backgroundColor: theme.colors.irisGleam,
-  },
-  stepperBarCurrent: {
-    backgroundColor: theme.colors.paleIris,
-  },
-  stepNumPill: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
-  },
-  stepNumPillText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  assessmentScroll: {
-    flexGrow: 1,
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    maxWidth: theme.mobile.maxContentWidth,
-    width: "100%",
-    alignSelf: "center",
-  },
-  stageEyebrow: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.xs,
-    marginBottom: 8,
-  },
-  stageEyebrowText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  questionPrompt: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingSm + 2,
-    color: theme.colors.cloud,
-    lineHeight: 28,
-    marginBottom: theme.spacing.lg,
-  },
-  hindiAccordionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.sm,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    gap: 8,
-    marginBottom: theme.spacing.md,
-  },
-  hindiAccordionTitle: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-    fontWeight: "600",
-  },
-  hindiBodyCard: {
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.md,
-  },
-  hindiBodyText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 13,
-    color: theme.colors.cloud,
-    lineHeight: 18,
-  },
-  waveVisualizerBox: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.lg,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.md,
-    ...theme.shadows.card,
-  },
-  waveBarsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    height: 60,
-    marginBottom: 8,
-  },
-  waveBar: {
-    width: 5,
-    borderRadius: theme.radii.full,
-    backgroundColor: theme.colors.irisGleam,
-  },
-  timerOrHintText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-  },
-  liveTranscriptCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    marginBottom: theme.spacing.lg,
-  },
-  liveTranscriptLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-    letterSpacing: 0.8,
-    marginBottom: 4,
-  },
-  liveTranscriptText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 13,
-    color: theme.colors.pure,
-    fontStyle: "italic",
-    lineHeight: 18,
-  },
-  bottomActions: {
-    marginTop: "auto",
-    gap: 12,
-    paddingTop: theme.spacing.md,
-  },
-  recordActionBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    height: 52,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.pure,
-    gap: 8,
-  },
-  recordActionBtnActive: {
-    backgroundColor: theme.colors.crimsonError,
-  },
-  recordActionBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm + 1,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-  recordActionBtnTextActive: {
-    color: theme.colors.pure,
-  },
-  skipTaskBtn: {
-    alignItems: "center",
-    paddingVertical: 10,
-  },
-  skipTaskBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.fog,
-  },
-  btnPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
-  },
-  resultScroll: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    maxWidth: theme.mobile.maxContentWidth,
-    width: "100%",
-    alignSelf: "center",
-    gap: theme.spacing.md,
-  },
-  resultHeaderCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    alignItems: "center",
-    ...theme.shadows.card,
-  },
-  scorePill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-    marginBottom: theme.spacing.sm,
-  },
-  scorePillText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  resultHeadline: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingLg,
-    color: theme.colors.pure,
-    marginBottom: 4,
-  },
-  resultHeadlineSub: {
-    color: theme.colors.irisGleam,
-  },
-  cefrBadgeRow: {
-    backgroundColor: theme.colors.surfaceElevated,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-    marginBottom: theme.spacing.md,
-  },
-  cefrBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.ash,
-  },
-  resultOverviewText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  cardBox: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  cardBoxLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    color: theme.colors.ash,
-    letterSpacing: 0.8,
-    marginBottom: 8,
-  },
-  cardBoxText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.cloud,
-    lineHeight: 18,
-  },
-  strengthsWeaknessesRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  halfCard: {
-    flex: 1,
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  chipWrap: {
-    gap: 6,
-  },
-  strengthChip: {
-    backgroundColor: "rgba(56, 211, 159, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: theme.radii.xs,
-  },
-  strengthChipText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.emeraldSuccess,
-    fontWeight: "600",
-  },
-  weaknessChip: {
-    backgroundColor: "rgba(255, 183, 77, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: theme.radii.xs,
-  },
-  weaknessChipText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.amberWarning,
-    fontWeight: "600",
-  },
-  fillerChip: {
-    backgroundColor: theme.colors.surfaceElevated,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: theme.radii.xs,
-    alignSelf: "flex-start",
-  },
-  fillerChipText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.ash,
-  },
-  emptyNotice: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.fog,
-  },
-  goalChipsRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  goalChip: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  goalChipActive: {
-    backgroundColor: theme.colors.surfaceElevated,
-    borderColor: theme.colors.irisGleam,
-  },
-  goalChipText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.ash,
-    fontWeight: "600",
-  },
-  goalChipTextActive: {
-    color: theme.colors.pure,
-  },
-  finishBtn: {
-    height: 50,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.pure,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.shadows.glowIris,
-  },
-  finishBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-});
+function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppTheme) {
+  return StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: colors.canvas,
+    },
+    centerView: {
+      alignItems: "center",
+      justifyContent: "center",
+      padding: theme.spacing.xl,
+    },
+    analyzingCard: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 28,
+      alignItems: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      maxWidth: 420,
+      width: "100%",
+      gap: 12,
+      ...activeTheme.shadows.sm,
+    },
+    analyzingHeading: {
+      fontFamily: theme.fonts.display,
+      fontSize: 20,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      textAlign: "center",
+    },
+    analyzingDesc: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+      color: colors.textSecondary,
+      textAlign: "center",
+      lineHeight: 22,
+    },
+    assessmentHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: theme.spacing.lg,
+      paddingBottom: 14,
+      gap: 10,
+    },
+    exitBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    stepperContainer: {
+      flex: 1,
+      flexDirection: "row",
+      gap: 6,
+    },
+    stepperBar: {
+      flex: 1,
+      height: 6,
+      borderRadius: theme.radii.full,
+      backgroundColor: isDark ? colors.cardSubtle : colors.mistGray,
+    },
+    stepperBarActive: {
+      backgroundColor: colors.irisBlue,
+    },
+    stepperBarCurrent: {
+      backgroundColor: colors.irisBlue,
+    },
+    stepNumPill: {
+      paddingHorizontal: 4,
+    },
+    stepNumPillText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    assessmentScroll: {
+      flexGrow: 1,
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.md,
+      maxWidth: theme.mobile.maxContentWidth,
+      width: "100%",
+      alignSelf: "center",
+    },
+    stageEyebrow: {
+      alignSelf: "flex-start",
+      marginBottom: 8,
+    },
+    stageEyebrowText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.irisBlue,
+    },
+    questionPrompt: {
+      fontFamily: theme.fonts.display,
+      fontSize: 22,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      lineHeight: 30,
+      letterSpacing: -0.3,
+      marginBottom: 20,
+    },
+    hindiAccordionHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.cardElevated,
+      borderRadius: 14,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      gap: 8,
+      marginBottom: 12,
+    },
+    hindiAccordionTitle: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textPrimary,
+      fontWeight: "500",
+    },
+    hindiBodyCard: {
+      backgroundColor: colors.cardSubtle,
+      borderRadius: 14,
+      padding: 14,
+      marginBottom: 12,
+    },
+    hindiBodyText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textPrimary,
+      lineHeight: 20,
+    },
+    waveVisualizerBox: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 24,
+      alignItems: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      marginBottom: 12,
+      ...activeTheme.shadows.sm,
+    },
+    waveBarsRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      height: 60,
+      marginBottom: 8,
+    },
+    waveBar: {
+      width: 6,
+      borderRadius: theme.radii.full,
+      backgroundColor: colors.irisBlue,
+    },
+    timerOrHintText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    liveTranscriptCard: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 14,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderLeftWidth: 3,
+      borderLeftColor: colors.irisBlue,
+      marginBottom: 20,
+    },
+    liveTranscriptLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    liveTranscriptText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      color: colors.textPrimary,
+      lineHeight: 22,
+    },
+    bottomActions: {
+      marginTop: "auto",
+      gap: 12,
+      paddingTop: theme.spacing.md,
+    },
+    recordActionBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      height: 52,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      gap: 8,
+    },
+    recordActionBtnActive: {
+      backgroundColor: colors.crimsonError,
+    },
+    recordActionBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: "#ffffff",
+    },
+    recordActionBtnTextActive: {
+      color: "#ffffff",
+    },
+    skipTaskBtn: {
+      alignItems: "center",
+      paddingVertical: 10,
+    },
+    skipTaskBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    btnPressed: {
+      opacity: 0.85,
+    },
+    resultScroll: {
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.md,
+      maxWidth: theme.mobile.maxContentWidth,
+      width: "100%",
+      alignSelf: "center",
+      gap: theme.spacing.md,
+    },
+    resultHeaderCard: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 24,
+      borderWidth: 1,
+      borderColor: colors.border,
+      alignItems: "center",
+      ...activeTheme.shadows.sm,
+    },
+    scorePill: {
+      backgroundColor: colors.emeraldWash,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 6,
+      marginBottom: 12,
+    },
+    scorePillText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.emeraldSuccess,
+    },
+    resultHeadline: {
+      fontFamily: theme.fonts.display,
+      fontSize: 30,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      letterSpacing: -0.6,
+      marginBottom: 6,
+    },
+    resultHeadlineSub: {
+      color: colors.textSecondary,
+      fontWeight: "500",
+    },
+    cefrBadgeRow: {
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      marginBottom: 14,
+    },
+    cefrBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.irisBlue,
+    },
+    resultOverviewText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+      color: colors.textSecondary,
+      textAlign: "center",
+      lineHeight: 22,
+    },
+    cardBox: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    cardBoxLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 10,
+    },
+    cardBoxText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+      color: colors.textPrimary,
+      lineHeight: 22,
+    },
+    strengthsWeaknessesRow: {
+      flexDirection: "row",
+      gap: 10,
+    },
+    halfCard: {
+      flex: 1,
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    chipWrap: {
+      gap: 6,
+    },
+    strengthChip: {
+      backgroundColor: colors.emeraldWash,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      alignSelf: "flex-start",
+    },
+    strengthChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.emeraldSuccess,
+      fontWeight: "500",
+    },
+    weaknessChip: {
+      backgroundColor: colors.solarGradient,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      alignSelf: "flex-start",
+    },
+    weaknessChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.solarText,
+      fontWeight: "500",
+    },
+    fillerChip: {
+      backgroundColor: colors.cardSubtle,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      alignSelf: "flex-start",
+    },
+    fillerChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textPrimary,
+    },
+    emptyNotice: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    goalChipsRow: {
+      flexDirection: "row",
+      gap: 8,
+    },
+    goalChip: {
+      flex: 1,
+      paddingVertical: 10,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.cardElevated,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    goalChipActive: {
+      backgroundColor: colors.primarySoft,
+      borderColor: colors.irisBlue,
+    },
+    goalChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      fontWeight: "500",
+    },
+    goalChipTextActive: {
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    finishBtn: {
+      height: 52,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    finishBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+  });
+}

@@ -10,6 +10,7 @@
       "web"
     ],
     "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "web": {
       "favicon": "./assets/favicon.png",

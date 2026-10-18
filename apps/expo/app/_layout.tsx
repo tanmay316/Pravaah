@@ -14,7 +14,7 @@ import * as Font from "expo-font";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/firebase";
 import { wakeBackend } from "../lib/api";
-import { theme } from "../lib/theme";
+import { ThemeProvider, useTheme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
 
 export { default as ErrorBoundary } from "../components/ScreenError";
@@ -55,7 +55,18 @@ if (Platform.OS === "web") {
 const ioniconsTtf = require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf");
 
 export default function RootLayout() {
+  return (
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <RootLayoutNav />
+      </ThemeProvider>
+    </SafeAreaProvider>
+  );
+}
+
+function RootLayoutNav() {
   const { user, loading } = useAuth();
+  const { colors, isDark } = useTheme();
   const segments = useSegments();
   const router = useRouter();
 
@@ -63,7 +74,7 @@ export default function RootLayout() {
     wakeBackend();
   }, []);
 
-  // Inject Mobile Web meta tags, Google Fonts, Favicon, and PWA setup
+  // Inject Mobile Web meta tags, Design System CSS variables, Fonts, Favicon, and PWA setup
   useEffect(() => {
     if (Platform.OS === "web" && typeof document !== "undefined") {
       document.title = PRAVAAH_APP_TITLE;
@@ -93,7 +104,7 @@ export default function RootLayout() {
         themeMeta.name = "theme-color";
         document.head.appendChild(themeMeta);
       }
-      themeMeta.content = "#0f1011";
+      themeMeta.content = colors.canvas;
 
       // Register PWA Service Worker
       if ("serviceWorker" in navigator) {
@@ -129,43 +140,66 @@ export default function RootLayout() {
         link.id = fontId;
         link.rel = "stylesheet";
         link.href =
-          "https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap";
+          "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap";
         document.head.appendChild(link);
 
-        // Mobile touch & styling resets
+        // Mobile touch & design token CSS variables
         const style = document.createElement("style");
+        style.id = "pravaah-global-theme-css";
         style.innerHTML = `
+          :root {
+            --color-sky-tint: #ebf5ff;
+            --color-paper-white: #ffffff;
+            --color-bone-white: #fafdff;
+            --color-mist-gray: #f6f7f8;
+            --color-ink: #0a0d12;
+            --color-charcoal: #181d27;
+            --color-graphite: #535862;
+            --color-fog: #93979f;
+            --color-slate-shadow: #3b3d41;
+            --color-iris-blue: #0069e0;
+            --color-sky-blue: #0099ff;
+            --color-lavender-wash: #f1e6ff;
+            --color-mint-wash: #d3f6e3;
+            --color-powder-blue: #cce7ff;
+            --color-solar-gradient: #fff2be;
+            --color-violet-gradient: #e4ccff;
+            --color-aqua-gradient: #c2e9ff;
+            --color-peach-gradient: #ffd1b8;
+            --font-aeonik: 'Aeonik', 'Plus Jakarta Sans', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-geist: 'Geist', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          }
           * {
             box-sizing: border-box;
             -webkit-tap-highlight-color: transparent;
           }
           body, html, #root {
-            background-color: #0f1011 !important;
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             overflow-x: hidden;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: var(--font-geist);
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
             overscroll-behavior-y: none;
+            transition: background-color 0.2s ease;
           }
-          /* Custom mobile scrollbar */
           ::-webkit-scrollbar {
-            width: 4px;
-            height: 4px;
+            width: 6px;
+            height: 6px;
           }
           ::-webkit-scrollbar-track {
-            background: #090a0b;
+            background: transparent;
           }
           ::-webkit-scrollbar-thumb {
-            background: #28292c;
-            border-radius: 4px;
+            background: rgba(83, 88, 98, 0.28);
+            border-radius: 9999px;
           }
         `;
         document.head.appendChild(style);
       }
+      document.body.style.backgroundColor = colors.canvas;
 
       // Inject @font-face rules for vector icons so browser text glyphs render immediately
       const iconFontId = "pravaah-vector-icons-stylesheet";
@@ -203,7 +237,7 @@ export default function RootLayout() {
         } catch {}
       }
     }
-  }, [segments]);
+  }, [segments, colors.canvas]);
 
   useEffect(() => {
     if (loading) return;
@@ -219,23 +253,23 @@ export default function RootLayout() {
 
   if (loading) {
     return (
-      <SafeAreaProvider>
-        <StatusBar style="light" backgroundColor={theme.colors.obsidian} />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={theme.colors.irisGleam} />
+      <>
+        <StatusBar style={isDark ? "light" : "dark"} backgroundColor={colors.canvas} />
+        <View style={[styles.loadingContainer, { backgroundColor: colors.canvas }]}>
+          <ActivityIndicator size="large" color={colors.irisBlue} />
         </View>
-      </SafeAreaProvider>
+      </>
     );
   }
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" backgroundColor={theme.colors.obsidian} translucent={false} />
+    <>
+      <StatusBar style={isDark ? "light" : "dark"} backgroundColor={colors.canvas} translucent={false} />
       <Stack
         screenOptions={{
           headerShown: false,
           animation: Platform.OS === "ios" ? "default" : "slide_from_right",
-          contentStyle: { backgroundColor: theme.colors.obsidian },
+          contentStyle: { backgroundColor: colors.canvas },
         }}
       >
         <Stack.Screen name="index" />
@@ -243,14 +277,13 @@ export default function RootLayout() {
         <Stack.Screen name="assessment" />
         <Stack.Screen name="session" />
       </Stack>
-    </SafeAreaProvider>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    backgroundColor: theme.colors.obsidian,
     justifyContent: "center",
     alignItems: "center",
   },

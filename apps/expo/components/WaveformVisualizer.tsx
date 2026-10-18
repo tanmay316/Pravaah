@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { StyleSheet, View, Animated, Easing } from "react-native";
-import { theme } from "../lib/theme";
+import { theme, useTheme } from "../lib/theme";
 
 interface WaveformVisualizerProps {
   state:
@@ -99,37 +99,38 @@ export function WaveformVisualizer({
     };
   }, [state, audioLevel]);
 
+  const { colors } = useTheme();
   const getColors = () => {
     switch (state) {
       case "USER_SPEAKING":
         return {
-          barColor: theme.colors.emeraldSuccess,
-          glowColor: "rgba(56, 211, 159, 0.4)",
-          bgBorder: "rgba(56, 211, 159, 0.2)",
+          barColor: colors.emeraldSuccess,
+          glowColor: colors.glowEmerald,
+          bgBorder: colors.mintBorder,
         };
       case "AI_SPEAKING":
         return {
-          barColor: theme.colors.irisGleam,
-          glowColor: "rgba(132, 125, 255, 0.5)",
-          bgBorder: "rgba(132, 125, 255, 0.3)",
+          barColor: colors.irisBlue,
+          glowColor: colors.glowIris,
+          bgBorder: colors.powderBorder,
         };
       case "PROCESSING":
         return {
-          barColor: theme.colors.cyanSignal,
-          glowColor: "rgba(0, 179, 221, 0.4)",
-          bgBorder: "rgba(0, 179, 221, 0.2)",
+          barColor: colors.skyBlue,
+          glowColor: colors.glowCyan,
+          bgBorder: colors.aquaBorder,
         };
       case "LISTENING":
         return {
-          barColor: theme.colors.paleIris,
-          glowColor: "rgba(209, 201, 255, 0.3)",
-          bgBorder: "rgba(209, 201, 255, 0.15)",
+          barColor: colors.irisBlue,
+          glowColor: colors.glowIris,
+          bgBorder: colors.border,
         };
       default:
         return {
-          barColor: theme.colors.steel,
+          barColor: colors.fog,
           glowColor: "transparent",
-          bgBorder: theme.colors.borderMuted,
+          bgBorder: colors.border,
         };
     }
   };
@@ -137,7 +138,12 @@ export function WaveformVisualizer({
   const { barColor, glowColor, bgBorder } = getColors();
 
   return (
-    <View style={[styles.container, { borderColor: bgBorder }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.cardElevated, borderColor: bgBorder },
+      ]}
+    >
       <View style={styles.waveformRow}>
         {animatedValues.map((anim, idx) => {
           const heightInterpolation = anim.interpolate({

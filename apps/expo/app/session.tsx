@@ -13,7 +13,7 @@
 import "../lib/polyfills";
 // Side effect on native: registerGlobals() installs WebRTC before any Room is created.
 import { startAudioSession, stopAudioSession } from "../lib/livekit";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -41,7 +41,7 @@ import {
 } from "../lib/api";
 import { prewarmDeviceSpeech, speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
 import { activityTitle, skillLabel } from "../lib/skills";
-import { theme } from "../lib/theme";
+import { AppTheme, ThemeColors, theme, useTheme } from "../lib/theme";
 import CoachAvatar, { AgentLevel, CoachAvatarState } from "../components/CoachAvatar";
 
 export { default as ErrorBoundary } from "../components/ScreenError";
@@ -172,6 +172,8 @@ export default function SessionScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isCompact = width < 480;
+  const { colors, isDark, toggleTheme, theme: activeTheme } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark, activeTheme), [colors, isDark, activeTheme]);
   const params = useLocalSearchParams<{
     mode?: string;
     target_skill?: string;
@@ -756,24 +758,24 @@ export default function SessionScreen() {
   };
 
   const getSpeakingStateLabel = () => {
-    if (reconnecting) return "RECONNECTING...";
-    if (sessionStatus === "starting") return "CONNECTING...";
-    if (sessionStatus === "ended") return "SESSION ENDED";
-    if (deviceVoiceActive) return "COACH SPEAKING (DEVICE)";
-    if (!coachJoined) return "WAITING FOR COACH...";
-    if (agentSpeaking) return "COACH SPEAKING";
-    if (learnerSpeaking) return "YOU ARE SPEAKING";
-    if (isMuted) return "MUTED";
-    return "LISTENING...";
+    if (reconnecting) return "Reconnecting";
+    if (sessionStatus === "starting") return "Connecting";
+    if (sessionStatus === "ended") return "Session ended";
+    if (deviceVoiceActive) return "Coach speaking (device)";
+    if (!coachJoined) return "Waiting for coach";
+    if (agentSpeaking) return "Coach speaking";
+    if (learnerSpeaking) return "You're speaking";
+    if (isMuted) return "Muted";
+    return "Listening";
   };
 
   const getSpeakingStateColor = () => {
-    if (reconnecting || sessionStatus === "starting" || !coachJoined) return theme.colors.amberWarning;
-    if (sessionStatus === "ended") return theme.colors.fog;
-    if (agentSpeaking) return theme.colors.orchidBloom;
-    if (learnerSpeaking) return theme.colors.cyanSignal;
-    if (isMuted) return theme.colors.fog;
-    return theme.colors.emeraldSuccess;
+    if (reconnecting || sessionStatus === "starting" || !coachJoined) return colors.amberWarning;
+    if (sessionStatus === "ended") return colors.fog;
+    if (agentSpeaking) return colors.irisBlue;
+    if (learnerSpeaking) return colors.skyBlue;
+    if (isMuted) return colors.fog;
+    return colors.emeraldSuccess;
   };
 
   const getAvatarState = (): CoachAvatarState => {
@@ -803,17 +805,28 @@ export default function SessionScreen() {
             style={({ pressed }) => [styles.backBtn, pressed && styles.btnPressed]}
             onPress={() => router.replace("/")}
           >
-            <Ionicons name="arrow-back" size={20} color={theme.colors.pure} />
+            <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
             <Text style={styles.backBtnText}>Dashboard</Text>
           </Pressable>
 
-          {params.stage ? (
-            <View style={styles.stagePill}>
-              <Text style={styles.stagePillText}>
-                {params.stage.replace(/_/g, " ").toUpperCase()}
-              </Text>
-            </View>
-          ) : null}
+          <View style={styles.topHeaderRight}>
+            {params.stage ? (
+              <View style={styles.stagePill}>
+                <Text style={styles.stagePillText}>
+                  {params.stage.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())}
+                </Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              style={({ pressed }) => [styles.themeBtn, pressed && styles.btnPressed]}
+              onPress={toggleTheme}
+              accessibilityRole="button"
+              accessibilityLabel={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              <Ionicons name={isDark ? "sunny-outline" : "moon-outline"} size={18} color={colors.textSecondary} />
+            </Pressable>
+          </View>
         </View>
 
         <ScrollView
@@ -837,7 +850,7 @@ export default function SessionScreen() {
           {/* Step 1 — Topic */}
           <View style={styles.setupCard}>
             <Text style={styles.setupStepLabel}>
-              1 · {isRoleplay ? "THE SITUATION" : "YOUR TOPIC"}
+              {isRoleplay ? "Situation" : "Topic"}
             </Text>
             <TextInput
               style={styles.topicInput}
@@ -846,7 +859,7 @@ export default function SessionScreen() {
                   ? "e.g. a job interview, hotel check-in…"
                   : "e.g. my new job, last weekend, cricket…"
               }
-              placeholderTextColor={theme.colors.steel}
+              placeholderTextColor={colors.fog}
               value={topic}
               onChangeText={setTopic}
               maxLength={120}
@@ -872,7 +885,7 @@ export default function SessionScreen() {
 
           {/* Step 2 — Goal */}
           <View style={styles.setupCard}>
-            <Text style={styles.setupStepLabel}>2 · HOW SHOULD WE PRACTISE?</Text>
+            <Text style={styles.setupStepLabel}>Practice style</Text>
             <View style={styles.goalGrid}>
               {GOAL_OPTIONS.map((opt) => {
                 const selected = goal === opt.goal;
@@ -889,11 +902,18 @@ export default function SessionScreen() {
                     accessibilityRole="radio"
                     accessibilityState={{ selected }}
                   >
-                    <Ionicons
-                      name={opt.icon}
-                      size={20}
-                      color={selected ? theme.colors.irisGleam : theme.colors.ash}
-                    />
+                    <View
+                      style={[
+                        styles.goalIconBadge,
+                        { backgroundColor: selected ? colors.irisBlue : colors.primarySoft },
+                      ]}
+                    >
+                      <Ionicons
+                        name={opt.icon}
+                        size={18}
+                        color={selected ? "#ffffff" : colors.irisBlue}
+                      />
+                    </View>
                     <View style={styles.goalCardTextCol}>
                       <Text style={[styles.goalCardTitle, selected && styles.goalCardTitleActive]}>
                         {opt.label}
@@ -934,13 +954,13 @@ export default function SessionScreen() {
 
           {params.target_skill ? (
             <View style={styles.focusCard}>
-              <Text style={styles.focusCardEyebrow}>TODAY'S TARGET SKILL</Text>
+              <Text style={styles.focusCardEyebrow}>Today's target skill</Text>
               <Text style={styles.focusCardTitle}>{skillLabel(params.target_skill)}</Text>
             </View>
           ) : null}
 
           <View style={styles.setupCard}>
-            <Text style={styles.setupStepLabel}>3 · SPEECH RECOGNITION LANGUAGE</Text>
+            <Text style={styles.setupStepLabel}>Speech recognition language</Text>
             <View style={styles.chipWrap}>
               {([
                 { value: "en", label: "English · best accuracy" },
@@ -961,7 +981,7 @@ export default function SessionScreen() {
                 </Pressable>
               ))}
             </View>
-            <Text style={styles.goalCardBlurb}>
+            <Text style={[styles.goalCardBlurb, { marginTop: 10 }]}>
               Auto supports switching languages. Choose Hindi or English if recognition gets your language wrong.
               This does not change your Hindi explanation preference.
             </Text>
@@ -969,11 +989,11 @@ export default function SessionScreen() {
 
           <View style={styles.tipsCard}>
             <View style={styles.tipItem}>
-              <Ionicons name="headset-outline" size={20} color={theme.colors.paleIris} />
+              <Ionicons name="headset-outline" size={20} color={colors.irisBlue} />
               <Text style={styles.tipText}>Use headphones or earphones for best microphone clarity</Text>
             </View>
             <View style={styles.tipItem}>
-              <Ionicons name="globe-outline" size={20} color={theme.colors.cyanSignal} />
+              <Ionicons name="globe-outline" size={20} color={colors.skyBlue} />
               <Text style={styles.tipText}>
                 If stuck, speak in Hindi, then practise the English version. A quieter spot helps recognition.
               </Text>
@@ -982,7 +1002,7 @@ export default function SessionScreen() {
 
           {errorMessage ? (
             <View style={styles.errorBanner}>
-              <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
+              <Ionicons name="alert-circle" size={18} color={colors.crimsonError} />
               <Text style={styles.errorBannerText}>{errorMessage}</Text>
             </View>
           ) : null}
@@ -999,12 +1019,12 @@ export default function SessionScreen() {
             >
               {isStarting ? (
                 <View style={styles.btnLoadingRow}>
-                  <ActivityIndicator size="small" color={theme.colors.void} />
-                  <Text style={styles.startCallBtnText}>Connecting to Coach…</Text>
+                  <ActivityIndicator size="small" color={colors.textOnPrimary} />
+                  <Text style={styles.startCallBtnText}>Connecting</Text>
                 </View>
               ) : (
                 <View style={styles.btnLoadingRow}>
-                  <Ionicons name="call" size={20} color={theme.colors.void} />
+                  <Ionicons name="mic-outline" size={20} color={colors.textOnPrimary} />
                   <Text style={styles.startCallBtnText}>
                     {topic.trim()
                       ? `Start talking about ${topic.trim()}`
@@ -1039,17 +1059,28 @@ export default function SessionScreen() {
           </Text>
         </View>
 
-        <View style={styles.callTimerPill}>
-          <Ionicons name="time-outline" size={13} color={theme.colors.cloud} />
-          <Text style={styles.callTimerText}>{formatSeconds(sessionSeconds)}</Text>
-        </View>
+        <View style={styles.topHeaderRight}>
+          <View style={styles.callTimerPill}>
+            <Ionicons name="time-outline" size={14} color={colors.textPrimary} />
+            <Text style={styles.callTimerText}>{formatSeconds(sessionSeconds)}</Text>
+          </View>
 
-        <Pressable
-          style={({ pressed }) => [styles.quickEndBtn, pressed && styles.btnPressed]}
-          onPress={handleEndSession}
-        >
-          <Text style={styles.quickEndBtnText}>End</Text>
-        </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.themeBtn, pressed && styles.btnPressed]}
+            onPress={toggleTheme}
+            accessibilityRole="button"
+            accessibilityLabel={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            <Ionicons name={isDark ? "sunny-outline" : "moon-outline"} size={18} color={colors.textSecondary} />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [styles.quickEndBtn, pressed && styles.btnPressed]}
+            onPress={handleEndSession}
+          >
+            <Text style={styles.quickEndBtnText}>End</Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* Activity Context Sub-Header */}
@@ -1065,7 +1096,7 @@ export default function SessionScreen() {
       <View style={styles.activeCallBody}>
         {errorMessage ? (
           <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
+            <Ionicons name="alert-circle" size={18} color={colors.crimsonError} />
             <Text style={styles.errorBannerText}>{errorMessage}</Text>
           </View>
         ) : null}
@@ -1075,7 +1106,7 @@ export default function SessionScreen() {
           learnerSpeaking={learnerSpeaking}
           getLevel={getAgentLevel}
           caption={latestTutorLine}
-          size={Math.min(188, Math.round(width * 0.42))}
+          size={Math.min(180, Math.round(width * 0.4))}
           hint={
             isMuted
               ? "Microphone is muted"
@@ -1101,23 +1132,23 @@ export default function SessionScreen() {
                 ]}
               >
                 <Text style={styles.correctionPillText}>
-                  {activeCorrection.card_type === "translation" ? "IN ENGLISH" : "QUICK CORRECTION"}
+                  {activeCorrection.card_type === "translation" ? "In English" : "Quick correction"}
                 </Text>
               </View>
               <Pressable onPress={() => setActiveCorrection(null)} hitSlop={12}>
-                <Ionicons name="close" size={18} color={theme.colors.ash} />
+                <Ionicons name="close" size={18} color={colors.textSecondary} />
               </Pressable>
             </View>
 
             <View style={styles.correctionSpeechComparison}>
               <View style={styles.correctionLine}>
-                <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
+                <Ionicons name="close-circle" size={16} color={colors.crimsonError} />
                 <Text style={styles.originalSpeechText} numberOfLines={3}>
                   {activeCorrection.original}
                 </Text>
               </View>
               <View style={styles.correctionLine}>
-                <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
+                <Ionicons name="checkmark-circle" size={16} color={colors.emeraldSuccess} />
                 <Text style={styles.betterSpeechText} numberOfLines={3}>
                   {activeCorrection.corrected}
                 </Text>
@@ -1142,7 +1173,7 @@ export default function SessionScreen() {
         {/* Live Conversation Chat Transcript */}
         <View style={styles.transcriptSection}>
           <View style={styles.transcriptHeaderRow}>
-            <Text style={styles.transcriptSectionLabel}>LIVE TRANSCRIPT</Text>
+            <Text style={styles.transcriptSectionLabel}>Transcript</Text>
             {correctionCount > 0 ? (
               <Text style={styles.transcriptCountLabel}>
                 {correctionCount} correction{correctionCount === 1 ? "" : "s"}
@@ -1156,7 +1187,7 @@ export default function SessionScreen() {
           >
             {transcript.length === 0 ? (
               <View style={styles.emptyTranscriptBubble}>
-                <Ionicons name="mic-outline" size={16} color={theme.colors.fog} />
+                <Ionicons name="mic-outline" size={18} color={colors.irisBlue} />
                 <Text style={styles.emptyTranscriptText}>
                   Your conversation will appear here as you speak.
                 </Text>
@@ -1171,12 +1202,31 @@ export default function SessionScreen() {
                   ]}
                 >
                   <View style={styles.bubbleHeaderRow}>
-                    <Text style={styles.bubbleSpeakerLabel}>
-                      {t.speaker === "tutor" ? "COACH PRAVAAH" : "YOU"}
+                    <Text
+                      style={[
+                        styles.bubbleSpeakerLabel,
+                        t.speaker === "learner" && { color: "rgba(255, 255, 255, 0.85)" },
+                      ]}
+                    >
+                      {t.speaker === "tutor" ? "Coach" : "You"}
                     </Text>
-                    <Text style={styles.bubbleTimestamp}>{t.timestamp}</Text>
+                    <Text
+                      style={[
+                        styles.bubbleTimestamp,
+                        t.speaker === "learner" && { color: "rgba(255, 255, 255, 0.75)" },
+                      ]}
+                    >
+                      {t.timestamp}
+                    </Text>
                   </View>
-                  <Text style={styles.bubbleText}>{t.text}</Text>
+                  <Text
+                    style={[
+                      styles.bubbleText,
+                      t.speaker === "learner" && { color: "#ffffff" },
+                    ]}
+                  >
+                    {t.text}
+                  </Text>
                 </View>
               ))
             )}
@@ -1190,7 +1240,7 @@ export default function SessionScreen() {
           styles.bottomCallBar,
           {
             paddingBottom: Math.max(insets.bottom, 12),
-            height: 80 + Math.max(insets.bottom, 12),
+            height: 84 + Math.max(insets.bottom, 12),
           },
         ]}
       >
@@ -1207,7 +1257,7 @@ export default function SessionScreen() {
             <Ionicons
               name={isMuted ? "mic-off" : "mic"}
               size={24}
-              color={isMuted ? theme.colors.crimsonError : theme.colors.pure}
+              color={isMuted ? colors.crimsonError : colors.textPrimary}
             />
           </View>
           <Text style={styles.roundCallBtnLabel}>{isMuted ? "Unmute" : "Mute"}</Text>
@@ -1227,7 +1277,7 @@ export default function SessionScreen() {
             <Ionicons
               name={deviceVoiceMode === "on" ? "volume-high" : "phone-portrait-outline"}
               size={22}
-              color={deviceVoiceMode === "on" ? theme.colors.emeraldSuccess : theme.colors.pure}
+              color={deviceVoiceMode === "on" ? colors.emeraldSuccess : colors.textPrimary}
             />
           </View>
           <Text style={styles.roundCallBtnLabel}>
@@ -1242,7 +1292,7 @@ export default function SessionScreen() {
           accessibilityLabel="End session"
         >
           <View style={styles.roundEndBtn}>
-            <Ionicons name="call" size={26} color={theme.colors.pure} style={{ transform: [{ rotate: "135deg" }] }} />
+            <Ionicons name="call" size={26} color="#ffffff" style={{ transform: [{ rotate: "135deg" }] }} />
           </View>
           <Text style={styles.roundEndBtnLabel}>End</Text>
         </Pressable>
@@ -1253,38 +1303,37 @@ export default function SessionScreen() {
         <View style={styles.modalBackdrop}>
           <View style={[styles.summaryCard, { paddingBottom: Math.max(insets.bottom + 20, 24) }]}>
             <View style={styles.summaryTopBadge}>
-              <Text style={styles.summaryTopBadgeText}>SESSION COMPLETED 🎉</Text>
+              <Ionicons name="checkmark-circle" size={14} color={colors.emeraldSuccess} />
+              <Text style={styles.summaryTopBadgeText}>Session complete</Text>
             </View>
 
-            <Text style={styles.summaryTitle}>
-              <Text style={styles.heroHeadlineItalic}>Great</Text> practice session!
-            </Text>
+            <Text style={styles.summaryTitle}>Nice work</Text>
             <Text style={styles.summarySubtitle}>
-              {activityTitle(params.activity_title) || "Spoken Conversation"}
+              {activityTitle(params.activity_title) || "Spoken conversation"}
             </Text>
 
             {/* 4-Stat Mobile Grid */}
             <View style={styles.summaryGrid}>
               <View style={styles.summaryStatTile}>
                 <Text style={styles.summaryStatValue}>{formatSeconds(sessionSeconds)}</Text>
-                <Text style={styles.summaryStatLabel}>DURATION</Text>
+                <Text style={styles.summaryStatLabel}>Duration</Text>
               </View>
 
               <View style={styles.summaryStatTile}>
                 <Text style={styles.summaryStatValue}>
                   {Platform.OS === "web" ? formatSeconds(learnerSpeakingSeconds) : "—"}
                 </Text>
-                <Text style={styles.summaryStatLabel}>DETECTED SPEECH (EST.)</Text>
+                <Text style={styles.summaryStatLabel}>Your speaking time</Text>
               </View>
 
               <View style={styles.summaryStatTile}>
                 <Text style={styles.summaryStatValue}>{correctionCount}</Text>
-                <Text style={styles.summaryStatLabel}>RECASTS</Text>
+                <Text style={styles.summaryStatLabel}>Corrections</Text>
               </View>
 
               <View style={styles.summaryStatTile}>
                 <Text style={styles.summaryStatValue}>{transcript.length}</Text>
-                <Text style={styles.summaryStatLabel}>TURNS</Text>
+                <Text style={styles.summaryStatLabel}>Turns</Text>
               </View>
             </View>
 
@@ -1294,7 +1343,7 @@ export default function SessionScreen() {
             </Text>
             {saveIssue ? (
               <View style={styles.summaryNoticeBox}>
-                <Ionicons name="information-circle-outline" size={16} color={theme.colors.amberWarning} />
+                <Ionicons name="information-circle-outline" size={18} color={colors.amberWarning} />
                 <Text style={styles.summaryNoticeText}>{saveIssue}</Text>
               </View>
             ) : null}
@@ -1305,10 +1354,10 @@ export default function SessionScreen() {
               disabled={savingSummary}
             >
               {savingSummary ? (
-                <ActivityIndicator size="small" color={theme.colors.void} />
+                <ActivityIndicator size="small" color={colors.textOnPrimary} />
               ) : (
                 <Text style={styles.primaryReturnBtnText}>
-                  {saveIssue ? "Try saving again" : "Save & return to Dashboard →"}
+                  {saveIssue ? "Try saving again" : "Save and return to dashboard"}
                 </Text>
               )}
             </Pressable>
@@ -1329,756 +1378,767 @@ export default function SessionScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: theme.colors.abyss,
-  },
-  topHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
-  },
-  backBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderRadius: theme.radii.full,
-  },
-  backBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.pure,
-    fontWeight: "600",
-  },
-  stagePill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: theme.radii.full,
-  },
-  stagePillText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  preSessionScroll: {
-    flexGrow: 1,
-    paddingHorizontal: theme.spacing.lg,
-    alignItems: "center",
-    maxWidth: theme.mobile.maxContentWidth,
-    width: "100%",
-    alignSelf: "center",
-  },
-  preSessionHero: {
-    alignItems: "center",
-    marginTop: theme.spacing.lg,
-    marginBottom: theme.spacing.xl,
-  },
-  ambientPulseSphere: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-  },
-  micCircleBadge: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: theme.colors.surfaceElevated,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  preSessionTitle: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingMd,
-    color: theme.colors.cloud,
-    textAlign: "center",
-    marginBottom: 8,
-  },
-  preSessionSubhead: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    textAlign: "center",
-    lineHeight: 20,
-    paddingHorizontal: theme.spacing.md,
-  },
-  setupCard: {
-    width: "100%",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    marginBottom: theme.spacing.md,
-  },
-  setupStepLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    letterSpacing: 0.8,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-    marginBottom: theme.spacing.md,
-  },
-  topicInput: {
-    height: theme.mobile.minTouchSize,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    paddingHorizontal: theme.spacing.md,
-    color: theme.colors.pure,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    marginBottom: theme.spacing.md,
-  },
-  chipWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  suggestChip: {
-    paddingHorizontal: 12,
-    minHeight: 34,
-    justifyContent: "center",
-    borderRadius: theme.radii.full,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  suggestChipActive: {
-    backgroundColor: "rgba(132, 125, 255, 0.16)",
-    borderColor: theme.colors.borderIris,
-  },
-  suggestChipText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 13,
-    color: theme.colors.ash,
-  },
-  suggestChipTextActive: {
-    color: theme.colors.paleIris,
-    fontWeight: "600",
-  },
-  goalGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  goalCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    minHeight: theme.mobile.minTouchSize + 12,
-    padding: theme.spacing.md,
-    borderRadius: theme.radii.md,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  goalCardFull: {
-    width: "100%",
-  },
-  goalCardHalf: {
-    flexGrow: 1,
-    flexBasis: "47%",
-  },
-  goalCardActive: {
-    borderColor: theme.colors.borderIris,
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-  },
-  goalCardTextCol: {
-    flex: 1,
-  },
-  goalCardTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  goalCardTitleActive: {
-    color: theme.colors.pure,
-  },
-  goalCardBlurb: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.fog,
-    lineHeight: 15,
-    marginTop: 2,
-  },
-  scenarioBlock: {
-    marginTop: theme.spacing.lg,
-  },
-  scenarioLabel: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    marginBottom: theme.spacing.sm,
-  },
-  focusCard: {
-    width: "100%",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    marginBottom: theme.spacing.md,
-  },
-  focusCardEyebrow: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    letterSpacing: 0.8,
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  focusCardTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    fontWeight: "700",
-    color: theme.colors.pure,
-  },
-  tipsCard: {
-    width: "100%",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    gap: 12,
-    marginBottom: theme.spacing.xl,
-  },
-  tipItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  tipText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-    lineHeight: 16,
-  },
-  errorBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 82, 82, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.3)",
-    borderRadius: theme.radii.sm,
-    padding: 10,
-    gap: 8,
-    marginBottom: theme.spacing.md,
-    width: "100%",
-  },
-  errorBannerText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.crimsonError,
-  },
-  preSessionActionContainer: {
-    width: "100%",
-    gap: 12,
-    marginTop: "auto",
-  },
-  startCallBtn: {
-    height: 52,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.pure,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.shadows.glowIris,
-  },
-  btnLoadingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  startCallBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-  cancelBtn: {
-    alignItems: "center",
-    paddingVertical: 10,
-  },
-  cancelBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.fog,
-  },
-  btnDisabled: {
-    opacity: 0.5,
-  },
-  btnPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
-  },
-  activeCallHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderMuted,
-  },
-  callStatusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  callTimerPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.colors.surfaceElevated,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-    gap: 4,
-  },
-  callTimerText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  quickEndBtn: {
-    backgroundColor: "rgba(255, 82, 82, 0.2)",
-    borderWidth: 1,
-    borderColor: theme.colors.crimsonError,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-  },
-  quickEndBtnText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.crimsonError,
-  },
-  activeActivityBar: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: 6,
-    backgroundColor: theme.colors.surfaceElevated,
-  },
-  activeActivityTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.paleIris,
-    fontWeight: "600",
-  },
-  activeCallBody: {
-    flex: 1,
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-  },
-  visualizerOrbContainer: {
-    alignItems: "center",
-    marginVertical: theme.spacing.md,
-  },
-  visualizerOrb: {
-    width: 130,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: theme.colors.graphiteCard,
-    borderWidth: 2,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-    marginBottom: 8,
-    ...theme.shadows.card,
-  },
-  waveBarsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    height: 50,
-  },
-  waveBar: {
-    width: 4,
-    borderRadius: theme.radii.full,
-  },
-  visualizerHintText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-  },
-  liveCorrectionCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    marginBottom: 10,
-    ...theme.shadows.card,
-  },
-  liveTranslationCard: {
-    borderColor: theme.colors.borderCyan,
-  },
-  correctionTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 6,
-  },
-  correctionPill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.xs,
-  },
-  translationPill: {
-    backgroundColor: "rgba(0, 179, 221, 0.15)",
-  },
-  correctionPillText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  correctionSpeechComparison: {
-    gap: 6,
-    marginBottom: 8,
-  },
-  correctionLine: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 6,
-  },
-  originalSpeechText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-    textDecorationLine: "line-through",
-  },
-  betterSpeechText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 14,
-    fontWeight: "700",
-    color: theme.colors.pure,
-  },
-  correctionWhyText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.ash,
-    lineHeight: 15,
-    marginBottom: 8,
-  },
-  gotItBtn: {
-    alignSelf: "flex-end",
-    backgroundColor: theme.colors.surfaceElevated,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: theme.radii.xs,
-  },
-  gotItBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.pure,
-    fontWeight: "600",
-  },
-  transcriptSection: {
-    flex: 1,
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    padding: 12,
-    marginBottom: 80,
-  },
-  transcriptHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  transcriptCountLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  transcriptSectionLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.fog,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-  },
-  transcriptContent: {
-    gap: 8,
-    paddingBottom: 8,
-  },
-  emptyTranscriptBubble: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 12,
-  },
-  emptyTranscriptText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.fog,
-  },
-  chatBubble: {
-    maxWidth: "88%",
-    padding: 10,
-    borderRadius: theme.radii.md,
-  },
-  bubbleTutor: {
-    alignSelf: "flex-start",
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    borderTopLeftRadius: 2,
-  },
-  bubbleLearner: {
-    alignSelf: "flex-end",
-    backgroundColor: "rgba(0, 179, 221, 0.15)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderCyan,
-    borderTopRightRadius: 2,
-  },
-  bubbleHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 2,
-    gap: 8,
-  },
-  bubbleSpeakerLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  bubbleTimestamp: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    color: theme.colors.fog,
-  },
-  bubbleText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 13,
-    color: theme.colors.pure,
-    lineHeight: 18,
-  },
-  bottomCallBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: theme.colors.glassNav,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderMuted,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    paddingHorizontal: theme.spacing.xl,
-  },
-  roundCallBtn: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    minWidth: 80,
-  },
-  roundCallBtnActive: {
-    opacity: 0.9,
-  },
-  roundCallBtnOn: {
-    opacity: 1,
-  },
-  roundCallCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  roundCallCircleActive: {
-    borderColor: theme.colors.crimsonError,
-  },
-  roundCallCircleOn: {
-    borderColor: theme.colors.emeraldSuccess,
-  },
-  roundCallBtnLabel: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.ash,
-  },
-  roundEndBtn: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: theme.colors.crimsonError,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.shadows.card,
-  },
-  roundEndBtnLabel: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.crimsonError,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
-    justifyContent: "flex-end",
-  },
-  summaryCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderTopLeftRadius: theme.radii.xl,
-    borderTopRightRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  summaryTopBadge: {
-    alignSelf: "center",
-    backgroundColor: "rgba(56, 211, 159, 0.15)",
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: theme.radii.full,
-    marginBottom: theme.spacing.sm,
-  },
-  summaryTopBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.emeraldSuccess,
-  },
-  summaryTitle: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingMd,
-    color: theme.colors.pure,
-    textAlign: "center",
-    marginBottom: 4,
-  },
-  summarySubtitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    textAlign: "center",
-    marginBottom: theme.spacing.lg,
-  },
-  summaryGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginBottom: theme.spacing.lg,
-  },
-  summaryStatTile: {
-    width: "48%",
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.md,
-    padding: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  summaryStatValue: {
-    fontFamily: theme.fonts.mono,
-    fontSize: theme.fontSizes.headingSm,
-    fontWeight: "700",
-    color: theme.colors.pure,
-    marginBottom: 2,
-  },
-  summaryStatLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.fog,
-    fontWeight: "700",
-  },
-  summarySavedNotice: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.fog,
-    textAlign: "center",
-    marginBottom: theme.spacing.lg,
-  },
-  summaryNoticeBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: "rgba(245, 183, 66, 0.10)",
-    borderWidth: 1,
-    borderColor: "rgba(245, 183, 66, 0.35)",
-    borderRadius: theme.radii.sm,
-    padding: 10,
-    marginBottom: theme.spacing.md,
-  },
-  summaryNoticeText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    lineHeight: 17,
-    color: theme.colors.cloud,
-  },
-  primaryReturnBtn: {
-    height: 48,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.pure,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  secondaryReturnBtn: {
-    height: 44,
-    marginTop: 10,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  secondaryReturnBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "600",
-    color: theme.colors.cloud,
-  },
-  primaryReturnBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm + 1,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-  heroHeadlineItalic: {
-    fontStyle: "italic",
-    color: theme.colors.irisGleam,
-  },
-});
+function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppTheme) {
+  return StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: colors.canvas,
+    },
+    topHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingHorizontal: theme.spacing.lg,
+      paddingBottom: theme.spacing.md,
+    },
+    topHeaderRight: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    backBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingVertical: 8,
+      paddingHorizontal: 4,
+    },
+    backBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.bodySm,
+      color: colors.textPrimary,
+      fontWeight: "500",
+    },
+    themeBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    stagePill: {
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    stagePillText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.irisBlue,
+      fontWeight: "500",
+    },
+    preSessionScroll: {
+      flexGrow: 1,
+      paddingHorizontal: theme.spacing.lg,
+      alignItems: "center",
+      maxWidth: theme.mobile.maxContentWidth,
+      width: "100%",
+      alignSelf: "center",
+    },
+    preSessionHero: {
+      alignSelf: "stretch",
+      marginTop: theme.spacing.sm,
+      marginBottom: 24,
+    },
+    ambientPulseSphere: {
+      width: 120,
+      height: 120,
+      borderRadius: 60,
+      backgroundColor: colors.powderBlue,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: theme.spacing.lg,
+      borderWidth: 2,
+      borderColor: colors.powderBorder,
+    },
+    micCircleBadge: {
+      width: 80,
+      height: 80,
+      borderRadius: 40,
+      backgroundColor: colors.cardElevated,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    preSessionTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 26,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 6,
+      lineHeight: 32,
+      letterSpacing: -0.5,
+    },
+    preSessionSubhead: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+    },
+    setupCard: {
+      width: "100%",
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      marginBottom: 12,
+      ...activeTheme.shadows.sm,
+    },
+    setupStepLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 12,
+    },
+    topicInput: {
+      height: 48,
+      borderRadius: 12,
+      backgroundColor: colors.cardElevated,
+      borderWidth: 1,
+      borderColor: colors.border,
+      paddingHorizontal: theme.spacing.md,
+      color: colors.textPrimary,
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+      marginBottom: theme.spacing.md,
+    },
+    chipWrap: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    suggestChip: {
+      paddingHorizontal: 14,
+      minHeight: 36,
+      justifyContent: "center",
+      borderRadius: theme.radii.full,
+      backgroundColor: colors.cardElevated,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    suggestChipActive: {
+      backgroundColor: colors.primarySoft,
+      borderColor: colors.irisBlue,
+    },
+    suggestChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    suggestChipTextActive: {
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    goalGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 10,
+    },
+    goalCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      minHeight: 64,
+      padding: 14,
+      borderRadius: 14,
+      backgroundColor: colors.cardElevated,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    goalCardFull: {
+      width: "100%",
+    },
+    goalCardHalf: {
+      flexGrow: 1,
+      flexBasis: "47%",
+    },
+    goalCardActive: {
+      borderColor: colors.irisBlue,
+      backgroundColor: colors.primarySoft,
+    },
+    goalIconBadge: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    goalCardTextCol: {
+      flex: 1,
+    },
+    goalCardTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: theme.fontSizes.bodySm,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    goalCardTitleActive: {
+      color: colors.textPrimary,
+    },
+    goalCardBlurb: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.textSecondary,
+      lineHeight: 17,
+      marginTop: 2,
+    },
+    scenarioBlock: {
+      marginTop: theme.spacing.lg,
+    },
+    scenarioLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.bodySm,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: theme.spacing.sm,
+    },
+    focusCard: {
+      width: "100%",
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderLeftWidth: 3,
+      borderLeftColor: colors.irisBlue,
+      marginBottom: 12,
+    },
+    focusCardEyebrow: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      fontWeight: "500",
+      marginBottom: 4,
+    },
+    focusCardTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 17,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    tipsCard: {
+      width: "100%",
+      backgroundColor: colors.cardSubtle,
+      borderRadius: 16,
+      padding: 16,
+      gap: 12,
+      marginBottom: 24,
+    },
+    tipItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
+    tipText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      lineHeight: 19,
+    },
+    errorBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.crimsonWash,
+      borderWidth: 1,
+      borderColor: colors.crimsonError,
+      borderRadius: 12,
+      padding: 12,
+      gap: 8,
+      marginBottom: 12,
+      width: "100%",
+    },
+    errorBannerText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.bodySm,
+      fontWeight: "500",
+      color: colors.crimsonError,
+    },
+    preSessionActionContainer: {
+      width: "100%",
+      gap: 12,
+      marginTop: "auto",
+    },
+    startCallBtn: {
+      height: 52,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 20,
+    },
+    btnLoadingRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    startCallBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    cancelBtn: {
+      alignItems: "center",
+      paddingVertical: 10,
+    },
+    cancelBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.bodySm,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    btnDisabled: {
+      opacity: 0.5,
+    },
+    btnPressed: {
+      opacity: 0.85,
+    },
+    activeCallHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingHorizontal: theme.spacing.lg,
+      paddingBottom: 10,
+      backgroundColor: colors.canvas,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    callStatusBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    statusDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+    },
+    statusText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+    },
+    callTimerPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 4,
+      paddingVertical: 5,
+      gap: 4,
+    },
+    callTimerText: {
+      fontFamily: theme.fonts.mono,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textPrimary,
+    },
+    quickEndBtn: {
+      backgroundColor: colors.crimsonError,
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 10,
+    },
+    quickEndBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: "#ffffff",
+    },
+    activeActivityBar: {
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: 10,
+    },
+    activeActivityTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textSecondary,
+      fontWeight: "500",
+    },
+    activeCallBody: {
+      flex: 1,
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.md,
+    },
+    visualizerOrbContainer: {
+      alignItems: "center",
+      marginVertical: theme.spacing.md,
+    },
+    visualizerOrb: {
+      width: 130,
+      height: 80,
+      borderRadius: 40,
+      backgroundColor: colors.cardElevated,
+      borderWidth: 2,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 16,
+      marginBottom: 8,
+      ...activeTheme.shadows.card,
+    },
+    waveBarsRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      height: 50,
+    },
+    waveBar: {
+      width: 4,
+      borderRadius: theme.radii.full,
+    },
+    visualizerHintText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.textSecondary,
+    },
+    liveCorrectionCard: {
+      backgroundColor: colors.cardElevated,
+      borderRadius: 16,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderLeftWidth: 3,
+      borderLeftColor: colors.irisBlue,
+      marginBottom: 10,
+      ...activeTheme.shadows.card,
+    },
+    liveTranslationCard: {
+      borderLeftColor: colors.skyBlue,
+    },
+    correctionTopRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 8,
+    },
+    correctionPill: {
+      paddingVertical: 2,
+    },
+    translationPill: {},
+    correctionPillText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    correctionSpeechComparison: {
+      gap: 6,
+      marginBottom: 8,
+    },
+    correctionLine: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 6,
+    },
+    originalSpeechText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      textDecorationLine: "line-through",
+    },
+    betterSpeechText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    correctionWhyText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.textSecondary,
+      lineHeight: 17,
+      marginBottom: 8,
+    },
+    gotItBtn: {
+      alignSelf: "flex-end",
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 10,
+    },
+    gotItBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    transcriptSection: {
+      flex: 1,
+      backgroundColor: colors.cardElevated,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: 14,
+      marginBottom: 88,
+      ...activeTheme.shadows.sm,
+    },
+    transcriptHeaderRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 8,
+    },
+    transcriptCountLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      color: colors.textSecondary,
+      fontWeight: "500",
+    },
+    transcriptSectionLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textPrimary,
+      fontWeight: "600",
+    },
+    transcriptContent: {
+      gap: 10,
+      paddingBottom: 8,
+    },
+    emptyTranscriptBubble: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 14,
+    },
+    emptyTranscriptText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+    },
+    chatBubble: {
+      maxWidth: "88%",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 16,
+    },
+    bubbleTutor: {
+      alignSelf: "flex-start",
+      backgroundColor: colors.cardSubtle,
+      borderTopLeftRadius: 4,
+    },
+    bubbleLearner: {
+      alignSelf: "flex-end",
+      backgroundColor: colors.primary,
+      borderTopRightRadius: 4,
+    },
+    bubbleHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 3,
+      gap: 8,
+    },
+    bubbleSpeakerLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 11,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    bubbleTimestamp: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 11,
+      color: colors.textMuted,
+    },
+    bubbleText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textPrimary,
+      lineHeight: 20,
+    },
+    bottomCallBar: {
+      position: "absolute",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      backgroundColor: colors.cardElevated,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      flexDirection: "row",
+      justifyContent: "space-around",
+      alignItems: "center",
+      paddingHorizontal: theme.spacing.xl,
+    },
+    roundCallBtn: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+      minWidth: 80,
+    },
+    roundCallBtnActive: {
+      opacity: 0.95,
+    },
+    roundCallBtnOn: {
+      opacity: 1,
+    },
+    roundCallCircle: {
+      width: 54,
+      height: 54,
+      borderRadius: 27,
+      backgroundColor: colors.cardSubtle,
+      borderWidth: 1,
+      borderColor: colors.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    roundCallCircleActive: {
+      backgroundColor: colors.crimsonWash,
+      borderColor: colors.crimsonError,
+    },
+    roundCallCircleOn: {
+      backgroundColor: colors.emeraldWash,
+      borderColor: colors.emeraldSuccess,
+    },
+    roundCallBtnLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    roundEndBtn: {
+      width: 54,
+      height: 54,
+      borderRadius: 27,
+      backgroundColor: colors.crimsonError,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    roundEndBtnLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.crimsonError,
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(10, 13, 18, 0.65)",
+      justifyContent: "flex-end",
+    },
+    summaryCard: {
+      backgroundColor: colors.cardElevated,
+      borderTopLeftRadius: theme.radii.xl,
+      borderTopRightRadius: theme.radii.xl,
+      padding: 24,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    summaryTopBadge: {
+      alignSelf: "center",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor: colors.emeraldWash,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 6,
+      marginBottom: 12,
+    },
+    summaryTopBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.emeraldSuccess,
+    },
+    summaryTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 26,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      textAlign: "center",
+      marginBottom: 4,
+      letterSpacing: -0.5,
+    },
+    summarySubtitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+      color: colors.textSecondary,
+      textAlign: "center",
+      marginBottom: theme.spacing.lg,
+    },
+    summaryGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 10,
+      marginBottom: theme.spacing.lg,
+    },
+    summaryStatTile: {
+      flexGrow: 1,
+      flexBasis: "45%",
+      borderRadius: 14,
+      padding: 14,
+      backgroundColor: colors.cardSubtle,
+    },
+    summaryStatValue: {
+      fontFamily: theme.fonts.display,
+      fontSize: 22,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 2,
+    },
+    summaryStatLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      fontWeight: "400",
+    },
+    summarySavedNotice: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.textSecondary,
+      textAlign: "center",
+      marginBottom: theme.spacing.lg,
+      lineHeight: 19,
+    },
+    summaryNoticeBox: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      backgroundColor: colors.solarGradient,
+      borderWidth: 1,
+      borderColor: colors.solarBorder,
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: theme.spacing.md,
+    },
+    summaryNoticeText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: colors.textPrimary,
+    },
+    primaryReturnBtn: {
+      height: 52,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    secondaryReturnBtn: {
+      height: 48,
+      marginTop: 10,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    secondaryReturnBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.bodySm,
+      fontWeight: "500",
+      color: colors.textPrimary,
+    },
+    primaryReturnBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+  });
+}

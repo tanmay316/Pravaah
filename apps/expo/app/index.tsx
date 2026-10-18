@@ -8,7 +8,7 @@
  * - 100% Realtime Backend Data sync with zero mock fallbacks
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -53,7 +53,7 @@ import {
 } from "../lib/api";
 import { signOut } from "../lib/firebase";
 import { activityObjective, activityTitle, skillLabel } from "../lib/skills";
-import { theme } from "../lib/theme";
+import { AppTheme, ThemeColors, theme, useTheme } from "../lib/theme";
 import {
   getNotificationPermissionStatus,
   requestNotificationPermission,
@@ -64,13 +64,13 @@ import {
 type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
 
 const FOCUS_REASON_LABELS: Record<FocusSkill["reason"], string> = {
-  recent_mistakes: "RECENT MISTAKES",
-  recent_vocabulary_errors: "VOCABULARY TO RETRY",
-  failed_repetitions: "KEEPS SLIPPING",
-  unfinished_lesson: "FINISH THIS LESSON",
-  low_mastery: "NEEDS WORK",
-  developing: "DEVELOPING",
-  mastered: "MASTERED",
+  recent_mistakes: "Recent mistakes",
+  recent_vocabulary_errors: "Vocabulary to retry",
+  failed_repetitions: "Keeps slipping",
+  unfinished_lesson: "Unfinished lesson",
+  low_mastery: "Needs work",
+  developing: "Developing",
+  mastered: "Mastered",
 };
 
 function formatDayLabel(iso?: string): string {
@@ -145,6 +145,8 @@ export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isWide = width >= 720;
+  const { colors, isDark, mode: themeMode, setMode: setThemeMode, toggleTheme, theme: activeTheme } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark, activeTheme), [colors, isDark, activeTheme]);
   const [activeTab, setActiveTab] = useState<NavTab>("plan");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -422,7 +424,7 @@ export default function DashboardScreen() {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={theme.colors.irisGleam} />
+        <ActivityIndicator size="large" color={colors.irisBlue} />
         <Text style={styles.loadingText}>Syncing with Coach Pravaah...</Text>
       </View>
     );
@@ -464,7 +466,11 @@ export default function DashboardScreen() {
         <View style={styles.appBarLeft}>
           <Pressable style={styles.appBarBrand} onPress={() => setActiveTab("plan")}>
             <Image
-              source={require("../assets/pravaah_navbar_logo.png")}
+              source={
+                isDark
+                  ? require("../assets/pravaah_navbar_logo.png")
+                  : require("../assets/pravaah_navbar_logo_dark.png")
+              }
               style={styles.brandLogoImage}
               resizeMode="contain"
               accessibilityLabel="Pravaah"
@@ -478,22 +484,27 @@ export default function DashboardScreen() {
         </View>
 
         <View style={styles.appBarRight}>
-          {/* Streak Badge */}
-          {streakDays > 0 ? (
-            <View style={styles.streakBadge}>
-              <Text style={styles.streakEmoji}>🔥</Text>
-              <Text style={styles.streakCount}>{streakDays}d</Text>
-            </View>
-          ) : null}
+          <View style={styles.streakBadge} accessibilityLabel={`${streakDays} day streak`}>
+            <Ionicons name="flame" size={16} color={streakDays > 0 ? colors.amberWarning : colors.fog} />
+            <Text style={styles.streakCount}>{streakDays}</Text>
+          </View>
 
-          {/* Level Pill */}
           <Pressable
-            style={styles.levelBadge}
+            style={({ pressed }) => [styles.levelBadge, pressed && styles.btnPressed]}
             onPress={() => (userLevel === "unassessed" ? router.push("/assessment") : setActiveTab("profile"))}
           >
             <Text style={styles.levelBadgeText}>
-              {userLevel === "unassessed" ? "⚡ ASSESS" : `⚡ LVL ${userLevel}`}
+              {userLevel === "unassessed" ? "Take test" : `Level ${userLevel}`}
             </Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [styles.themeBtn, pressed && styles.btnPressed]}
+            onPress={toggleTheme}
+            accessibilityRole="button"
+            accessibilityLabel={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            <Ionicons name={isDark ? "sunny-outline" : "moon-outline"} size={18} color={colors.textSecondary} />
           </Pressable>
 
           {/* Profile / Avatar Shortcut */}
@@ -508,7 +519,7 @@ export default function DashboardScreen() {
               <Ionicons
                 name={activeTab === "profile" ? "person" : "person-outline"}
                 size={18}
-                color={activeTab === "profile" ? theme.colors.pure : theme.colors.ash}
+                color={activeTab === "profile" ? colors.textOnPrimary : colors.textSecondary}
               />
             )}
           </Pressable>
@@ -524,7 +535,7 @@ export default function DashboardScreen() {
           styles.mainScroll,
           {
             maxWidth: isWide ? 960 : theme.mobile.maxContentWidth,
-            paddingBottom: theme.mobile.tabBarHeight + Math.max(insets.bottom, 12) + 24,
+            paddingBottom: theme.mobile.tabBarHeight + Math.max(insets.bottom, 12) + 28,
           },
         ]}
         showsVerticalScrollIndicator={false}
@@ -532,14 +543,14 @@ export default function DashboardScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={theme.colors.irisGleam}
-            colors={[theme.colors.irisGleam]}
+            tintColor={colors.irisBlue}
+            colors={[colors.irisBlue]}
           />
         }
       >
         {errorMessage ? (
           <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.crimsonError} />
+            <Ionicons name="alert-circle" size={18} color={colors.crimsonError} />
             <Text style={styles.errorBannerText}>{errorMessage}</Text>
           </View>
         ) : null}
@@ -551,31 +562,30 @@ export default function DashboardScreen() {
           <View style={styles.tabContent}>
             {/* HERO QUICK-ACTION CARD */}
             <View style={styles.heroActionCard}>
-              <View style={styles.ambientCardGlow} />
-
               <View style={styles.heroTopRow}>
                 <View style={styles.heroEyebrowPill}>
-                  <View style={styles.greenPulse} />
+                  <View
+                    style={[
+                      styles.greenPulse,
+                      userLevel === "unassessed" && { backgroundColor: colors.amberWarning },
+                    ]}
+                  />
                   <Text style={styles.heroEyebrowText}>
-                    {userLevel === "unassessed" ? "DIAGNOSTIC PENDING" : `LEVEL ${userLevel} • READY`}
+                    {userLevel === "unassessed" ? "Level not assessed yet" : `Level ${userLevel} · ${levelName}`}
                   </Text>
                 </View>
-                <Text style={styles.heroCefrText}>CEFR {cefrRef}</Text>
+                {userLevel !== "unassessed" ? (
+                  <Text style={styles.heroCefrText}>CEFR {cefrRef}</Text>
+                ) : null}
               </View>
 
               <Text style={styles.heroHeadline}>
-                {firstName ? (
-                  <>
-                    <Text style={styles.heroHeadlineItalic}>{firstName}</Text>, own your fluency today.
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.heroHeadlineItalic}>Own</Text> your fluency today.
-                  </>
-                )}
+                {firstName ? `Welcome back, ${firstName.charAt(0).toUpperCase()}${firstName.slice(1)}` : "Welcome back"}
               </Text>
               <Text style={styles.heroSubhead}>
-                Coached conversations: understand a correction, retry it, then use it in your own words.
+                {userLevel === "unassessed"
+                  ? "Take a 3-minute speaking test so your coach can plan lessons at the right level."
+                  : "Speak, get a short correction, then use it again in your own words."}
               </Text>
 
               {userLevel === "unassessed" ? (
@@ -583,8 +593,8 @@ export default function DashboardScreen() {
                   style={({ pressed }) => [styles.primaryHeroBtn, pressed && styles.btnPressed]}
                   onPress={() => router.push("/assessment")}
                 >
-                  <Ionicons name="mic" size={20} color={theme.colors.void} />
-                  <Text style={styles.primaryHeroBtnText}>Take Spoken Diagnostic (3 min) →</Text>
+                  <Ionicons name="mic-outline" size={20} color={colors.textOnPrimary} />
+                  <Text style={styles.primaryHeroBtnText}>Start speaking test</Text>
                 </Pressable>
               ) : (
                 <Pressable
@@ -592,31 +602,25 @@ export default function DashboardScreen() {
                   onPress={handleStartNextActivity}
                   disabled={savingGoal || refreshingPlan}
                 >
-                  <Ionicons name="mic" size={20} color={theme.colors.void} />
-                  <Text style={styles.primaryHeroBtnText}>
+                  <Ionicons name="mic-outline" size={20} color={colors.textOnPrimary} />
+                  <Text style={styles.primaryHeroBtnText} numberOfLines={1}>
                     {nextUnfinishedActivity
-                      ? `Continue: ${activityTitle(nextUnfinishedActivity.title).split(":")[0]} (${nextUnfinishedActivity.duration_minutes}m) →`
-                      : "Start Daily Spoken Practice →"}
+                      ? `Continue: ${activityTitle(nextUnfinishedActivity.title).split(":")[0]}`
+                      : "Start today's practice"}
                   </Text>
                 </Pressable>
               )}
             </View>
 
-            {/* DAILY COMMITMENT & PROGRESS MODULE */}
+            {/* DAILY GOAL & PROGRESS */}
             <View style={styles.cardContainer}>
               <View style={styles.cardHeaderRow}>
-                <View>
-                  <Text style={styles.cardEyebrow}>DAILY COMMITMENT</Text>
-                  <Text style={styles.cardTitle}>
-                    {completedMins} of {currentGoal} min completed
-                  </Text>
-                </View>
-                <View style={styles.progressPercentPill}>
-                  <Text style={styles.progressPercentText}>{progressPercent}%</Text>
-                </View>
+                <Text style={styles.cardTitle}>Daily goal</Text>
+                <Text style={styles.progressPercentText}>
+                  {completedMins} / {currentGoal} min
+                </Text>
               </View>
 
-              {/* Goal Selection Pills */}
               <View style={styles.goalChipsRow}>
                 {[15, 30, 60, 90].map((mins) => (
                   <Pressable
@@ -647,7 +651,7 @@ export default function DashboardScreen() {
 
               {savingGoal ? (
                 <View style={styles.goalStatusRow}>
-                  <ActivityIndicator size="small" color={theme.colors.paleIris} />
+                  <ActivityIndicator size="small" color={colors.irisBlue} />
                   <Text style={styles.progressSubtext}>
                     Rebuilding today's exercises for {pendingGoal ?? selectedGoal} minutes...
                   </Text>
@@ -661,18 +665,18 @@ export default function DashboardScreen() {
 
             {/* ACTIVITY SEQUENCE TIMELINE */}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>TODAY'S EXERCISES</Text>
+              <Text style={styles.sectionTitle}>Today's exercises</Text>
               <Pressable
                 style={({ pressed }) => [styles.refreshPlanBtn, pressed && styles.btnPressed]}
                 onPress={handleRefreshPlan}
                 disabled={refreshingPlan || savingGoal}
               >
                 {refreshingPlan ? (
-                  <ActivityIndicator size="small" color={theme.colors.paleIris} />
+                  <ActivityIndicator size="small" color={colors.irisBlue} />
                 ) : (
                   <>
-                    <Ionicons name="refresh" size={13} color={theme.colors.paleIris} />
-                    <Text style={styles.refreshPlanText}>REBUILD</Text>
+                    <Ionicons name="refresh" size={15} color={colors.irisBlue} />
+                    <Text style={styles.refreshPlanText}>Rebuild</Text>
                   </>
                 )}
               </Pressable>
@@ -687,7 +691,7 @@ export default function DashboardScreen() {
             <View style={styles.activityList}>
               {!dailyPlan?.activities || dailyPlan.activities.length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Ionicons name="sparkles-outline" size={28} color={theme.colors.fog} />
+                  <Ionicons name="sparkles-outline" size={28} color={colors.irisBlue} />
                   <Text style={styles.emptyCardText}>
                     Select a daily goal above to initialize your tailored practice sequence.
                   </Text>
@@ -728,9 +732,9 @@ export default function DashboardScreen() {
                           ]}
                         >
                           {activity.is_completed ? (
-                            <Ionicons name="checkmark" size={16} color={theme.colors.emeraldSuccess} />
+                            <Ionicons name="checkmark" size={18} color={colors.emeraldSuccess} />
                           ) : isCurrent ? (
-                            <Ionicons name="play" size={14} color={theme.colors.void} />
+                            <Ionicons name="play" size={15} color={colors.textOnPrimary} />
                           ) : (
                             <Text style={styles.stepNumText}>{idx + 1}</Text>
                           )}
@@ -738,55 +742,44 @@ export default function DashboardScreen() {
                       </View>
 
                       <View style={styles.activityCardBody}>
-                        <View style={styles.activityBadgeRow}>
-                          <View style={styles.modeTag}>
-                            <Ionicons name={modeIcon as any} size={12} color={theme.colors.paleIris} />
-                            <Text style={styles.modeTagText}>
-                              {activity.mode === "free_conversation"
-                                ? "CONVERSATION"
-                                : activity.mode === "grammar_practice"
-                                ? "PRECISION"
-                                : activity.mode === "roleplay"
-                                ? "ROLEPLAY"
-                                : activity.mode === "review"
-                                ? "REVIEW"
-                                : "VOCABULARY"}
-                            </Text>
-                          </View>
-                          <Text style={styles.activityDurationText}>
-                            {activity.duration_minutes} min
-                          </Text>
-                          {activity.is_completed ? (
-                            <View style={styles.doneBadge}>
-                              <Text style={styles.doneBadgeText}>DONE</Text>
-                            </View>
-                          ) : isCurrent ? (
-                            <View style={styles.upNextBadge}>
-                              <Text style={styles.upNextBadgeText}>NEXT</Text>
-                            </View>
-                          ) : null}
-                        </View>
-
                         <Text style={styles.activityTitle} numberOfLines={2}>
                           {activityTitle(activity.title)}
                         </Text>
                         <Text style={styles.activityObjective} numberOfLines={2}>
                           {activityObjective(activity.objective)}
                         </Text>
-                        {activity.target_skill ? (
-                          <View style={styles.activitySkillChip}>
-                            <Text style={styles.activitySkillChipText} numberOfLines={1}>
-                              {skillLabel(activity.target_skill)}
-                            </Text>
-                          </View>
-                        ) : null}
+                        <View style={styles.activityBadgeRow}>
+                          <Ionicons name={modeIcon as any} size={13} color={colors.textMuted} />
+                          <Text style={styles.activityDurationText}>
+                            {activity.mode === "free_conversation"
+                              ? "Conversation"
+                              : activity.mode === "grammar_practice"
+                              ? "Grammar"
+                              : activity.mode === "roleplay"
+                              ? "Roleplay"
+                              : activity.mode === "review"
+                              ? "Review"
+                              : "Vocabulary"}
+                            {" · "}
+                            {activity.duration_minutes} min
+                          </Text>
+                          {activity.is_completed ? (
+                            <View style={styles.doneBadge}>
+                              <Text style={styles.doneBadgeText}>Done</Text>
+                            </View>
+                          ) : isCurrent ? (
+                            <View style={styles.upNextBadge}>
+                              <Text style={styles.upNextBadgeText}>Up next</Text>
+                            </View>
+                          ) : null}
+                        </View>
                       </View>
 
                       <View style={styles.activityCardRight}>
                         <Ionicons
                           name="chevron-forward"
                           size={18}
-                          color={isCurrent ? theme.colors.irisGleam : theme.colors.steel}
+                          color={isCurrent ? colors.irisBlue : colors.fog}
                         />
                       </View>
                     </Pressable>
@@ -795,117 +788,72 @@ export default function DashboardScreen() {
               )}
             </View>
 
-            {/* PRACTICE MODES GRID */}
+            {/* PRACTICE MODES */}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>PRACTICE MODES</Text>
+              <Text style={styles.sectionTitle}>Practice modes</Text>
             </View>
 
             <View style={styles.categoryGrid}>
-              {/* Tile 1: Grammar */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.categoryTile,
-                  isWide && styles.categoryTileWide,
-                  { backgroundColor: theme.colors.irisGleam },
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session",
-                    params: {
-                      mode: "grammar_practice",
-                      target_skill: profile?.current_focus || "past_simple_auxiliary",
-                      activity_title: "Targeted Grammar Practice",
-                    },
-                  })
-                }
-              >
-                <Text style={styles.categoryTileMono}>MODULE 01 • GRAMMAR</Text>
-                <Text style={styles.categoryTileHeading}>Targeted Grammar Precision</Text>
-                <Text style={styles.categoryTileDesc}>
-                  Eliminate recurring grammar errors through natural conversational drills.
-                </Text>
-                <Text style={styles.categoryTileCta}>Start Grammar Session →</Text>
-              </Pressable>
-
-              {/* Tile 2: Vocabulary */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.categoryTile,
-                  isWide && styles.categoryTileWide,
-                  { backgroundColor: theme.colors.orchidBloom },
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session",
-                    params: {
-                      mode: "vocabulary_practice",
-                      target_skill: "collocations",
-                      activity_title: "Collocations & Phrasing",
-                    },
-                  })
-                }
-              >
-                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 02 • VOCABULARY</Text>
-                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Collocations & Phrasing</Text>
-                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
-                  Learn and speak natural English collocations in context.
-                </Text>
-                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Vocabulary Session →</Text>
-              </Pressable>
-
-              {/* Tile 3: Fluency */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.categoryTile,
-                  isWide && styles.categoryTileWide,
-                  { backgroundColor: theme.colors.cyanSignal },
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session",
-                    params: {
-                      mode: "free_conversation",
-                      activity_title: "Coached Conversation",
-                    },
-                  })
-                }
-              >
-                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 03 • FLUENCY</Text>
-                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Coached Conversation</Text>
-                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
-                  Talk about your interests while practising a priority skill, with explanations and retries.
-                </Text>
-                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Coached Conversation →</Text>
-              </Pressable>
-
-              {/* Tile 4: Roleplay */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.categoryTile,
-                  isWide && styles.categoryTileWide,
-                  { backgroundColor: theme.colors.periwinkle },
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session",
-                    params: {
-                      mode: "roleplay",
-                      activity_title: "Workplace Dialogue Simulation",
-                    },
-                  })
-                }
-              >
-                <Text style={[styles.categoryTileMono, { color: theme.colors.void }]}>MODULE 04 • ROLEPLAY</Text>
-                <Text style={[styles.categoryTileHeading, { color: theme.colors.void }]}>Situational Dialogue & Roleplay</Text>
-                <Text style={[styles.categoryTileDesc, { color: "rgba(0, 0, 0, 0.75)" }]}>
-                  Apply your speech in real-world scenarios: workplace, interviews, and discussions.
-                </Text>
-                <Text style={[styles.categoryTileCta, { color: theme.colors.void }]}>Start Roleplay Session →</Text>
-              </Pressable>
+              {([
+                {
+                  key: "grammar",
+                  title: "Grammar",
+                  desc: "Fix the mistakes you repeat most",
+                  icon: "construct-outline",
+                  bg: colors.lavenderWash,
+                  fg: colors.lavenderText,
+                  params: {
+                    mode: "grammar_practice",
+                    target_skill: profile?.current_focus || "past_simple_auxiliary",
+                    activity_title: "Targeted Grammar Practice",
+                  },
+                },
+                {
+                  key: "vocabulary",
+                  title: "Vocabulary",
+                  desc: "Natural phrases and collocations",
+                  icon: "book-outline",
+                  bg: colors.solarGradient,
+                  fg: colors.solarText,
+                  params: {
+                    mode: "vocabulary_practice",
+                    target_skill: "collocations",
+                    activity_title: "Collocations & Phrasing",
+                  },
+                },
+                {
+                  key: "conversation",
+                  title: "Conversation",
+                  desc: "Talk freely with gentle corrections",
+                  icon: "chatbubbles-outline",
+                  bg: colors.aquaGradient,
+                  fg: colors.powderText,
+                  params: { mode: "free_conversation", activity_title: "Coached Conversation" },
+                },
+                {
+                  key: "roleplay",
+                  title: "Roleplay",
+                  desc: "Interviews, meetings and daily situations",
+                  icon: "people-outline",
+                  bg: colors.peachGradient,
+                  fg: colors.peachText,
+                  params: { mode: "roleplay", activity_title: "Workplace Dialogue Simulation" },
+                },
+              ] as const).map((item) => (
+                <Pressable
+                  key={item.key}
+                  style={({ pressed }) => [styles.categoryTile, pressed && styles.btnPressed]}
+                  onPress={() => router.push({ pathname: "/session", params: item.params })}
+                >
+                  <View style={[styles.categoryIconCircle, { backgroundColor: item.bg }]}>
+                    <Ionicons name={item.icon} size={20} color={item.fg} />
+                  </View>
+                  <Text style={styles.categoryTileHeading}>{item.title}</Text>
+                  <Text style={styles.categoryTileDesc} numberOfLines={2}>
+                    {item.desc}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
           </View>
         )}
@@ -916,12 +864,9 @@ export default function DashboardScreen() {
         {activeTab === "lessons" && (
           <View style={styles.tabContent}>
             <View style={styles.tabHeroSection}>
-              <Text style={styles.tabHeroEyebrow}>ADAPTIVE CURRICULUM</Text>
-              <Text style={styles.tabHeroHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Targeted</Text> lesson progression.
-              </Text>
+              <Text style={styles.tabHeroHeadline}>Lessons</Text>
               <Text style={styles.tabHeroSubhead}>
-                Dynamic exercises sequenced based on your recorded speaking evidence.
+                Ordered by what your recent speaking shows you need most.
               </Text>
             </View>
 
@@ -931,11 +876,13 @@ export default function DashboardScreen() {
                 <View style={styles.cardHeaderRow}>
                   <View style={styles.stagePill}>
                     <Text style={styles.stagePillText}>
-                      {profile.recommended_lesson.stage?.toUpperCase() || "RECOMMENDED LESSON"}
+                      {profile.recommended_lesson.stage
+                        ? profile.recommended_lesson.stage.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())
+                        : "Recommended"}
                     </Text>
                   </View>
                   <Text style={styles.cefrRefText}>
-                    MASTERY {Math.round((profile.recommended_lesson.mastery_score || 0) * 100)}%
+                    {Math.round((profile.recommended_lesson.mastery_score || 0) * 100)}% mastery
                   </Text>
                 </View>
 
@@ -943,7 +890,7 @@ export default function DashboardScreen() {
                 <Text style={styles.lessonRule}>{profile.recommended_lesson.rule_summary}</Text>
 
                 <View style={styles.goalTipBox}>
-                  <Ionicons name="information-circle-outline" size={16} color={theme.colors.paleIris} />
+                  <Ionicons name="information-circle-outline" size={18} color={colors.irisBlue} />
                   <Text style={styles.goalTipText}>
                     {profile.recommended_lesson.practice_activity}
                   </Text>
@@ -964,12 +911,12 @@ export default function DashboardScreen() {
                     })
                   }
                 >
-                  <Text style={styles.primaryHeroBtnText}>Launch Targeted Lesson →</Text>
+                  <Text style={styles.primaryHeroBtnText}>Start lesson</Text>
                 </Pressable>
               </View>
             ) : (
               <View style={styles.emptyCard}>
-                <Ionicons name="clipboard-outline" size={28} color={theme.colors.fog} />
+                <Ionicons name="clipboard-outline" size={28} color={colors.irisBlue} />
                 <Text style={styles.emptyCardText}>
                   Complete a 3-minute spoken assessment to receive tailored recommendations.
                 </Text>
@@ -977,20 +924,20 @@ export default function DashboardScreen() {
                   style={[styles.smallActionBtn, { marginTop: 12 }]}
                   onPress={() => router.push("/assessment")}
                 >
-                  <Text style={styles.smallActionBtnText}>Take Assessment →</Text>
+                  <Text style={styles.smallActionBtnText}>Take the speaking test</Text>
                 </Pressable>
               </View>
             )}
 
             {/* Curriculum Skills Mastery List */}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>FIX THESE FIRST</Text>
-              <Text style={styles.sectionBadge}>RANKED</Text>
+              <Text style={styles.sectionTitle}>Fix these first</Text>
+              <Text style={styles.sectionBadge}>By priority</Text>
             </View>
 
             {focusSkills.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Ionicons name="trending-up-outline" size={28} color={theme.colors.fog} />
+                <Ionicons name="trending-up-outline" size={28} color={colors.irisBlue} />
                 <Text style={styles.emptyCardText}>
                   Finish one conversation and your ranked improvement plan will appear here.
                 </Text>
@@ -1040,10 +987,10 @@ export default function DashboardScreen() {
                                 width: `${pct}%`,
                                 backgroundColor:
                                   skill.mastery > 0.75
-                                    ? theme.colors.emeraldSuccess
+                                    ? colors.emeraldSuccess
                                     : skill.mastery > 0.5
-                                    ? theme.colors.irisGleam
-                                    : theme.colors.amberWarning,
+                                    ? colors.irisBlue
+                                    : colors.amberWarning,
                               },
                             ]}
                           />
@@ -1052,7 +999,7 @@ export default function DashboardScreen() {
                         <View style={styles.focusMetaRow}>
                           <View style={styles.focusReasonPill}>
                             <Text style={styles.focusReasonText}>
-                              {FOCUS_REASON_LABELS[skill.reason] || skill.reason.replace(/_/g, " ").toUpperCase()}
+                              {FOCUS_REASON_LABELS[skill.reason] || skill.reason.replace(/_/g, " ")}
                             </Text>
                           </View>
                           {skill.mistake_count > 0 ? (
@@ -1084,14 +1031,14 @@ export default function DashboardScreen() {
 
             {/* Lesson history */}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>LESSON HISTORY</Text>
-              <Text style={styles.sectionBadge}>{lessons.length} LESSONS</Text>
+              <Text style={styles.sectionTitle}>Lesson history</Text>
+              <Text style={styles.sectionBadge}>{lessons.length}</Text>
             </View>
 
             <View style={styles.activityList}>
               {lessons.length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Ionicons name="time-outline" size={28} color={theme.colors.fog} />
+                  <Ionicons name="time-outline" size={28} color={colors.irisBlue} />
                   <Text style={styles.emptyCardText}>
                     Lessons you launch will be recorded here with their mastery movement.
                   </Text>
@@ -1123,7 +1070,7 @@ export default function DashboardScreen() {
                         </Text>
                         <View style={done ? styles.doneBadge : styles.upNextBadge}>
                           <Text style={done ? styles.doneBadgeText : styles.upNextBadgeText}>
-                            {(lesson.completion_status || "recommended").toUpperCase()}
+                            {done ? "Completed" : (lesson.completion_status || "Recommended").replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())}
                           </Text>
                         </View>
                       </View>
@@ -1138,8 +1085,8 @@ export default function DashboardScreen() {
                         <Text
                           style={[
                             styles.lessonHistoryMeta,
-                            delta > 0 && { color: theme.colors.emeraldSuccess },
-                            delta < 0 && { color: theme.colors.crimsonError },
+                            delta > 0 && { color: colors.emeraldSuccess },
+                            delta < 0 && { color: colors.crimsonError },
                           ]}
                         >
                           mastery {Math.round((lesson.mastery_after ?? 0) * 100)}%
@@ -1160,18 +1107,15 @@ export default function DashboardScreen() {
         {activeTab === "mistakes" && (
           <View style={styles.tabContent}>
             <View style={styles.tabHeroSection}>
-              <Text style={styles.tabHeroEyebrow}>ERROR LOG & RECASTS</Text>
-              <Text style={styles.tabHeroHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Review</Text> past corrections.
-              </Text>
+              <Text style={styles.tabHeroHeadline}>Mistakes</Text>
               <Text style={styles.tabHeroSubhead}>
-                Grouped by grammar point. Tap one to see every time it came up, day by day.
+                Grouped by grammar point. Tap one to see each correction by day.
               </Text>
             </View>
 
             {mistakes.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.emeraldSuccess} />
+                <Ionicons name="checkmark-circle-outline" size={32} color={colors.emeraldSuccess} />
                 <Text style={styles.emptyCardText}>
                   No mistakes logged yet. Once you finish a voice session, coach recasts appear here.
                 </Text>
@@ -1201,7 +1145,7 @@ export default function DashboardScreen() {
                         <Ionicons
                           name={open ? "chevron-up" : "chevron-down"}
                           size={18}
-                          color={theme.colors.fog}
+                          color={colors.fog}
                         />
                       </Pressable>
 
@@ -1209,39 +1153,39 @@ export default function DashboardScreen() {
                         <View style={styles.skillGroupBody}>
                           {group.days.map((day) => (
                             <View key={day.key} style={styles.dayBlock}>
-                              <Text style={styles.dayBlockLabel}>{day.label.toUpperCase()}</Text>
+                              <Text style={styles.dayBlockLabel}>{day.label}</Text>
 
                               {day.items.map((m) => (
                                 <View key={m.mistake_id} style={styles.mistakeCard}>
                                   <View style={styles.mistakeCardHeader}>
                                     <View style={styles.mistakeTag}>
                                       <Text style={styles.mistakeTagText}>
-                                        {(m.category || "Grammar").replace(/_/g, " ").toUpperCase()}
+                                        {(m.category || "Grammar").replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())}
                                       </Text>
                                     </View>
                                     <Text style={styles.mistakeSeverityText}>
-                                      {(m.severity || "medium").toUpperCase()}
+                                      {(m.severity || "medium").replace(/^\w/, (c) => c.toUpperCase())} priority
                                     </Text>
                                   </View>
 
                                   <View style={styles.mistakeCompareBox}>
                                     <View style={styles.saidHeader}>
-                                      <Ionicons name="close-circle" size={14} color={theme.colors.crimsonError} />
-                                      <Text style={styles.saidLabel}>YOU SAID:</Text>
+                                      <Ionicons name="close-circle" size={15} color={colors.crimsonError} />
+                                      <Text style={styles.saidLabel}>You said</Text>
                                     </View>
                                     <Text style={styles.saidText}>"{m.original}"</Text>
                                   </View>
 
                                   <View style={styles.recastCompareBox}>
                                     <View style={styles.recastHeader}>
-                                      <Ionicons name="checkmark-circle" size={14} color={theme.colors.emeraldSuccess} />
-                                      <Text style={styles.recastLabel}>COACH RECAST:</Text>
+                                      <Ionicons name="checkmark-circle" size={15} color={colors.emeraldSuccess} />
+                                      <Text style={styles.recastLabel}>Better</Text>
                                     </View>
                                     <Text style={styles.recastText}>"{m.corrected}"</Text>
                                   </View>
 
                                   {m.explanation ? (
-                                    <Text style={styles.mistakeWhyText}>💡 {m.explanation}</Text>
+                                    <Text style={styles.mistakeWhyText}>{m.explanation}</Text>
                                   ) : null}
                                 </View>
                               ))}
@@ -1263,7 +1207,7 @@ export default function DashboardScreen() {
                             }
                           >
                             <Text style={styles.smallActionBtnText}>
-                              Practise {group.title} now →
+                              Practise {group.title}
                             </Text>
                           </Pressable>
                         </View>
@@ -1282,19 +1226,16 @@ export default function DashboardScreen() {
         {activeTab === "vocabulary" && (
           <View style={styles.tabContent}>
             <View style={styles.tabHeroSection}>
-              <Text style={styles.tabHeroEyebrow}>SPOKEN VOCABULARY</Text>
-              <Text style={styles.tabHeroHeadline}>
-                <Text style={styles.heroHeadlineItalic}>Natural</Text> expressions.
-              </Text>
+              <Text style={styles.tabHeroHeadline}>Vocabulary</Text>
               <Text style={styles.tabHeroSubhead}>
-                Idioms and professional phrasing acquired across your conversations.
+                Words and phrases collected from your conversations.
               </Text>
             </View>
 
             <View style={styles.activityList}>
               {vocabulary.length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Ionicons name="book-outline" size={32} color={theme.colors.fog} />
+                  <Ionicons name="book-outline" size={32} color={colors.irisBlue} />
                   <Text style={styles.emptyCardText}>
                     Vocabulary and collocations from your voice sessions will automatically be collected here.
                   </Text>
@@ -1304,7 +1245,7 @@ export default function DashboardScreen() {
                   <View key={v.vocabulary_id} style={styles.vocabCard}>
                     <View style={styles.vocabHeaderRow}>
                       <Text style={styles.vocabTerm}>{v.term || v.word || "Expression"}</Text>
-                      <Ionicons name="bookmark" size={16} color={theme.colors.irisGleam} />
+                      <Ionicons name="bookmark" size={18} color={colors.irisBlue} />
                     </View>
 
                     {v.context || v.example ? (
@@ -1313,7 +1254,7 @@ export default function DashboardScreen() {
 
                     {v.natural_usage_tip || v.meaning ? (
                       <View style={styles.vocabTipBox}>
-                        <Ionicons name="sparkles" size={14} color={theme.colors.paleIris} />
+                        <Ionicons name="sparkles" size={15} color={colors.irisBlue} />
                         <Text style={styles.vocabTipText}>
                           {v.natural_usage_tip || v.meaning}
                         </Text>
@@ -1337,7 +1278,7 @@ export default function DashboardScreen() {
                 {initials && initials !== "?" ? (
                   <Text style={styles.avatarLargeInitials}>{initials}</Text>
                 ) : (
-                  <Ionicons name="person" size={32} color={theme.colors.pure} />
+                  <Ionicons name="person" size={32} color={colors.textOnPrimary} />
                 )}
               </View>
               <Text style={styles.profileTitle}>{displayName || "Your profile"}</Text>
@@ -1347,7 +1288,7 @@ export default function DashboardScreen() {
 
               <View style={styles.profileBadgeRow}>
                 <View style={styles.profileLevelBadge}>
-                  <Ionicons name="ribbon-outline" size={13} color={theme.colors.paleIris} />
+                  <Ionicons name="ribbon-outline" size={14} color={colors.irisBlue} />
                   <Text style={styles.profileLevelBadgeText}>
                     {userLevel === "unassessed" ? "Not assessed" : `Level ${userLevel} · ${levelName}`}
                   </Text>
@@ -1367,7 +1308,7 @@ export default function DashboardScreen() {
                     setEditingProfile(true);
                   }}
                 >
-                  <Ionicons name="create-outline" size={16} color={theme.colors.cloud} />
+                  <Ionicons name="create-outline" size={16} color={colors.textPrimary} />
                   <Text style={styles.editProfileBtnText}>Edit profile</Text>
                 </Pressable>
 
@@ -1375,9 +1316,9 @@ export default function DashboardScreen() {
                   style={({ pressed }) => [styles.retakeAssessmentBtn, pressed && styles.btnPressed]}
                   onPress={() => router.push("/assessment")}
                 >
-                  <Ionicons name="mic-outline" size={16} color={theme.colors.paleIris} />
+                  <Ionicons name="mic-outline" size={16} color={colors.irisBlue} />
                   <Text style={styles.retakeAssessmentBtnText}>
-                    {userLevel === "unassessed" ? "Take assessment" : "Retake assessment"}
+                    {userLevel === "unassessed" ? "Take speaking test" : "Retake speaking test"}
                   </Text>
                 </Pressable>
               </View>
@@ -1386,25 +1327,25 @@ export default function DashboardScreen() {
             {/* Quick Stats Grid */}
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
-                <Ionicons name="chatbubbles-outline" size={16} color={theme.colors.paleIris} />
+                <Ionicons name="chatbubbles-outline" size={18} color={colors.irisBlue} />
                 <Text style={styles.statNum}>{totalSessions}</Text>
-                <Text style={styles.statLbl}>SESSIONS</Text>
+                <Text style={styles.statLbl}>Sessions</Text>
               </View>
               <View style={styles.statBox}>
-                <Ionicons name="time-outline" size={16} color={theme.colors.paleIris} />
+                <Ionicons name="time-outline" size={18} color={colors.irisBlue} />
                 <Text style={styles.statNum}>{totalMinutes}m</Text>
-                <Text style={styles.statLbl}>PRACTISED</Text>
+                <Text style={styles.statLbl}>Practised</Text>
               </View>
               <View style={styles.statBox}>
-                <Ionicons name="flame-outline" size={16} color={theme.colors.amberWarning} />
+                <Ionicons name="flame-outline" size={18} color={colors.amberWarning} />
                 <Text style={styles.statNum}>{streakDays}</Text>
-                <Text style={styles.statLbl}>DAY STREAK</Text>
+                <Text style={styles.statLbl}>Day streak</Text>
               </View>
             </View>
 
             {/* Learning snapshot from real recorded evidence */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>YOUR LEARNING</Text>
+              <Text style={styles.settingsGroupTitle}>Your learning</Text>
               <View style={styles.profileInfoRow}>
                 <Text style={styles.profileInfoLabel}>Working on</Text>
                 <Text style={styles.profileInfoValue} numberOfLines={1}>
@@ -1425,9 +1366,35 @@ export default function DashboardScreen() {
               </View>
             </View>
 
+            {/* Appearance / Theme Mode Selector */}
+            <View style={styles.cardContainer}>
+              <Text style={styles.settingsGroupTitle}>Appearance</Text>
+              <Text style={styles.settingsGroupDesc}>Choose a light or dark interface.</Text>
+              <View style={styles.supportChipsRow}>
+                {([
+                  { value: "light", label: "Light", icon: "sunny-outline" },
+                  { value: "dark", label: "Dark", icon: "moon-outline" },
+                ] as const).map((opt) => {
+                  const active = themeMode === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      style={[styles.supportChip, styles.themeChip, active && styles.supportChipActive]}
+                      onPress={() => setThemeMode(opt.value)}
+                    >
+                      <Ionicons name={opt.icon} size={16} color={active ? colors.irisBlue : colors.textSecondary} />
+                      <Text style={[styles.supportChipText, active && styles.supportChipTextActive]}>
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
             {/* Coach voice */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>COACH VOICE</Text>
+              <Text style={styles.settingsGroupTitle}>Coach voice</Text>
               <Text style={styles.settingsGroupDesc}>
                 Choose who you practise with. This applies to your next session.
               </Text>
@@ -1446,7 +1413,7 @@ export default function DashboardScreen() {
                       <Ionicons
                         name={active ? "radio-button-on" : "radio-button-off"}
                         size={18}
-                        color={active ? theme.colors.irisGleam : theme.colors.fog}
+                        color={active ? colors.irisBlue : colors.fog}
                       />
                       <Text style={[styles.voiceRowText, active && styles.voiceRowTextActive]}>
                         {voice.label}
@@ -1459,7 +1426,7 @@ export default function DashboardScreen() {
 
             {/* Preferences Group: Hindi Support */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>HINDI EXPLANATION SUPPORT</Text>
+              <Text style={styles.settingsGroupTitle}>Hindi explanations</Text>
               <Text style={styles.settingsGroupDesc}>
                 Controls how often Coach Pravaah explains a correction in Hindi. Practice sentences
                 always stay in English.
@@ -1481,7 +1448,7 @@ export default function DashboardScreen() {
                         profile?.hindi_support === lvl && styles.supportChipTextActive,
                       ]}
                     >
-                      {lvl.toUpperCase()}
+                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
                     </Text>
                   </Pressable>
                 ))}
@@ -1490,7 +1457,7 @@ export default function DashboardScreen() {
 
             {/* Notifications & Reminders */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>DAILY PRACTICE REMINDERS</Text>
+              <Text style={styles.settingsGroupTitle}>Practice reminders</Text>
               <Text style={styles.settingsGroupDesc}>
                 Set a regular time to receive a push notification for your daily speaking practice.
               </Text>
@@ -1534,14 +1501,14 @@ export default function DashboardScreen() {
                     style={styles.notifActionBtn}
                     onPress={handleRequestNotification}
                   >
-                    <Text style={styles.notifActionBtnText}>Enable Reminders</Text>
+                    <Text style={styles.notifActionBtnText}>Enable reminders</Text>
                   </Pressable>
                 ) : (
                   <Pressable
                     style={styles.notifActionBtn}
                     onPress={handleTestNotification}
                   >
-                    <Text style={styles.notifActionBtnText}>Send Test Reminder</Text>
+                    <Text style={styles.notifActionBtnText}>Send test reminder</Text>
                   </Pressable>
                 )}
               </View>
@@ -1549,21 +1516,21 @@ export default function DashboardScreen() {
 
             {/* Account Actions */}
             <View style={styles.cardContainer}>
-              <Text style={styles.settingsGroupTitle}>ACCOUNT</Text>
+              <Text style={styles.settingsGroupTitle}>Account</Text>
               <Pressable
                 style={({ pressed }) => [styles.signOutBtn, pressed && styles.btnPressed]}
                 onPress={handleSignOut}
               >
-                <Ionicons name="log-out-outline" size={18} color={theme.colors.pure} />
-                <Text style={styles.signOutBtnText}>Sign Out</Text>
+                <Ionicons name="log-out-outline" size={18} color={colors.textPrimary} />
+                <Text style={styles.signOutBtnText}>Sign out</Text>
               </Pressable>
 
               <Pressable
                 style={({ pressed }) => [styles.deleteBtn, pressed && styles.btnPressed]}
                 onPress={handleDeleteAccount}
               >
-                <Ionicons name="trash-outline" size={16} color={theme.colors.crimsonError} />
-                <Text style={styles.deleteBtnText}>Delete Account & History</Text>
+                <Ionicons name="trash-outline" size={16} color={colors.crimsonError} />
+                <Text style={styles.deleteBtnText}>Delete account and history</Text>
               </Pressable>
             </View>
           </View>
@@ -1582,75 +1549,33 @@ export default function DashboardScreen() {
           },
         ]}
       >
-        <Pressable
-          style={[styles.tabItem, activeTab === "plan" && styles.tabItemActive]}
-          onPress={() => setActiveTab("plan")}
-        >
-          <Ionicons
-            name={activeTab === "plan" ? "calendar" : "calendar-outline"}
-            size={22}
-            color={activeTab === "plan" ? theme.colors.pure : theme.colors.fog}
-          />
-          <Text style={[styles.tabItemLabel, activeTab === "plan" && styles.tabItemLabelActive]}>
-            Plan
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabItem, activeTab === "lessons" && styles.tabItemActive]}
-          onPress={() => setActiveTab("lessons")}
-        >
-          <Ionicons
-            name={activeTab === "lessons" ? "library" : "library-outline"}
-            size={22}
-            color={activeTab === "lessons" ? theme.colors.pure : theme.colors.fog}
-          />
-          <Text style={[styles.tabItemLabel, activeTab === "lessons" && styles.tabItemLabelActive]}>
-            Lessons
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabItem, activeTab === "mistakes" && styles.tabItemActive]}
-          onPress={() => setActiveTab("mistakes")}
-        >
-          <Ionicons
-            name={activeTab === "mistakes" ? "alert-circle" : "alert-circle-outline"}
-            size={22}
-            color={activeTab === "mistakes" ? theme.colors.pure : theme.colors.fog}
-          />
-          <Text style={[styles.tabItemLabel, activeTab === "mistakes" && styles.tabItemLabelActive]}>
-            Mistakes
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabItem, activeTab === "vocabulary" && styles.tabItemActive]}
-          onPress={() => setActiveTab("vocabulary")}
-        >
-          <Ionicons
-            name={activeTab === "vocabulary" ? "bookmark" : "bookmark-outline"}
-            size={22}
-            color={activeTab === "vocabulary" ? theme.colors.pure : theme.colors.fog}
-          />
-          <Text style={[styles.tabItemLabel, activeTab === "vocabulary" && styles.tabItemLabelActive]}>
-            Vocab
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabItem, activeTab === "profile" && styles.tabItemActive]}
-          onPress={() => setActiveTab("profile")}
-        >
-          <Ionicons
-            name={activeTab === "profile" ? "person" : "person-outline"}
-            size={22}
-            color={activeTab === "profile" ? theme.colors.pure : theme.colors.fog}
-          />
-          <Text style={[styles.tabItemLabel, activeTab === "profile" && styles.tabItemLabelActive]}>
-            Profile
-          </Text>
-        </Pressable>
+        {([
+          { key: "plan", label: "Plan", iconOn: "calendar", iconOff: "calendar-outline" },
+          { key: "lessons", label: "Lessons", iconOn: "library", iconOff: "library-outline" },
+          { key: "mistakes", label: "Mistakes", iconOn: "alert-circle", iconOff: "alert-circle-outline" },
+          { key: "vocabulary", label: "Vocab", iconOn: "bookmark", iconOff: "bookmark-outline" },
+          { key: "profile", label: "Profile", iconOn: "person", iconOff: "person-outline" },
+        ] as const).map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <Pressable
+              key={tab.key}
+              style={styles.tabItem}
+              onPress={() => setActiveTab(tab.key)}
+            >
+              <View style={[styles.tabIconPill, active && styles.tabIconPillActive]}>
+                <Ionicons
+                  name={(active ? tab.iconOn : tab.iconOff) as any}
+                  size={20}
+                  color={active ? colors.irisBlue : colors.fog}
+                />
+              </View>
+              <Text style={[styles.tabItemLabel, active && styles.tabItemLabelActive]}>
+                {tab.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {/* Edit profile */}
@@ -1659,13 +1584,13 @@ export default function DashboardScreen() {
           <View style={[styles.editSheet, { paddingBottom: Math.max(insets.bottom + 16, 20) }]}>
             <Text style={styles.editSheetTitle}>Edit profile</Text>
 
-            <Text style={styles.inputLabelText}>DISPLAY NAME</Text>
+            <Text style={styles.inputLabelText}>Display name</Text>
             <TextInput
               style={styles.editInput}
               value={editName}
               onChangeText={setEditName}
               placeholder="How should your coach address you?"
-              placeholderTextColor={theme.colors.steel}
+              placeholderTextColor={colors.fog}
               autoCapitalize="words"
               maxLength={60}
             />
@@ -1691,7 +1616,7 @@ export default function DashboardScreen() {
                 disabled={!editName.trim() || savingProfile}
               >
                 {savingProfile ? (
-                  <ActivityIndicator size="small" color={theme.colors.void} />
+                  <ActivityIndicator size="small" color={colors.textOnPrimary} />
                 ) : (
                   <Text style={styles.editSaveText}>Save</Text>
                 )}
@@ -1704,1418 +1629,1222 @@ export default function DashboardScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: theme.colors.obsidian,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: theme.colors.obsidian,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 12,
-  },
-  loadingText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-  },
-  mobileAppBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: 12,
-    backgroundColor: theme.colors.glassNav,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderMuted,
-    zIndex: 10,
-  },
-  appBarLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    flexShrink: 1,
-  },
-  appBarGreeting: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    flexShrink: 1,
-  },
-  appBarBrand: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  brandLogoImage: {
-    width: 110,
-    height: 32,
-  },
-  appBarRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  streakBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 183, 77, 0.12)",
+function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppTheme) {
+  const card = {
+    backgroundColor: colors.cardElevated,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255, 183, 77, 0.28)",
+    borderColor: colors.border,
+    ...activeTheme.shadows.sm,
+  };
+  const chip = {
     borderRadius: theme.radii.full,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    gap: 3,
-  },
-  streakEmoji: {
-    fontSize: 12,
-  },
-  streakCount: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.amberWarning,
-  },
-  levelBadge: {
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
     borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    borderRadius: theme.radii.full,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  levelBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  avatarBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarBtnActive: {
-    borderColor: theme.colors.irisGleam,
-    backgroundColor: theme.colors.graphite,
-  },
-  avatarInitials: {
+    borderColor: colors.border,
+    backgroundColor: colors.cardElevated,
+  };
+  const chipActive = {
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.irisBlue,
+  };
+  const label = {
     fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  avatarLargeInitials: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 24,
-    fontWeight: "700",
-    color: theme.colors.pure,
-  },
-  profileEmail: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    marginTop: 2,
-  },
-  editProfileBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    marginTop: theme.spacing.md,
-    minHeight: 40,
-    paddingHorizontal: 16,
-    borderRadius: theme.radii.full,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-  },
-  editProfileBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "600",
-    color: theme.colors.cloud,
-  },
-  editSheet: {
-    width: "100%",
-    maxWidth: 460,
-    alignSelf: "center",
-    backgroundColor: theme.colors.graphiteCard,
-    borderTopLeftRadius: theme.radii.xl,
-    borderTopRightRadius: theme.radii.xl,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.72)",
-    justifyContent: "center",
-    padding: theme.spacing.lg,
-  },
-  editSheetTitle: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingSm,
-    color: theme.colors.cloud,
-    marginBottom: theme.spacing.lg,
-  },
-  inputLabelText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    letterSpacing: 0.8,
-    fontWeight: "700",
-    color: theme.colors.fog,
-    marginBottom: 6,
-  },
-  editInput: {
-    height: theme.mobile.minTouchSize,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    paddingHorizontal: theme.spacing.md,
-    color: theme.colors.pure,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-  },
-  editHintText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.fog,
-    marginTop: 8,
-  },
-  editSheetActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    alignItems: "center",
-    gap: 12,
-    marginTop: theme.spacing.xl,
-  },
-  editCancelBtn: {
-    minHeight: 44,
-    justifyContent: "center",
-    paddingHorizontal: 16,
-  },
-  editCancelText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-  },
-  editSaveBtn: {
-    minHeight: 44,
-    minWidth: 100,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 20,
-    borderRadius: theme.radii.sm,
-    backgroundColor: theme.colors.pure,
-  },
-  editSaveText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-  btnDisabledSoft: {
-    opacity: 0.45,
-  },
-  refreshPlanBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    minHeight: 30,
-    paddingHorizontal: 10,
-    borderRadius: theme.radii.full,
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-  },
-  refreshPlanText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.6,
-    color: theme.colors.paleIris,
-  },
-  planRationaleText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    lineHeight: 17,
-    color: theme.colors.ash,
-    marginTop: -8,
-  },
-  skillGroupCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    overflow: "hidden",
-  },
-  skillGroupHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: theme.spacing.md,
-    minHeight: theme.mobile.minTouchSize,
-  },
-  skillGroupHeaderText: {
-    flex: 1,
-  },
-  skillGroupTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  skillGroupMeta: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.fog,
-    marginTop: 2,
-  },
-  skillGroupCountPill: {
-    minWidth: 26,
-    height: 22,
-    paddingHorizontal: 7,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.radii.full,
-    backgroundColor: "rgba(255, 82, 82, 0.15)",
-  },
-  skillGroupCountText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.crimsonError,
-  },
-  skillGroupBody: {
-    paddingHorizontal: theme.spacing.md,
-    paddingBottom: theme.spacing.md,
-    gap: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderMuted,
-    paddingTop: theme.spacing.md,
-  },
-  dayBlock: {
-    gap: 8,
-  },
-  dayBlockLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    letterSpacing: 0.8,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  focusCardRow: {
-    flexDirection: "row",
-    gap: 12,
-    padding: theme.spacing.md,
-    borderRadius: theme.radii.md,
-    backgroundColor: theme.colors.graphiteCard,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  focusCardRowTop: {
-    borderColor: theme.colors.borderIris,
-    backgroundColor: "rgba(132, 125, 255, 0.08)",
-  },
-  focusRankBadge: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.surfaceElevated,
-  },
-  focusRankText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  focusCardBody: {
-    flex: 1,
-    gap: 6,
-  },
-  focusCardTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  focusSkillTitle: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-  },
-  focusMasteryText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.ash,
-  },
-  focusMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  focusReasonPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: theme.radii.xs,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-  },
-  focusReasonText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    letterSpacing: 0.5,
-    fontWeight: "700",
-    color: theme.colors.paleIris,
-  },
-  focusMetaText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    color: theme.colors.fog,
-  },
-  focusRuleText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    lineHeight: 17,
-    color: theme.colors.ash,
-    marginTop: 2,
-  },
-  lessonHistoryCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    padding: theme.spacing.md,
-    gap: 8,
-  },
-  lessonHistoryTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  lessonHistoryTitle: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-    textTransform: "capitalize",
-  },
-  lessonHistoryMetaRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  lessonHistoryMeta: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.fog,
-    textTransform: "uppercase",
-  },
-  mainContainer: {
-    flex: 1,
-  },
-  mainScroll: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    width: "100%",
-    alignSelf: "center",
-  },
-  tabContent: {
-    gap: theme.spacing.lg,
-  },
-  errorBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 82, 82, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.3)",
-    borderRadius: theme.radii.sm,
-    padding: 10,
-    gap: 8,
-    marginBottom: theme.spacing.sm,
-  },
-  errorBannerText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.crimsonError,
-  },
-  heroActionCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    overflow: "hidden",
-    ...theme.shadows.card,
-  },
-  ambientCardGlow: {
-    position: "absolute",
-    top: -40,
-    right: -40,
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: theme.colors.glowIris,
-    pointerEvents: "none",
-  },
-  heroTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: theme.spacing.sm,
-  },
-  heroEyebrowPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
-    gap: 6,
-  },
-  greenPulse: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: theme.colors.emeraldSuccess,
-  },
-  heroEyebrowText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: theme.fontSizes.micro,
-    color: theme.colors.ash,
-    letterSpacing: 0.8,
-    fontWeight: "600",
-  },
-  heroCefrText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: theme.fontSizes.micro,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  heroHeadline: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingMd,
-    color: theme.colors.cloud,
-    marginBottom: 4,
-  },
-  heroHeadlineItalic: {
-    fontStyle: "italic",
-    color: theme.colors.irisGleam,
-  },
-  heroSubhead: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    lineHeight: 18,
-    marginBottom: theme.spacing.lg,
-  },
-  primaryHeroBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.pure,
-    height: 48,
-    borderRadius: theme.radii.sm,
-    gap: 8,
-  },
-  primaryHeroBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm + 1,
-    fontWeight: "700",
-    color: theme.colors.void,
-  },
-  cardContainer: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    ...theme.shadows.sm,
-  },
-  cardHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: theme.spacing.md,
-  },
-  cardEyebrow: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.fog,
-    letterSpacing: 0.8,
-    fontWeight: "600",
-  },
-  cardTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.body,
-    fontWeight: "600",
-    color: theme.colors.cloud,
-    marginTop: 2,
-  },
-  progressPercentPill: {
-    backgroundColor: "rgba(132, 125, 255, 0.15)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
-  },
-  progressPercentText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.irisGleam,
-  },
-  goalChipsRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: theme.spacing.md,
-  },
-  goalChip: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  goalChipActive: {
-    backgroundColor: theme.colors.surfaceElevated,
-    borderColor: theme.colors.irisGleam,
-  },
-  goalChipText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 12,
-    color: theme.colors.ash,
-    fontWeight: "600",
-  },
-  goalChipTextActive: {
-    color: theme.colors.pure,
-  },
-  progressBarTrack: {
-    height: 6,
-    backgroundColor: theme.colors.abyss,
-    borderRadius: 3,
-    overflow: "hidden",
-    marginBottom: 8,
-  },
-  progressBarFill: {
-    height: "100%",
-    backgroundColor: theme.colors.irisGleam,
-    borderRadius: 3,
-  },
-  progressSubtext: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.micro + 1,
-    color: theme.colors.fog,
-  },
-  goalStatusRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 4,
-    marginBottom: 4,
-  },
-  sectionTitle: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.ash,
-    letterSpacing: 1.0,
-  },
-  sectionBadge: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.fog,
-  },
-  activityList: {
-    gap: 10,
-  },
-  emptyCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.xl,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    gap: 8,
-  },
-  emptyCardText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  smallActionBtn: {
-    backgroundColor: theme.colors.pure,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: theme.radii.sm,
-  },
-  smallActionBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "600",
-    color: theme.colors.void,
-  },
-  activityCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  activityCardCompleted: {
-    opacity: 0.75,
-    backgroundColor: "rgba(22, 23, 26, 0.6)",
-  },
-  activityCardCurrent: {
-    borderColor: theme.colors.borderIris,
-    backgroundColor: "rgba(28, 29, 34, 0.95)",
-  },
-  activityCardLeft: {
-    marginRight: 12,
-  },
-  stepIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: theme.colors.abyss,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stepCircleCompleted: {
-    backgroundColor: "rgba(56, 211, 159, 0.15)",
-    borderColor: theme.colors.emeraldSuccess,
-  },
-  stepCircleCurrent: {
-    backgroundColor: theme.colors.pure,
-    borderColor: theme.colors.pure,
-  },
-  stepNumText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.colors.fog,
-  },
-  activityCardBody: {
-    flex: 1,
-  },
-  activityBadgeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 4,
-  },
-  modeTag: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: theme.radii.xs,
-  },
-  modeTagText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  activityDurationText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.fog,
-  },
-  doneBadge: {
-    backgroundColor: "rgba(56, 211, 159, 0.12)",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: theme.radii.xs,
-  },
-  doneBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    color: theme.colors.emeraldSuccess,
-    fontWeight: "700",
-  },
-  upNextBadge: {
-    backgroundColor: "rgba(132, 125, 255, 0.18)",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: theme.radii.xs,
-  },
-  upNextBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    color: theme.colors.irisGleam,
-    fontWeight: "700",
-  },
-  activityTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm + 1,
-    fontWeight: "600",
-    color: theme.colors.cloud,
-    marginBottom: 2,
-  },
-  activitySkillChip: {
-    alignSelf: "flex-start",
-    marginTop: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
-    backgroundColor: "rgba(132, 125, 255, 0.10)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-  },
-  activitySkillChipText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 11,
-    fontWeight: "600",
-    color: theme.colors.paleIris,
-  },
-  activityObjective: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.micro + 2,
-    color: theme.colors.ash,
-    lineHeight: 16,
-  },
-  activityCardRight: {
-    marginLeft: 8,
-  },
-  categoryGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 14,
-  },
-  categoryTile: {
-    flexGrow: 1,
-    flexBasis: "100%",
-    borderRadius: theme.radii.tile,
-    padding: 24,
-    minHeight: 190,
-    justifyContent: "space-between",
-    ...theme.shadows.card,
-    ...Platform.select({
-      web: { cursor: "pointer" as any },
-    }),
-  },
-  categoryTileWide: {
-    flexBasis: "47%",
-  },
-  categoryTileMono: {
-    color: theme.colors.pure,
-    fontSize: 10,
-    fontFamily: theme.fonts.mono,
-    letterSpacing: 1.5,
-    fontWeight: "700",
-  },
-  categoryTileHeading: {
-    fontSize: 22,
-    fontFamily: theme.fonts.serif,
-    color: theme.colors.pure,
-    lineHeight: 28,
-    marginVertical: 10,
-  },
-  categoryTileDesc: {
     fontSize: 13,
-    fontFamily: theme.fonts.sans,
-    color: "rgba(255, 255, 255, 0.88)",
-    lineHeight: 18,
-    marginBottom: 16,
-  },
-  categoryTileCta: {
-    fontSize: 12,
-    fontWeight: "700",
-    fontFamily: theme.fonts.sans,
-    color: theme.colors.pure,
-  },
-  tabHeroSection: {
-    marginBottom: 4,
-  },
-  tabHeroEyebrow: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    letterSpacing: 1.0,
-    fontWeight: "700",
-    marginBottom: 2,
-  },
-  tabHeroHeadline: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingMd,
-    color: theme.colors.cloud,
-    marginBottom: 4,
-  },
-  tabHeroSubhead: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    lineHeight: 18,
-  },
-  stagePill: {
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.full,
-  },
-  stagePillText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  cefrRefText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.fog,
-  },
-  lessonTitle: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.headingSm,
-    fontWeight: "700",
-    color: theme.colors.cloud,
-    marginBottom: 6,
-  },
-  lessonRule: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    lineHeight: 18,
-    marginBottom: 10,
-  },
-  goalTipBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.colors.abyss,
-    padding: 10,
-    borderRadius: theme.radii.sm,
-    gap: 8,
-  },
-  goalTipText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.cloud,
-  },
-  skillRow: {
-    paddingVertical: 10,
-  },
-  skillRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderMuted,
-  },
-  skillRowTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 6,
-  },
-  skillNameText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.cloud,
-    fontWeight: "600",
-  },
-  skillPercentText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.ash,
-  },
-  skillTrack: {
-    height: 6,
-    backgroundColor: theme.colors.abyss,
-    borderRadius: 3,
-    overflow: "hidden",
-  },
-  skillFill: {
-    height: "100%",
-    borderRadius: 3,
-  },
-  mistakeCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    gap: 10,
-  },
-  mistakeCardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  mistakeTag: {
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: theme.radii.xs,
-  },
-  mistakeTagText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.paleIris,
-    fontWeight: "700",
-  },
-  mistakeSeverityText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.amberWarning,
-    fontWeight: "600",
-  },
-  mistakeCompareBox: {
-    backgroundColor: "rgba(255, 82, 82, 0.08)",
-    borderLeftWidth: 3,
-    borderLeftColor: theme.colors.crimsonError,
-    borderRadius: theme.radii.xs,
-    padding: 10,
-  },
-  saidHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginBottom: 4,
-  },
-  saidLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.crimsonError,
-    fontWeight: "700",
-  },
-  saidText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.cloud,
-    fontStyle: "italic",
-  },
-  recastCompareBox: {
-    backgroundColor: "rgba(56, 211, 159, 0.08)",
-    borderLeftWidth: 3,
-    borderLeftColor: theme.colors.emeraldSuccess,
-    borderRadius: theme.radii.xs,
-    padding: 10,
-  },
-  recastHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginBottom: 4,
-  },
-  recastLabel: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 10,
-    color: theme.colors.emeraldSuccess,
-    fontWeight: "700",
-  },
-  recastText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.pure,
-    fontWeight: "600",
-  },
-  mistakeWhyText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.ash,
-    lineHeight: 16,
-  },
-  vocabCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    gap: 6,
-  },
-  vocabHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  vocabTerm: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.subheading,
-    fontWeight: "700",
-    color: theme.colors.pure,
-  },
-  vocabContext: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.ash,
-    fontStyle: "italic",
-  },
-  vocabTipBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.colors.abyss,
-    padding: 8,
-    borderRadius: theme.radii.sm,
-    gap: 6,
-    marginTop: 4,
-  },
-  vocabTipText: {
-    flex: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.paleIris,
-  },
-  profileHeroCard: {
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.xl,
-    padding: theme.spacing.xl,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  avatarLargeCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 2,
-    borderColor: theme.colors.irisGleam,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: theme.spacing.sm,
-  },
-  profileTitle: {
-    fontFamily: theme.fonts.serif,
-    fontSize: theme.fontSizes.headingSm,
-    color: theme.colors.pure,
-    marginBottom: 2,
-  },
-  profileBadgeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 6,
-    marginTop: 4,
-    marginBottom: theme.spacing.md,
-  },
-  profileLevelBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: theme.radii.full,
-  },
-  profileLevelBadgeText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.paleIris,
-  },
-  profileCefrBadge: {
-    backgroundColor: theme.colors.abyss,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: theme.radii.full,
-  },
-  profileCefrBadgeText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.fog,
-  },
-  profileActionsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 8,
-  },
-  profileInfoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderMuted,
-  },
-  profileInfoRowLast: {
-    borderBottomWidth: 0,
-    paddingBottom: 0,
-  },
-  profileInfoLabel: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.fog,
-  },
-  profileInfoValue: {
-    flexShrink: 1,
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "600",
-    color: theme.colors.cloud,
-    textAlign: "right",
-  },
-  retakeAssessmentBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(132, 125, 255, 0.12)",
-    borderWidth: 1,
-    borderColor: theme.colors.borderIris,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: theme.radii.full,
-    gap: 6,
-  },
-  retakeAssessmentBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.paleIris,
-  },
-  statsRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  statBox: {
-    flex: 1,
-    backgroundColor: theme.colors.graphiteCard,
-    borderRadius: theme.radii.lg,
-    padding: 14,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  statNum: {
-    fontFamily: theme.fonts.mono,
-    fontSize: theme.fontSizes.headingSm,
-    fontWeight: "700",
-    color: theme.colors.pure,
-    marginTop: 6,
-    marginBottom: 2,
-  },
-  statLbl: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 9,
-    color: theme.colors.fog,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  settingsGroupTitle: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    fontWeight: "700",
-    color: theme.colors.ash,
-    letterSpacing: 0.8,
-    marginBottom: 4,
-  },
-  settingsGroupDesc: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.fog,
-    lineHeight: 16,
-    marginBottom: 12,
-  },
-  supportChipsRow: {
-    flexDirection: "row",
-    gap: 6,
-  },
-  voiceList: {
-    gap: 6,
-  },
-  voiceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  voiceRowActive: {
-    borderColor: theme.colors.irisGleam,
-    backgroundColor: theme.colors.surfaceElevated,
-  },
-  voiceRowText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    color: theme.colors.fog,
-  },
-  voiceRowTextActive: {
-    color: theme.colors.pure,
-    fontWeight: "600",
-  },
-  supportChip: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  supportChipActive: {
-    backgroundColor: theme.colors.surfaceElevated,
-    borderColor: theme.colors.irisGleam,
-  },
-  supportChipText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.fog,
-    fontWeight: "700",
-  },
-  supportChipTextActive: {
-    color: theme.colors.pure,
-  },
-  timeChipsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 12,
-  },
-  timeChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: theme.colors.abyss,
-    borderRadius: theme.radii.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.borderMuted,
-  },
-  timeChipActive: {
-    backgroundColor: theme.colors.surfaceElevated,
-    borderColor: theme.colors.irisGleam,
-  },
-  timeChipText: {
-    fontFamily: theme.fonts.mono,
-    fontSize: 11,
-    color: theme.colors.ash,
-    fontWeight: "600",
-  },
-  timeChipTextActive: {
-    color: theme.colors.pure,
-  },
-  feedbackBanner: {
-    backgroundColor: "rgba(56, 211, 159, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(56, 211, 159, 0.28)",
-    borderRadius: theme.radii.sm,
-    padding: 10,
-    marginBottom: 12,
-  },
-  feedbackBannerText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.emeraldSuccess,
-  },
-  notifActionsRow: {
-    flexDirection: "row",
-  },
-  notifActionBtn: {
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: theme.radii.sm,
-  },
-  notifActionBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.pure,
-  },
-  signOutBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    height: 44,
-    borderRadius: theme.radii.sm,
-    gap: 8,
-    marginBottom: 10,
-  },
-  signOutBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: theme.fontSizes.bodySm,
-    fontWeight: "600",
-    color: theme.colors.pure,
-  },
-  deleteBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    height: 40,
-    gap: 6,
-  },
-  deleteBtnText: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 12,
-    color: theme.colors.crimsonError,
-  },
-  bottomTabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: theme.colors.glassNav,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderMuted,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-around",
-    paddingHorizontal: theme.spacing.sm,
-    zIndex: 100,
-  },
-  tabItem: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 6,
-  },
-  tabItemActive: {},
-  tabItemLabel: {
-    fontFamily: theme.fonts.sans,
-    fontSize: 10,
-    fontWeight: "500",
-    color: theme.colors.fog,
-    marginTop: 3,
-  },
-  tabItemLabelActive: {
-    color: theme.colors.pure,
-    fontWeight: "600",
-  },
-  btnPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
-  },
-});
+    fontWeight: "500" as const,
+    color: colors.textSecondary,
+  };
+
+  return StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: colors.canvas,
+    },
+    loadingContainer: {
+      flex: 1,
+      backgroundColor: colors.canvas,
+      justifyContent: "center",
+      alignItems: "center",
+      gap: 12,
+    },
+    loadingText: label,
+    mobileAppBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: theme.spacing.lg,
+      paddingBottom: 10,
+      backgroundColor: colors.cardElevated,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      zIndex: 10,
+    },
+    appBarLeft: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      flexShrink: 1,
+    },
+    appBarGreeting: {
+      ...label,
+      flexShrink: 1,
+    },
+    appBarBrand: {
+      flexDirection: "row",
+      alignItems: "center",
+    },
+    brandLogoImage: {
+      width: 104,
+      height: 40,
+    },
+    appBarRight: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    streakBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 8,
+      height: 36,
+    },
+    streakCount: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    levelBadge: {
+      ...chip,
+      height: 34,
+      paddingHorizontal: 12,
+      justifyContent: "center",
+    },
+    levelBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.irisBlue,
+    },
+    themeBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    avatarBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: colors.primarySoft,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    avatarBtnActive: {
+      backgroundColor: colors.irisBlue,
+    },
+    avatarInitials: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.powderText,
+    },
+    avatarLargeInitials: {
+      fontFamily: theme.fonts.display,
+      fontSize: 26,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    profileEmail: {
+      ...label,
+      marginTop: 2,
+    },
+    editProfileBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      minHeight: 42,
+      paddingHorizontal: 16,
+      borderRadius: 12,
+      backgroundColor: colors.cardElevated,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    editProfileBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    editSheet: {
+      ...card,
+      width: "100%",
+      maxWidth: 460,
+      alignSelf: "center",
+      padding: theme.spacing.xl,
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(10, 13, 18, 0.55)",
+      justifyContent: "center",
+      padding: theme.spacing.lg,
+    },
+    editSheetTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 20,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: theme.spacing.lg,
+    },
+    inputLabelText: {
+      ...label,
+      color: colors.textPrimary,
+      marginBottom: 6,
+    },
+    editInput: {
+      height: 50,
+      borderRadius: 12,
+      backgroundColor: colors.cardSubtle,
+      borderWidth: 1,
+      borderColor: colors.border,
+      paddingHorizontal: theme.spacing.md,
+      color: colors.textPrimary,
+      fontFamily: theme.fonts.sans,
+      fontSize: theme.fontSizes.body,
+    },
+    editHintText: {
+      ...label,
+      fontSize: 12,
+      color: colors.textMuted,
+      marginTop: 8,
+    },
+    editSheetActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      alignItems: "center",
+      gap: 12,
+      marginTop: theme.spacing.xl,
+    },
+    editCancelBtn: {
+      minHeight: 44,
+      justifyContent: "center",
+      paddingHorizontal: 16,
+    },
+    editCancelText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    editSaveBtn: {
+      minHeight: 44,
+      minWidth: 100,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 20,
+      borderRadius: 12,
+      backgroundColor: colors.primary,
+    },
+    editSaveText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    btnDisabledSoft: {
+      opacity: 0.45,
+    },
+    refreshPlanBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      minHeight: 32,
+      paddingHorizontal: 4,
+    },
+    refreshPlanText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.irisBlue,
+    },
+    planRationaleText: {
+      ...label,
+      lineHeight: 19,
+      marginTop: -10,
+    },
+    skillGroupCard: {
+      ...card,
+      overflow: "hidden",
+    },
+    skillGroupHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      padding: theme.spacing.lg,
+      minHeight: theme.mobile.minTouchSize,
+    },
+    skillGroupHeaderText: {
+      flex: 1,
+    },
+    skillGroupTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    skillGroupMeta: {
+      ...label,
+      marginTop: 2,
+    },
+    skillGroupCountPill: {
+      minWidth: 28,
+      height: 24,
+      paddingHorizontal: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: theme.radii.full,
+      backgroundColor: colors.cardSubtle,
+    },
+    skillGroupCountText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    skillGroupBody: {
+      paddingHorizontal: theme.spacing.lg,
+      paddingBottom: theme.spacing.lg,
+      gap: theme.spacing.md,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      paddingTop: theme.spacing.md,
+    },
+    dayBlock: {
+      gap: 10,
+    },
+    dayBlockLabel: {
+      ...label,
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.textMuted,
+    },
+    focusCardRow: {
+      ...card,
+      flexDirection: "row",
+      gap: 14,
+      padding: theme.spacing.lg,
+    },
+    focusCardRowTop: {
+      borderColor: colors.irisBlue,
+    },
+    focusRankBadge: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.cardSubtle,
+    },
+    focusRankText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    focusCardBody: {
+      flex: 1,
+      gap: 8,
+    },
+    focusCardTopRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+    },
+    focusSkillTitle: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    focusMasteryText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    focusMetaRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    focusReasonPill: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      backgroundColor: colors.lavenderWash,
+    },
+    focusReasonText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.lavenderText,
+    },
+    focusMetaText: {
+      ...label,
+      fontSize: 12,
+    },
+    focusRuleText: {
+      ...label,
+      lineHeight: 19,
+    },
+    lessonHistoryCard: {
+      ...card,
+      padding: theme.spacing.lg,
+      gap: 8,
+    },
+    lessonHistoryTop: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+    },
+    lessonHistoryTitle: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      textTransform: "capitalize",
+    },
+    lessonHistoryMetaRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 12,
+    },
+    lessonHistoryMeta: {
+      ...label,
+      fontSize: 12,
+      textTransform: "capitalize",
+    },
+    mainContainer: {
+      flex: 1,
+    },
+    mainScroll: {
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.lg,
+      width: "100%",
+      alignSelf: "center",
+    },
+    tabContent: {
+      gap: theme.spacing.lg,
+    },
+    errorBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.crimsonWash,
+      borderRadius: 12,
+      padding: 12,
+      gap: 8,
+      marginBottom: theme.spacing.sm,
+    },
+    errorBannerText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.crimsonError,
+    },
+    heroActionCard: {
+      ...card,
+      padding: theme.spacing.xl,
+    },
+    heroTopRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: theme.spacing.md,
+    },
+    heroEyebrowPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    greenPulse: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: colors.emeraldSuccess,
+    },
+    heroEyebrowText: label,
+    heroCefrText: {
+      ...label,
+      color: colors.textMuted,
+    },
+    heroHeadline: {
+      fontFamily: theme.fonts.display,
+      fontSize: 26,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      lineHeight: 32,
+      letterSpacing: -0.5,
+      marginBottom: 6,
+    },
+    heroSubhead: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+      marginBottom: theme.spacing.lg,
+    },
+    primaryHeroBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.primary,
+      height: 52,
+      borderRadius: 14,
+      paddingHorizontal: 20,
+      gap: 8,
+    },
+    primaryHeroBtnText: {
+      flexShrink: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    cardContainer: {
+      ...card,
+      padding: theme.spacing.xl,
+    },
+    cardHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: theme.spacing.md,
+    },
+    cardTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    progressPercentText: {
+      ...label,
+      color: colors.textPrimary,
+      fontWeight: "600",
+    },
+    goalChipsRow: {
+      flexDirection: "row",
+      gap: 4,
+      padding: 4,
+      borderRadius: 12,
+      backgroundColor: colors.cardSubtle,
+      marginBottom: theme.spacing.lg,
+    },
+    goalChip: {
+      flex: 1,
+      paddingVertical: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 9,
+    },
+    goalChipActive: {
+      backgroundColor: colors.cardElevated,
+      ...activeTheme.shadows.sm,
+    },
+    goalChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    goalChipTextActive: {
+      color: colors.textPrimary,
+      fontWeight: "600",
+    },
+    progressBarTrack: {
+      height: 8,
+      backgroundColor: colors.cardSubtle,
+      borderRadius: theme.radii.full,
+      overflow: "hidden",
+      marginBottom: 10,
+    },
+    progressBarFill: {
+      height: "100%",
+      backgroundColor: colors.irisBlue,
+      borderRadius: theme.radii.full,
+    },
+    progressSubtext: {
+      ...label,
+      fontSize: 12,
+    },
+    goalStatusRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    sectionHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 8,
+    },
+    sectionTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 18,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      letterSpacing: -0.2,
+    },
+    sectionBadge: {
+      ...label,
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    activityList: {
+      gap: 10,
+    },
+    emptyCard: {
+      ...card,
+      padding: theme.spacing.xl,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+    },
+    emptyCardText: {
+      ...label,
+      fontSize: 14,
+      textAlign: "center",
+      lineHeight: 20,
+    },
+    smallActionBtn: {
+      backgroundColor: colors.primary,
+      paddingHorizontal: 18,
+      paddingVertical: 11,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    smallActionBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    activityCard: {
+      ...card,
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 16,
+    },
+    activityCardCompleted: {
+      opacity: 0.7,
+    },
+    activityCardCurrent: {
+      borderColor: colors.irisBlue,
+      borderWidth: 1.5,
+    },
+    activityCardLeft: {
+      marginRight: 14,
+    },
+    stepIconCircle: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: colors.cardSubtle,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    stepCircleCompleted: {
+      backgroundColor: colors.emeraldWash,
+    },
+    stepCircleCurrent: {
+      backgroundColor: colors.primary,
+    },
+    stepNumText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.textSecondary,
+    },
+    activityCardBody: {
+      flex: 1,
+      gap: 3,
+    },
+    activityBadgeRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 6,
+      marginTop: 6,
+    },
+    activityDurationText: {
+      ...label,
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    doneBadge: {
+      backgroundColor: colors.emeraldWash,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 6,
+    },
+    doneBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.mintText,
+    },
+    upNextBadge: {
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 6,
+    },
+    upNextBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.powderText,
+    },
+    activityTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    activityObjective: {
+      ...label,
+      fontSize: 14,
+      lineHeight: 19,
+    },
+    activityCardRight: {
+      marginLeft: 8,
+    },
+    categoryGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 10,
+    },
+    categoryTile: {
+      ...card,
+      flexGrow: 1,
+      flexBasis: "46%",
+      padding: 16,
+      gap: 4,
+      ...Platform.select({
+        web: { cursor: "pointer" as any },
+      }),
+    },
+    categoryIconCircle: {
+      width: 40,
+      height: 40,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 8,
+    },
+    categoryTileHeading: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    categoryTileDesc: {
+      ...label,
+      lineHeight: 18,
+    },
+    tabHeroSection: {
+      gap: 4,
+    },
+    tabHeroHeadline: {
+      fontFamily: theme.fonts.display,
+      fontSize: 26,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      letterSpacing: -0.5,
+    },
+    tabHeroSubhead: {
+      ...label,
+      fontSize: 15,
+      lineHeight: 21,
+    },
+    stagePill: {
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    stagePillText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.powderText,
+    },
+    cefrRefText: {
+      ...label,
+      fontSize: 12,
+    },
+    lessonTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 20,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 6,
+    },
+    lessonRule: {
+      ...label,
+      fontSize: 15,
+      lineHeight: 22,
+      marginBottom: 12,
+    },
+    goalTipBox: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.cardSubtle,
+      padding: 12,
+      borderRadius: 12,
+      gap: 8,
+    },
+    goalTipText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textPrimary,
+    },
+    skillTrack: {
+      height: 6,
+      backgroundColor: colors.cardSubtle,
+      borderRadius: theme.radii.full,
+      overflow: "hidden",
+    },
+    skillFill: {
+      height: "100%",
+      borderRadius: theme.radii.full,
+    },
+    mistakeCard: {
+      backgroundColor: colors.cardSubtle,
+      borderRadius: 14,
+      padding: 14,
+      gap: 10,
+    },
+    mistakeCardHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    mistakeTag: {
+      backgroundColor: colors.cardElevated,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    mistakeTagText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    mistakeSeverityText: {
+      ...label,
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    mistakeCompareBox: {
+      borderLeftWidth: 3,
+      borderLeftColor: colors.crimsonError,
+      paddingLeft: 10,
+    },
+    saidHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      marginBottom: 2,
+    },
+    saidLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.crimsonError,
+    },
+    saidText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      color: colors.textSecondary,
+    },
+    recastCompareBox: {
+      borderLeftWidth: 3,
+      borderLeftColor: colors.emeraldSuccess,
+      paddingLeft: 10,
+    },
+    recastHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      marginBottom: 2,
+    },
+    recastLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.emeraldSuccess,
+    },
+    recastText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    mistakeWhyText: {
+      ...label,
+      lineHeight: 19,
+    },
+    vocabCard: {
+      ...card,
+      padding: 18,
+      gap: 8,
+    },
+    vocabHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    vocabTerm: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 17,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    vocabContext: {
+      ...label,
+      fontSize: 15,
+      fontStyle: "italic",
+    },
+    vocabTipBox: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.cardSubtle,
+      padding: 10,
+      borderRadius: 10,
+      gap: 8,
+      marginTop: 4,
+    },
+    vocabTipText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textPrimary,
+    },
+    profileHeroCard: {
+      ...card,
+      padding: theme.spacing.xl,
+      alignItems: "center",
+    },
+    avatarLargeCircle: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      backgroundColor: colors.irisBlue,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: theme.spacing.md,
+    },
+    profileTitle: {
+      fontFamily: theme.fonts.display,
+      fontSize: 22,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    profileBadgeRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "center",
+      gap: 8,
+      marginTop: 10,
+      marginBottom: theme.spacing.lg,
+    },
+    profileLevelBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 8,
+    },
+    profileLevelBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.powderText,
+    },
+    profileCefrBadge: {
+      backgroundColor: colors.cardSubtle,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 8,
+    },
+    profileCefrBadgeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    profileActionsRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "center",
+      gap: 10,
+    },
+    profileInfoRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    profileInfoRowLast: {
+      borderBottomWidth: 0,
+      paddingBottom: 0,
+    },
+    profileInfoLabel: {
+      ...label,
+      fontSize: 14,
+    },
+    profileInfoValue: {
+      flexShrink: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      textAlign: "right",
+    },
+    retakeAssessmentBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primarySoft,
+      paddingHorizontal: 16,
+      minHeight: 42,
+      borderRadius: 12,
+      gap: 6,
+    },
+    retakeAssessmentBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.powderText,
+    },
+    statsRow: {
+      flexDirection: "row",
+      gap: 10,
+    },
+    statBox: {
+      ...card,
+      flex: 1,
+      padding: 14,
+      alignItems: "flex-start",
+    },
+    statNum: {
+      fontFamily: theme.fonts.display,
+      fontSize: 22,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginTop: 8,
+    },
+    statLbl: {
+      ...label,
+      fontSize: 12,
+    },
+    settingsGroupTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 16,
+      fontWeight: "600",
+      color: colors.textPrimary,
+      marginBottom: 4,
+    },
+    settingsGroupDesc: {
+      ...label,
+      lineHeight: 19,
+      marginBottom: 14,
+    },
+    supportChipsRow: {
+      flexDirection: "row",
+      gap: 8,
+    },
+    voiceList: {
+      gap: 8,
+    },
+    voiceRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    voiceRowActive: {
+      borderColor: colors.irisBlue,
+      backgroundColor: colors.primarySoft,
+    },
+    voiceRowText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.textSecondary,
+    },
+    voiceRowTextActive: {
+      color: colors.textPrimary,
+      fontWeight: "600",
+    },
+    supportChip: {
+      ...chip,
+      flex: 1,
+      paddingVertical: 9,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    supportChipActive: chipActive,
+    themeChip: {
+      flexDirection: "row",
+      gap: 6,
+    },
+    supportChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    supportChipTextActive: {
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    timeChipsRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+      marginBottom: 14,
+    },
+    timeChip: {
+      ...chip,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    timeChipActive: chipActive,
+    timeChipText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      fontWeight: "500",
+      color: colors.textSecondary,
+    },
+    timeChipTextActive: {
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    feedbackBanner: {
+      backgroundColor: colors.emeraldWash,
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 12,
+    },
+    feedbackBannerText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      color: colors.mintText,
+    },
+    notifActionsRow: {
+      flexDirection: "row",
+    },
+    notifActionBtn: {
+      backgroundColor: colors.primary,
+      paddingHorizontal: 18,
+      paddingVertical: 11,
+      borderRadius: 12,
+    },
+    notifActionBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.textOnPrimary,
+    },
+    signOutBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      height: 48,
+      borderRadius: 12,
+      gap: 8,
+      marginTop: 8,
+      marginBottom: 6,
+    },
+    signOutBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    deleteBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      height: 42,
+      gap: 6,
+    },
+    deleteBtnText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      color: colors.crimsonError,
+    },
+    bottomTabBar: {
+      position: "absolute",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      backgroundColor: colors.cardElevated,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-around",
+      paddingHorizontal: theme.spacing.sm,
+      zIndex: 100,
+    },
+    tabItem: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: 6,
+    },
+    tabIconPill: {
+      paddingHorizontal: 16,
+      paddingVertical: 4,
+      borderRadius: theme.radii.full,
+    },
+    tabIconPillActive: {
+      backgroundColor: colors.primarySoft,
+    },
+    tabItemLabel: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 11,
+      fontWeight: "500",
+      color: colors.textMuted,
+      marginTop: 2,
+    },
+    tabItemLabelActive: {
+      color: colors.irisBlue,
+      fontWeight: "600",
+    },
+    btnPressed: {
+      opacity: 0.85,
+    },
+  });
+}

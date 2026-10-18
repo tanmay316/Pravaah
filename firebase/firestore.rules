@@ -3,39 +3,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ---------------------------------------------------------------
-    // Users — only the authenticated owner can read/write their data
-    // ---------------------------------------------------------------
+    // All writes go through the API (Admin SDK, which bypasses these rules). Clients may
+    // only read their own data: a client write could otherwise set plan, role or
+    // premium_until on the user document and grant itself Premium or admin access.
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
 
-      // Sessions subcollection
-      match /sessions/{sessionId} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
-
-        // Messages nested under sessions
-        match /messages/{messageId} {
-          allow read, write: if request.auth != null && request.auth.uid == uid;
-        }
-      }
-
-      // Mistakes subcollection
-      match /mistakes/{mistakeId} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
-      }
-
-      // Vocabulary subcollection
-      match /vocabulary/{vocabularyId} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
-      }
-
-      // Daily stats subcollection
-      match /dailyStats/{date} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /{subcollection=**} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false;
       }
     }
 
-    // Deny everything else by default
+    // Coupons, usage, error logs, bug reports and admin config are server-only.
     match /{document=**} {
       allow read, write: if false;
     }

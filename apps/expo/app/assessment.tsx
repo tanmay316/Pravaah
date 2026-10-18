@@ -35,6 +35,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Room, RoomEvent, Track } from "livekit-client";
 import {
+  ApiError,
   createSession,
   submitProficiencyAssessment,
   setDailyGoal,
@@ -215,6 +216,10 @@ export default function AssessmentScreen() {
         await room.connect(LIVEKIT_URL, sessionRes.livekit_token);
         await room.localParticipant.setMicrophoneEnabled(false);
       } catch (err: any) {
+        if (err instanceof ApiError && err.code === "PREMIUM_REQUIRED") {
+          router.replace({ pathname: "/premium", params: { reason: "test_used" } });
+          return;
+        }
         console.warn("LiveKit assessment room notice:", err);
       }
     }

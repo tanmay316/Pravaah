@@ -34,9 +34,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { Room, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } from "livekit-client";
 import type { AudioCaptureOptions } from "livekit-client";
 import {
+  ApiError,
   completeSession,
   createSession,
+  getEntitlements,
+  getAiUsage,
+  type AiUsage,
   ConversationGoal,
+  Entitlements,
   SpeechLanguage,
 } from "../lib/api";
 import { prewarmDeviceSpeech, speakOnDevice, stopDeviceSpeech } from "../lib/deviceSpeech";
@@ -213,6 +218,11 @@ export default function SessionScreen() {
   const [deviceVoiceMode, setDeviceVoiceMode] = useState<DeviceVoiceMode>("auto");
   const [deviceVoiceActive, setDeviceVoiceActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
+  // Every session has a server-set time limit; the call ends automatically when it runs out.
+  const [timeLimit, setTimeLimit] = useState<number | null>(null);
+  const isDemo = !!timeLimit && entitlements?.is_premium === false;
 
   // LiveKit Room ref
   const roomRef = useRef<Room | null>(null);
@@ -485,6 +495,7 @@ export default function SessionScreen() {
 
       const sessionRes = await sessionPromise;
       setSessionId(sessionRes.session_id);
+      setTimeLimit(sessionRes.max_duration_seconds ?? null);
 
       room.on(RoomEvent.Reconnecting, () => setReconnecting(true));
       room.on(RoomEvent.Reconnected, () => setReconnecting(false));
@@ -634,6 +645,10 @@ export default function SessionScreen() {
         failedRoom?.disconnect();
       } catch {}
       stopAudioSession().catch(() => {});
+      if (err instanceof ApiError && err.code === "PREMIUM_REQUIRED") {
+        router.replace({ pathname: "/premium", params: { reason: "demo_used" } });
+        return;
+      }
       setErrorMessage(
         err?.message === "NOT_AUTHENTICATED"
           ? "Your session expired. Please sign in again."
@@ -647,6 +662,15 @@ export default function SessionScreen() {
 
   useEffect(() => {
     prewarmDeviceSpeech();
+    getEntitlements()
+      .then((ent) => {
+        setEntitlements(ent);
+        if (!ent.is_premium && !ent.demo_available) {
+          router.replace({ pathname: "/premium", params: { reason: "demo_used" } });
+        }
+        if (ent.is_premium) getAiUsage().then(setAiUsage).catch(() => {});
+      })
+      .catch(() => {});
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (coachWatchdogRef.current) clearTimeout(coachWatchdogRef.current);
@@ -713,6 +737,12 @@ export default function SessionScreen() {
     setShowSummary(true);
   };
 
+  useEffect(() => {
+    if (timeLimit && sessionStatus === "active" && sessionSeconds >= timeLimit) {
+      handleEndSession();
+    }
+  }, [sessionSeconds, timeLimit, sessionStatus]);
+
   const handleAdvanceAndReturn = async () => {
     if (savingSummary) return;
     setSavingSummary(true);
@@ -738,6 +768,10 @@ export default function SessionScreen() {
           );
           return;
         }
+      }
+      if (isDemo) {
+        router.replace({ pathname: "/premium", params: { reason: "demo_ended" } });
+        return;
       }
       router.replace("/");
     } catch (err: any) {
@@ -1000,6 +1034,33 @@ export default function SessionScreen() {
             </View>
           </View>
 
+          {entitlements && !entitlements.is_premium && entitlements.demo_available ? (
+            <View style={styles.demoNotice}>
+              <Ionicons name="gift-outline" size={20} color={colors.irisBlue} />
+              <View style={styles.demoNoticeText}>
+                <Text style={styles.demoNoticeTitle}>Free 5-minute demo</Text>
+                <Text style={styles.demoNoticeDetail}>
+                  This is your one free AI coach conversation. Premium gives you daily practice with your coach.
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {entitlements?.is_premium && aiUsage ? (
+            <View style={styles.demoNotice}>
+              <Ionicons name="time-outline" size={20} color={colors.irisBlue} />
+              <View style={styles.demoNoticeText}>
+                <Text style={styles.demoNoticeTitle}>
+                  {Math.max(0, Math.floor(aiUsage.minutes_per_day - aiUsage.minutes_today))} coach minutes left today
+                </Text>
+                <Text style={styles.demoNoticeDetail}>
+                  Sessions last up to {aiUsage.max_session_minutes} minutes. {aiUsage.sessions_today} of{" "}
+                  {aiUsage.sessions_per_day} sessions used today.
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
           {errorMessage ? (
             <View style={styles.errorBanner}>
               <Ionicons name="alert-circle" size={18} color={colors.crimsonError} />
@@ -1062,7 +1123,11 @@ export default function SessionScreen() {
         <View style={styles.topHeaderRight}>
           <View style={styles.callTimerPill}>
             <Ionicons name="time-outline" size={14} color={colors.textPrimary} />
-            <Text style={styles.callTimerText}>{formatSeconds(sessionSeconds)}</Text>
+            <Text style={styles.callTimerText}>
+              {timeLimit
+                ? `${formatSeconds(Math.max(0, timeLimit - sessionSeconds))} left`
+                : formatSeconds(sessionSeconds)}
+            </Text>
           </View>
 
           <Pressable
@@ -1307,7 +1372,7 @@ export default function SessionScreen() {
               <Text style={styles.summaryTopBadgeText}>Session complete</Text>
             </View>
 
-            <Text style={styles.summaryTitle}>Nice work</Text>
+            <Text style={styles.summaryTitle}>{isDemo ? "Your free demo is complete" : "Nice work"}</Text>
             <Text style={styles.summarySubtitle}>
               {activityTitle(params.activity_title) || "Spoken conversation"}
             </Text>
@@ -1357,7 +1422,7 @@ export default function SessionScreen() {
                 <ActivityIndicator size="small" color={colors.textOnPrimary} />
               ) : (
                 <Text style={styles.primaryReturnBtnText}>
-                  {saveIssue ? "Try saving again" : "Save and return to dashboard"}
+                  {saveIssue ? "Try saving again" : isDemo ? "Save and continue" : "Save and return to dashboard"}
                 </Text>
               )}
             </Pressable>
@@ -1626,6 +1691,35 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
       padding: 16,
       gap: 12,
       marginBottom: 24,
+    },
+    demoNotice: {
+      width: "100%",
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 12,
+      borderWidth: 1,
+      borderColor: colors.irisBlue,
+      backgroundColor: colors.primarySoft,
+      borderRadius: 16,
+      padding: 14,
+      marginTop: -12,
+      marginBottom: 24,
+    },
+    demoNoticeText: {
+      flex: 1,
+    },
+    demoNoticeTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    demoNoticeDetail: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: colors.textSecondary,
+      marginTop: 2,
     },
     tipItem: {
       flexDirection: "row",

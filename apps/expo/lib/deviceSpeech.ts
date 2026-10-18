@@ -105,7 +105,7 @@ export async function isDeviceSpeechAvailable(): Promise<boolean> {
  * Speaks `text` on the device. Resolves once playback finishes, is stopped, or errors, so the
  * caller can restore microphone state without guessing at a duration.
  */
-export function speakOnDevice(text: string): Promise<void> {
+export function speakOnDevice(text: string, rate = 0.95): Promise<void> {
   const clean = text.trim().slice(0, Speech.maxSpeechInputLength || 4000);
   if (!clean) return Promise.resolve();
 
@@ -122,7 +122,7 @@ export function speakOnDevice(text: string): Promise<void> {
         Speech.speak(clean, {
           language: voiceMatch.language,
           voice: voiceMatch.voice,
-          rate: 0.95,
+          rate,
           pitch: 1.0,
           onDone: finish,
           onStopped: finish,

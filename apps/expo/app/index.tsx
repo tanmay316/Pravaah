@@ -30,6 +30,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
   getProfile,
+  getEntitlements,
+  reportBug,
+  getPractice,
   getDailyPlan,
   getMistakes,
   getVocabulary,
@@ -41,6 +44,8 @@ import {
   updateProfile,
   deleteAccount,
   LearnerProfile,
+  Entitlements,
+  PracticeProgress,
   DailyLearningPlan,
   DailyPlanActivity,
   FocusSkill,
@@ -52,6 +57,7 @@ import {
   TtsVoice,
 } from "../lib/api";
 import VoicePicker from "../components/VoicePicker";
+import LearnHome from "../components/LearnHome";
 import { signOut } from "../lib/firebase";
 import { activityObjective, activityTitle, skillLabel } from "../lib/skills";
 import { AppTheme, ThemeColors, theme, useTheme } from "../lib/theme";
@@ -64,7 +70,7 @@ import {
   scheduleDailyPracticeReminder,
 } from "../lib/notifications";
 
-type NavTab = "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
+type NavTab = "learn" | "plan" | "lessons" | "mistakes" | "vocabulary" | "profile";
 
 const HINDI_SUPPORT_OPTIONS = [
   { value: "high", label: "Often", description: "Most corrections are also explained in Hindi" },
@@ -169,7 +175,7 @@ export default function DashboardScreen() {
   const isWide = width >= 720;
   const { colors, isDark, mode: themeMode, setMode: setThemeMode, toggleTheme, theme: activeTheme } = useTheme();
   const styles = useMemo(() => createStyles(colors, isDark, activeTheme), [colors, isDark, activeTheme]);
-  const [activeTab, setActiveTab] = useState<NavTab>("plan");
+  const [activeTab, setActiveTab] = useState<NavTab>("learn");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [profile, setProfile] = useState<LearnerProfile | null>(null);
@@ -179,9 +185,25 @@ export default function DashboardScreen() {
   const [lessons, setLessons] = useState<LessonRecord[]>([]);
   const [focusSkills, setFocusSkills] = useState<FocusSkill[]>([]);
   const [progress, setProgress] = useState<ProgressSummary | null>(null);
+  const [practice, setPractice] = useState<PracticeProgress | null>(null);
+  const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
+  const [reportingBug, setReportingBug] = useState(false);
+  const [bugText, setBugText] = useState("");
+  // null = idle, "sending", "sent", or an error message.
+  const [bugStatus, setBugStatus] = useState<string | null>(null);
+
+  const handleSendBug = async () => {
+    setBugStatus("sending");
+    try {
+      await reportBug(bugText.trim(), `dashboard/${activeTab}`);
+      setBugStatus("sent");
+    } catch (err: any) {
+      setBugStatus(err?.message || "Could not send your report. Please try again.");
+    }
+  };
   const [editName, setEditName] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [refreshingPlan, setRefreshingPlan] = useState(false);
@@ -197,7 +219,7 @@ export default function DashboardScreen() {
   const loadData = useCallback(async () => {
     setErrorMessage(null);
     try {
-      const [profData, planData, mstkData, vocData, lessonData, focusData, progData] =
+      const [profData, planData, mstkData, vocData, lessonData, focusData, progData, practiceData, entData] =
         await Promise.all([
           getProfile().catch((e) => {
             console.warn("Profile fetch error:", e);
@@ -212,6 +234,8 @@ export default function DashboardScreen() {
           getLessons().catch(() => [] as LessonRecord[]),
           getFocusSkills().catch(() => [] as FocusSkill[]),
           getProgress().catch(() => ({ total_sessions: 0, total_practice_minutes: 0 })),
+          getPractice().catch(() => null),
+          getEntitlements().catch(() => null),
         ]);
 
       if (profData) setProfile(profData);
@@ -226,6 +250,8 @@ export default function DashboardScreen() {
       setLessons(lessonData);
       setFocusSkills(focusData);
       setProgress(progData);
+      if (practiceData) setPractice(practiceData);
+      if (entData) setEntitlements(entData);
 
       if (!profData && !planData) {
         setErrorMessage("Could not reach the coaching service. Pull down to retry.");
@@ -505,7 +531,7 @@ export default function DashboardScreen() {
       {/* ------------------------------------------------------------------- */}
       <View style={[styles.mobileAppBar, { paddingTop: Math.max(insets.top, 12) }]}>
         <View style={styles.appBarLeft}>
-          <Pressable style={styles.appBarBrand} onPress={() => setActiveTab("plan")}>
+          <Pressable style={styles.appBarBrand} onPress={() => setActiveTab("learn")}>
             <Image
               source={
                 isDark
@@ -597,10 +623,48 @@ export default function DashboardScreen() {
         ) : null}
 
         {/* ================================================================= */}
+        {/* TAB 0: FREE LEARNING PATH */}
+        {/* ================================================================= */}
+        {activeTab === "learn" && (
+          <View style={styles.tabContent}>
+            <LearnHome practice={practice} entitlements={entitlements} onOpenCoach={() => setActiveTab("plan")} />
+          </View>
+        )}
+
+        {/* ================================================================= */}
         {/* TAB 1: TODAY'S PLAN */}
         {/* ================================================================= */}
         {activeTab === "plan" && (
           <View style={styles.tabContent}>
+            {entitlements && !entitlements.is_premium ? (
+              <Pressable
+                style={({ pressed }) => [styles.premiumBanner, pressed && styles.btnPressed]}
+                onPress={() =>
+                  router.push({
+                    pathname: "/premium",
+                    params: entitlements.demo_available ? {} : { reason: "demo_used" },
+                  })
+                }
+              >
+                <View style={styles.premiumBannerIcon}>
+                  <Ionicons name="diamond-outline" size={18} color={colors.irisBlue} />
+                </View>
+                <View style={styles.premiumBannerText}>
+                  <Text style={styles.premiumBannerTitle}>
+                    {entitlements.demo_available
+                      ? "Your free 5-minute coach demo is ready"
+                      : "The AI coach is a Premium feature"}
+                  </Text>
+                  <Text style={styles.premiumBannerDetail}>
+                    {entitlements.demo_available
+                      ? "Start any exercise below to try it once. Upgrade for daily practice with your coach."
+                      : "Upgrade for daily conversations, corrections and your personal plan."}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.fog} />
+              </Pressable>
+            ) : null}
+
             {/* HERO QUICK-ACTION CARD */}
             <View style={styles.heroActionCard}>
               <View style={styles.heroTopRow}>
@@ -896,6 +960,15 @@ export default function DashboardScreen() {
                 </Pressable>
               ))}
             </View>
+
+            <Pressable
+              style={({ pressed }) => [styles.linkRow, pressed && styles.btnPressed]}
+              onPress={() => setActiveTab("lessons")}
+            >
+              <Ionicons name="library-outline" size={20} color={colors.irisBlue} />
+              <Text style={styles.linkRowText}>Skills and lesson history</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.fog} />
+            </Pressable>
           </View>
         )}
 
@@ -1267,18 +1340,27 @@ export default function DashboardScreen() {
         {activeTab === "vocabulary" && (
           <View style={styles.tabContent}>
             <View style={styles.tabHeroSection}>
-              <Text style={styles.tabHeroHeadline}>Vocabulary</Text>
+              <Text style={styles.tabHeroHeadline}>Words</Text>
               <Text style={styles.tabHeroSubhead}>
-                Words and phrases collected from your conversations.
+                Review useful words with flashcards, plus phrases collected from your conversations.
               </Text>
             </View>
+
+            <Pressable
+              style={({ pressed }) => [styles.linkRow, pressed && styles.btnPressed]}
+              onPress={() => router.push("/review")}
+            >
+              <Ionicons name="albums-outline" size={20} color={colors.irisBlue} />
+              <Text style={styles.linkRowText}>Practise word cards</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.fog} />
+            </Pressable>
 
             <View style={styles.activityList}>
               {vocabulary.length === 0 ? (
                 <View style={styles.emptyCard}>
                   <Ionicons name="book-outline" size={32} color={colors.irisBlue} />
                   <Text style={styles.emptyCardText}>
-                    Vocabulary and collocations from your voice sessions will automatically be collected here.
+                    Words and phrases from your coach conversations will be collected here.
                   </Text>
                 </View>
               ) : (
@@ -1383,6 +1465,29 @@ export default function DashboardScreen() {
                 <Text style={styles.statLbl}>Day streak</Text>
               </View>
             </View>
+
+            {/* Plan */}
+            <Pressable
+              style={({ pressed }) => [styles.cardContainer, styles.planCard, pressed && styles.btnPressed]}
+              onPress={() => router.push("/premium")}
+            >
+              <View style={styles.premiumBannerIcon}>
+                <Ionicons name="diamond-outline" size={18} color={colors.irisBlue} />
+              </View>
+              <View style={styles.premiumBannerText}>
+                <Text style={styles.settingsGroupTitle}>
+                  {entitlements?.is_premium ? "Premium" : "Free plan"}
+                </Text>
+                <Text style={styles.premiumBannerDetail}>
+                  {entitlements?.is_premium
+                    ? "Daily AI coaching, corrections and your personal plan."
+                    : entitlements?.demo_available
+                    ? "Lessons and word review are free. One 5-minute coach demo left."
+                    : "Lessons and word review are free. Upgrade for the AI coach."}
+                </Text>
+              </View>
+              {!entitlements?.is_premium ? <Text style={styles.upgradeText}>Upgrade</Text> : null}
+            </Pressable>
 
             {/* Learning snapshot from real recorded evidence */}
             <View style={styles.cardContainer}>
@@ -1562,6 +1667,40 @@ export default function DashboardScreen() {
             </View>
 
             {/* Account Actions */}
+            {entitlements?.is_admin ? (
+              <Pressable
+                style={({ pressed }) => [styles.cardContainer, styles.planCard, pressed && styles.btnPressed]}
+                onPress={() => router.push("/admin")}
+              >
+                <View style={styles.premiumBannerIcon}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color={colors.irisBlue} />
+                </View>
+                <View style={styles.premiumBannerText}>
+                  <Text style={styles.settingsGroupTitle}>Admin console</Text>
+                  <Text style={styles.premiumBannerDetail}>Analytics, costs, users, coupons and error logs.</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.fog} />
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              style={({ pressed }) => [styles.cardContainer, styles.planCard, pressed && styles.btnPressed]}
+              onPress={() => {
+                setBugText("");
+                setBugStatus(null);
+                setReportingBug(true);
+              }}
+            >
+              <View style={styles.premiumBannerIcon}>
+                <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.irisBlue} />
+              </View>
+              <View style={styles.premiumBannerText}>
+                <Text style={styles.settingsGroupTitle}>Report a problem</Text>
+                <Text style={styles.premiumBannerDetail}>Something not working? Tell us and we'll fix it.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.fog} />
+            </Pressable>
+
             <View style={styles.cardContainer}>
               <Text style={styles.settingsGroupTitle}>Account</Text>
               <Pressable
@@ -1597,13 +1736,13 @@ export default function DashboardScreen() {
         ]}
       >
         {([
-          { key: "plan", label: "Plan", iconOn: "calendar", iconOff: "calendar-outline" },
-          { key: "lessons", label: "Lessons", iconOn: "library", iconOff: "library-outline" },
+          { key: "learn", label: "Learn", iconOn: "school", iconOff: "school-outline" },
+          { key: "plan", label: "Coach", iconOn: "mic", iconOff: "mic-outline" },
           { key: "mistakes", label: "Mistakes", iconOn: "alert-circle", iconOff: "alert-circle-outline" },
-          { key: "vocabulary", label: "Vocab", iconOn: "bookmark", iconOff: "bookmark-outline" },
+          { key: "vocabulary", label: "Words", iconOn: "bookmark", iconOff: "bookmark-outline" },
           { key: "profile", label: "Profile", iconOn: "person", iconOff: "person-outline" },
         ] as const).map((tab) => {
-          const active = activeTab === tab.key;
+          const active = activeTab === tab.key || (tab.key === "plan" && activeTab === "lessons");
           return (
             <Pressable
               key={tab.key}
@@ -1669,6 +1808,70 @@ export default function DashboardScreen() {
                 )}
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Report a problem */}
+      <Modal visible={reportingBug} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.editSheet, { paddingBottom: Math.max(insets.bottom + 16, 20) }]}>
+            <Text style={styles.editSheetTitle}>Report a problem</Text>
+            {bugStatus === "sent" ? (
+              <>
+                <Text style={styles.editHintText}>
+                  Thanks for letting us know. We read every report and will look into it.
+                </Text>
+                <View style={styles.editSheetActions}>
+                  <Pressable style={styles.editSaveBtn} onPress={() => setReportingBug(false)}>
+                    <Text style={styles.editSaveText}>Done</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.inputLabelText}>What went wrong?</Text>
+                <TextInput
+                  style={[styles.editInput, styles.bugInput]}
+                  value={bugText}
+                  onChangeText={setBugText}
+                  placeholder="Describe what you were doing and what happened."
+                  placeholderTextColor={colors.fog}
+                  multiline
+                  maxLength={2000}
+                  textAlignVertical="top"
+                />
+                {bugStatus && bugStatus !== "sending" ? (
+                  <Text style={[styles.editHintText, { color: colors.crimsonError }]}>{bugStatus}</Text>
+                ) : (
+                  <Text style={styles.editHintText}>Your email and device type are attached so we can follow up.</Text>
+                )}
+                <View style={styles.editSheetActions}>
+                  <Pressable
+                    style={styles.editCancelBtn}
+                    onPress={() => setReportingBug(false)}
+                    disabled={bugStatus === "sending"}
+                  >
+                    <Text style={styles.editCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.editSaveBtn,
+                      (bugText.trim().length < 5 || bugStatus === "sending") && styles.btnDisabledSoft,
+                      pressed && styles.btnPressed,
+                    ]}
+                    onPress={handleSendBug}
+                    disabled={bugText.trim().length < 5 || bugStatus === "sending"}
+                  >
+                    {bugStatus === "sending" ? (
+                      <ActivityIndicator size="small" color={colors.textOnPrimary} />
+                    ) : (
+                      <Text style={styles.editSaveText}>Send</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -1849,6 +2052,10 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
       ...label,
       color: colors.textPrimary,
       marginBottom: 6,
+    },
+    bugInput: {
+      height: 120,
+      paddingTop: 12,
     },
     editInput: {
       height: 50,
@@ -2167,6 +2374,66 @@ function createStyles(colors: ThemeColors, isDark: boolean, activeTheme: AppThem
     cardContainer: {
       ...card,
       padding: theme.spacing.xl,
+    },
+    premiumBanner: {
+      ...card,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      padding: 16,
+      borderColor: colors.irisBlue,
+    },
+    premiumBannerIcon: {
+      width: 40,
+      height: 40,
+      borderRadius: 12,
+      backgroundColor: colors.primarySoft,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    premiumBannerText: {
+      flex: 1,
+      minWidth: 0,
+    },
+    premiumBannerTitle: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.textPrimary,
+    },
+    premiumBannerDetail: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    planCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      padding: 18,
+    },
+    upgradeText: {
+      fontFamily: theme.fonts.sans,
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.irisBlue,
+    },
+    linkRow: {
+      ...card,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+    },
+    linkRowText: {
+      flex: 1,
+      fontFamily: theme.fonts.sans,
+      fontSize: 15,
+      fontWeight: "500",
+      color: colors.textPrimary,
     },
     cardHeaderRow: {
       flexDirection: "row",

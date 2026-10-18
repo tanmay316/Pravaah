@@ -13,6 +13,7 @@ import copy
 import json
 import logging
 from pathlib import Path
+import re
 import runpy
 from types import SimpleNamespace
 import unittest
@@ -136,8 +137,14 @@ def load_routes():
         "_session_token_metadata", "create_session", "refresh_session_token",
         "complete_session", "get_today_daily_plan", "_mint_livekit_token",
         "_save_started_session", "_finalize_session",
+        "_as_utc", "_is_premium", "_entitlements", "_premium_required", "_claim_free_allowance",
+        "_compute_streak_days", "_practice_view", "_record_practice", "_invalid_practice_id",
+        "complete_practice_lesson", "submit_card_review", "_bump_stats",
+        "_limit_reached", "_account_suspended",
     }
-    constants = {"TTS_VOICES", "DEFAULT_TTS_VOICE"}
+    constants = {"TTS_VOICES", "DEFAULT_TTS_VOICE", "DEMO_SECONDS", "FREE_ASSESSMENT_SECONDS",
+                 "FREE_ASSESSMENT_COOLDOWN", "DAILY_XP_GOAL", "SRS_INTERVAL_DAYS", "MAX_TRACKED_CARDS",
+                 "PRACTICE_ID_PATTERN"}
     nodes = []
     module = ast.parse(MAIN.read_text(encoding="utf-8"))
     for node in module.body:
@@ -150,10 +157,10 @@ def load_routes():
             nodes.append(node)
     assert {n.name for n in nodes if hasattr(n, "name")} == names
     namespace = {
-        **MODELS, "asyncio": asyncio, "json": json, "uuid": uuid,
+        **MODELS, "asyncio": asyncio, "json": json, "uuid": uuid, "re": re,
         "logging": logging, "datetime": datetime, "timezone": timezone,
         "timedelta": timedelta, "HTTPException": HTTPException,
-        "Response": Response, "CurrentUser": dict, "RequestId": str,
+        "Response": Response, "CurrentUser": dict, "RequestId": str, "Request": object,
         "firestore": SimpleNamespace(SERVER_TIMESTAMP="server_timestamp", Increment=Increment,
                          transactional=transactional),
         "CURRICULUM_SKILLS": {SKILL: {}, OTHER_SKILL: {}},
@@ -168,7 +175,8 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
         self.db = FakeDB()
         self.user = {"uid": "authenticated_learner", "name": "Token Name"}
         self.user_ref = self.db.collection("users").document(self.user["uid"])
-        self.profile = {"display_name": "Learner", "hindi_support": "occasional", "pravaah_level": "C"}
+        self.profile = {"display_name": "Learner", "hindi_support": "occasional", "pravaah_level": "C",
+                        "plan": "premium"}
         self.user_ref.set(self.profile)
         self.ranking = [
             {"skill_id": SKILL, "mastery": 0.35, "reason": "recent_mistakes",
@@ -183,6 +191,14 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
             complete_daily_plan_activity=Mock(return_value={}),
             analyze_session_messages=AsyncMock(),
             process_event=AsyncMock(),
+            record_session_start=Mock(),
+            record_session_end=Mock(),
+            bump_daily_stats=Mock(),
+            load_ai_limits=Mock(return_value=MODELS["AiLimits"]()),
+            reserve_ai_time=Mock(side_effect=lambda db, uid, now, limits, requested, premium, admin:
+                                 (min(requested, 1800), None)),
+            refund_ai_time=Mock(return_value=0),
+            take_user_budget=Mock(return_value=True),
         )
 
     @staticmethod
@@ -512,6 +528,97 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
             await self.ns["refresh_session_token"](result.session_id, self.user, "x", Response())
         self.assertEqual(caught.exception.status_code, 400)
 
+    async def test_premium_sessions_are_capped_by_the_ai_limits(self):
+        first = await self.create()
+        self.assertEqual(first.max_duration_seconds, 1800)  # max_session_minutes default
+        self.assertEqual(self.metadata()["max_duration_seconds"], 1800)
+        self.assertEqual(self.metadata()["plan"], "premium")
+        self.assertEqual(self.saved(first.session_id)["reserved_seconds"], 1800)
+        args = self.ns["reserve_ai_time"].call_args.args
+        self.assertTrue(args[5])  # premium limits apply
+
+    async def test_limit_denial_blocks_the_session_and_returns_the_free_demo(self):
+        self.user_ref.set({"plan": "free"}, merge=True)
+        self.ns["reserve_ai_time"] = Mock(return_value=(0, "The coach is fully booked for today."))
+        with self.assertRaises(HTTPException) as caught:
+            await self.create()
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertEqual(caught.exception.detail["error"]["code"], "LIMIT_REACHED")
+        entitlements = self.ns["_entitlements"](self.user_ref.get().to_dict(), datetime.now(timezone.utc))
+        self.assertTrue(entitlements["demo_available"])
+
+    async def test_suspended_accounts_cannot_start_ai_sessions(self):
+        self.user_ref.set({"suspended": True}, merge=True)
+        with self.assertRaises(HTTPException) as caught:
+            await self.create()
+        self.assertEqual(caught.exception.status_code, 403)
+        self.ns["reserve_ai_time"].assert_not_called()
+
+    async def test_completion_refunds_unused_ai_time_once(self):
+        result = await self.create()
+        body = MODELS["CompleteSessionRequest"](duration_seconds=120)
+        await self.ns["complete_session"](result.session_id, body, self.user, "x", Response())
+        await self.ns["complete_session"](result.session_id, body, self.user, "again", Response())
+        self.ns["refund_ai_time"].assert_called_once()
+        _, uid, reserved, used, _ = self.ns["refund_ai_time"].call_args.args
+        self.assertEqual((uid, reserved, used), (self.user["uid"], 1800, 120))
+
+    async def test_analysis_stops_retrying_after_the_attempt_limit(self):
+        result = await self.create(target_skill=SKILL)
+        self.ns["analyze_session_messages"].side_effect = RuntimeError("LLM down")
+        body = MODELS["CompleteSessionRequest"](messages=[{"role": "user", "text": "I goed home."}])
+        outcomes = [await self.ns["complete_session"](result.session_id, body, self.user, "x", Response())
+                    for _ in range(5)]
+        self.assertEqual(self.ns["analyze_session_messages"].await_count, 3)
+        self.assertFalse(outcomes[-1]["retryable"])
+
+    async def test_free_learner_gets_exactly_one_five_minute_demo(self):
+        self.user_ref.set({"plan": "free"}, merge=True)
+        demo = await self.create()
+        self.assertEqual(demo.max_duration_seconds, 300)
+        self.assertEqual(self.metadata()["max_duration_seconds"], 300)
+        self.assertEqual(self.user_ref.get().to_dict()["ai_demo_used_at_session_id"], demo.session_id)
+        with self.assertRaises(HTTPException) as caught:
+            await self.create()
+        self.assertEqual(caught.exception.status_code, 402)
+        self.assertEqual(caught.exception.detail["error"]["code"], "PREMIUM_REQUIRED")
+
+    async def test_expired_premium_counts_as_free(self):
+        self.user_ref.set({"plan": "premium",
+                           "premium_until": datetime.now(timezone.utc) - timedelta(days=1)}, merge=True)
+        self.assertFalse(self.ns["_is_premium"](self.user_ref.get().to_dict(), datetime.now(timezone.utc)))
+        demo = await self.create()
+        self.assertEqual(demo.max_duration_seconds, 300)
+
+    async def test_free_speaking_test_is_weekly_and_separate_from_the_demo(self):
+        self.user_ref.set({"plan": "free"}, merge=True)
+        test = await self.create(mode="assessment")
+        self.assertEqual(test.max_duration_seconds, 600)
+        with self.assertRaises(HTTPException) as caught:
+            await self.create(mode="assessment")
+        self.assertEqual(caught.exception.status_code, 402)
+        demo = await self.create()  # The weekly test does not spend the coach demo.
+        self.assertEqual(demo.max_duration_seconds, 300)
+        self.user_ref.set({"free_assessment_at": datetime.now(timezone.utc) - timedelta(days=8)}, merge=True)
+        self.assertEqual((await self.create(mode="assessment")).max_duration_seconds, 600)
+
+    async def test_failed_start_returns_the_free_demo(self):
+        self.user_ref.set({"plan": "free"}, merge=True)
+        self.ns["_save_started_session"] = Mock(side_effect=HTTPException(status_code=409))
+        with self.assertRaises(HTTPException):
+            await self.create()
+        entitlements = self.ns["_entitlements"](self.user_ref.get().to_dict(), datetime.now(timezone.utc))
+        self.assertTrue(entitlements["demo_available"])
+
+    async def test_demo_token_cannot_be_refreshed_past_its_limit(self):
+        self.user_ref.set({"plan": "free"}, merge=True)
+        demo = await self.create()
+        self.user_ref.collection("sessions").document(demo.session_id).update(
+            {"start_time": datetime.now(timezone.utc) - timedelta(minutes=7)})
+        with self.assertRaises(HTTPException) as caught:
+            await self.ns["refresh_session_token"](demo.session_id, self.user, "x", Response())
+        self.assertEqual(caught.exception.status_code, 403)
+
     async def test_completion_uses_saved_context_and_plan_date_ignores_stale_client_ids(self):
         _, activity = self.add_activity()
         result = await self.create(lesson_id=activity["activity_id"])
@@ -592,6 +699,48 @@ class TutorSessionContextTests(unittest.IsolatedAsyncioTestCase):
         await self.ns["complete_session"](result.session_id, body, self.user, "x", Response())
         self.ns["analyze_session_messages"].assert_not_called()
         self.ns["complete_daily_plan_activity"].assert_not_called()
+
+    async def complete_lesson(self, lesson_id="present-simple-1", correct=8, total=8):
+        return await self.ns["complete_practice_lesson"](
+            lesson_id, MODELS["CompletePracticeLessonRequest"](correct=correct, total=total),
+            self.user, "x", Response())
+
+    async def test_free_lesson_awards_server_computed_xp_stars_and_streak(self):
+        perfect = await self.complete_lesson(correct=8, total=8)
+        self.assertEqual(perfect.xp_total, 18)  # 5 base + 8 correct + 5 perfect bonus
+        self.assertEqual(perfect.lessons["present-simple-1"].stars, 3)
+        self.assertEqual(perfect.lessons_today, 1)
+        self.assertEqual(perfect.streak_days, 1)
+        replay = await self.complete_lesson(correct=5, total=8)
+        self.assertEqual(replay.xp_total, 18 + 5)  # Replays earn half, minimum 3.
+        self.assertEqual(replay.lessons["present-simple-1"].stars, 3)  # Best result is kept.
+        self.assertEqual(replay.lessons["present-simple-1"].completed_count, 2)
+        stats = self.user_ref.get().to_dict()["statistics"]
+        self.assertEqual(stats["streak_days"], 1)
+
+    async def test_free_lesson_rejects_bad_ids_and_impossible_scores(self):
+        for lesson_id, correct, total in (("../etc", 1, 1), ("ok-id", 9, 8)):
+            with self.subTest(lesson_id=lesson_id), self.assertRaises(HTTPException) as caught:
+                await self.complete_lesson(lesson_id, correct, total)
+            self.assertEqual(caught.exception.status_code, 422)
+
+    async def test_flashcard_review_moves_cards_through_leitner_boxes(self):
+        review = MODELS["SubmitCardReviewRequest"]
+        today = datetime.now(timezone.utc)
+        progress = await self.ns["submit_card_review"](
+            review(results=[{"card_id": "w-apologise", "correct": True},
+                            {"card_id": "w-borrow", "correct": False}]), self.user, "x", Response())
+        self.assertEqual(progress.cards["w-apologise"].box, 1)
+        self.assertEqual(progress.cards["w-apologise"].due, (today + timedelta(days=1)).strftime("%Y-%m-%d"))
+        self.assertEqual(progress.cards["w-borrow"].box, 0)
+        self.assertEqual(progress.cards["w-borrow"].due, today.strftime("%Y-%m-%d"))
+        self.assertEqual(progress.xp_today, 1)
+        self.assertEqual(progress.cards_reviewed_today, 2)
+        progress = await self.ns["submit_card_review"](
+            review(results=[{"card_id": "w-apologise", "correct": True}]), self.user, "x", Response())
+        self.assertEqual(progress.cards["w-apologise"].due, (today + timedelta(days=3)).strftime("%Y-%m-%d"))
+        with self.assertRaises(ValidationError):
+            review(results=[{"card_id": "Bad Id", "correct": True}])
 
 
 class SchemaAndExpoContractTests(unittest.TestCase):

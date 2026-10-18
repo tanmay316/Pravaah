@@ -16,6 +16,7 @@ Endpoints:
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -23,15 +24,31 @@ from datetime import datetime, timezone, timedelta
 import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from livekit.api import AccessToken, VideoGrants
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import sys
 
 from .auth import AuthError, CurrentUser, RequestId
+from .admin import (
+    admin_router,
+    bump_daily_stats,
+    ist_day,
+    is_admin_user,
+    load_ai_limits,
+    log_server_error,
+    ops_router,
+    record_session_end,
+    record_session_start,
+    refund_ai_time,
+    reserve_ai_time,
+    take_user_budget,
+)
 from .firebase import get_firebase_app, get_firestore_client
+from .security import allow_free_demo, client_ip, security_middleware
 from firebase_admin import firestore
 from .models import (
     CreateSessionRequest,
@@ -48,7 +65,11 @@ from .models import (
     DailyPlanActivityModel,
     DailyLearningPlanModel,
     CompleteActivityRequest,
+    CompletePracticeLessonRequest,
     CompleteSessionRequest,
+    Entitlements,
+    PracticeProgress,
+    SubmitCardReviewRequest,
     UpdateGoalRequest,
     UpdateProfileRequest,
     ProgressSummary,
@@ -94,6 +115,16 @@ PRAVAAH_CEFR_REFERENCE = {
 TTS_VOICES = {"warm_male", "casual_male", "british_male", "indian_male",
               "indian_female", "british_female", "us_female"}
 DEFAULT_TTS_VOICE = "warm_male"
+
+# The AI coach is premium. Free accounts get one short demo call and a weekly speaking test.
+DEMO_SECONDS = 300
+FREE_ASSESSMENT_SECONDS = 600
+FREE_ASSESSMENT_COOLDOWN = timedelta(days=7)
+DAILY_XP_GOAL = 30
+# Leitner boxes: days until a flashcard is due again after reaching that box.
+SRS_INTERVAL_DAYS = (0, 1, 3, 7, 14, 30)
+MAX_TRACKED_CARDS = 600
+PRACTICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,79}$")
 
 load_dotenv()
 
@@ -146,6 +177,154 @@ def _compute_streak_days(last_practice_date: str | None, current_streak: int) ->
     return int(current_streak) if delta <= 1 else 0
 
 
+def _as_utc(value) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _is_premium(profile: dict, now: datetime) -> bool:
+    # `plan` and `role` are only ever written by the server (billing, coupons or an admin), never PATCH.
+    if profile.get("role") == "admin":
+        return True
+    if profile.get("plan") != "premium":
+        return False
+    until = _as_utc(profile.get("premium_until"))
+    return until is None or until > now
+
+
+def _entitlements(profile: dict, now: datetime) -> dict:
+    premium = _is_premium(profile, now)
+    last_test = _as_utc(profile.get("free_assessment_at"))
+    next_test = last_test + FREE_ASSESSMENT_COOLDOWN if last_test else None
+    test_available = premium or next_test is None or next_test <= now
+    return {
+        "plan": "premium" if premium else "free",
+        "is_premium": premium,
+        "premium_until": _as_utc(profile.get("premium_until")) if premium else None,
+        "demo_available": premium or not profile.get("ai_demo_used_at"),
+        "demo_seconds": DEMO_SECONDS,
+        "assessment_available": test_available,
+        "next_assessment_at": None if test_available else next_test,
+        "is_admin": profile.get("role") == "admin",
+        "discount_code": (profile.get("discount_coupon") or {}).get("code"),
+        "discount_percent": int((profile.get("discount_coupon") or {}).get("percent_off", 0) or 0),
+    }
+
+
+def _premium_required(req_id: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=402,
+        detail=ErrorResponse(
+            error=ErrorDetail(code=ErrorCode.PREMIUM_REQUIRED, message=message, request_id=req_id)
+        ).model_dump(mode="json"),
+    )
+
+
+def _limit_reached(req_id: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail=ErrorResponse(
+            error=ErrorDetail(code=ErrorCode.LIMIT_REACHED, message=message, request_id=req_id)
+        ).model_dump(mode="json"),
+    )
+
+
+def _account_suspended(req_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail=ErrorResponse(error=ErrorDetail(
+            code=ErrorCode.ACCOUNT_SUSPENDED, message="This account is suspended. Contact support.", request_id=req_id,
+        )).model_dump(mode="json"),
+    )
+
+
+def _claim_free_allowance(db, user_ref, field: str, session_id: str, now: datetime,
+                          cooldown: timedelta | None = None) -> bool:
+    """Atomically spend a free allowance so two parallel starts cannot both use it."""
+
+    @firestore.transactional
+    def claim(transaction):
+        data = user_ref.get(transaction=transaction).to_dict() or {}
+        used = _as_utc(data.get(field))
+        if used and (cooldown is None or used + cooldown > now):
+            return False
+        transaction.set(user_ref, {field: now, f"{field}_session_id": session_id}, merge=True)
+        return True
+
+    return claim(db.transaction())
+
+
+def _practice_view(data: dict, profile: dict, now: datetime) -> dict:
+    today = now.strftime("%Y-%m-%d")
+    daily = data.get("daily") or {}
+    today_stats = daily.get(today) or {}
+    stats = profile.get("statistics") or {}
+    return {
+        "xp_total": int(data.get("xp_total", 0) or 0),
+        "xp_today": int(today_stats.get("xp", 0) or 0),
+        "daily_xp_goal": DAILY_XP_GOAL,
+        "lessons_today": int(today_stats.get("lessons", 0) or 0),
+        "cards_reviewed_today": int(today_stats.get("cards", 0) or 0),
+        "today": today,
+        "week_xp": [
+            {"date": day, "xp": int((daily.get(day) or {}).get("xp", 0) or 0)}
+            for day in ((now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1))
+        ],
+        "lessons": data.get("lessons") or {},
+        "cards": data.get("cards") or {},
+        "streak_days": _compute_streak_days(stats.get("last_practice_date"), stats.get("streak_days", 0)),
+    }
+
+
+def _record_practice(db, uid: str, now: datetime, apply) -> tuple[dict, dict]:
+    """Apply a practice update, add its XP and keep the shared daily streak alive."""
+    user_ref = db.collection("users").document(uid)
+    practice_ref = user_ref.collection("practice").document("progress")
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    @firestore.transactional
+    def run(transaction):
+        data = practice_ref.get(transaction=transaction).to_dict() or {}
+        profile = user_ref.get(transaction=transaction).to_dict() or {}
+        xp, counters = apply(data)
+        daily = data.setdefault("daily", {})
+        day = daily.setdefault(today, {})
+        day["xp"] = int(day.get("xp", 0)) + xp
+        for key, value in counters.items():
+            day[key] = int(day.get(key, 0)) + value
+        for old_day in sorted(daily)[:-14]:
+            daily.pop(old_day)
+        data["xp_total"] = int(data.get("xp_total", 0) or 0) + xp
+        data["last_xp"] = xp
+        data["updated_at"] = now
+
+        stats = profile.get("statistics") or {}
+        last = stats.get("last_practice_date")
+        prior = int(stats.get("streak_days", 0) or 0)
+        streak = max(prior, 1) if last == today else (prior + 1 if last == yesterday else 1)
+        transaction.set(practice_ref, data)
+        transaction.set(user_ref, {"statistics": {"last_practice_date": today, "streak_days": streak}}, merge=True)
+        profile["statistics"] = {**stats, "last_practice_date": today, "streak_days": streak}
+        return data, profile
+
+    return run(db.transaction())
+
+
+def _bump_stats(now: datetime, **counts: int) -> None:
+    """Admin dashboard counters; analytics must never fail a learner's request."""
+    try:
+        bump_daily_stats(get_firestore_client(), now, **counts)
+    except Exception as exc:
+        logging.getLogger("api").warning("Daily stats update failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
@@ -186,15 +365,50 @@ app = FastAPI(
     title="English Coach AI — API",
     version="0.1.0",
     lifespan=lifespan,
+    # The schema maps every endpoint for an attacker; only expose it when explicitly enabled.
+    docs_url="/docs" if os.getenv("ENABLE_API_DOCS") == "true" else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if os.getenv("ENABLE_API_DOCS") == "true" else None,
 )
 
+
+# Registered before CORS so CORS wraps it and 500 responses still carry CORS headers.
+@app.middleware("http")
+async def record_unhandled_errors(request, call_next):
+    """Unhandled exceptions become a 500 and an entry in the admin error log."""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logging.getLogger("api").exception("Unhandled error on %s %s", request.method, request.url.path)
+        await asyncio.to_thread(log_server_error, request.url.path, request.method, exc)
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        return Response(
+            status_code=500,
+            content=ErrorResponse(error=ErrorDetail(
+                code=ErrorCode.INTERNAL_ERROR, message="Something went wrong on our side.", request_id=request_id,
+            )).model_dump_json(),
+            media_type="application/json",
+        )
+
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=security_middleware)
+
+# Native apps send no Origin header, so this only governs browsers. Tokens travel in the
+# Authorization header, never cookies, so credentials stay off.
+CORS_ORIGINS = [o.strip() for o in os.getenv(
+    "CORS_ALLOW_ORIGINS",
+    "https://pravaah-cabaa.web.app,https://pravaah-cabaa.firebaseapp.com,"
+    "http://localhost:8081,http://localhost:19006,http://localhost:8000",
+).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Usage-Signature"],
 )
+app.include_router(admin_router)
+app.include_router(ops_router)
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +454,7 @@ async def health():
 
 class SpeechRequest(BaseModel):
     model: str = "tts-1"
-    input: str
+    input: str = Field(max_length=1000)
     voice: str = "en-IN-PrabhatNeural"
     response_format: str = "mp3"
     speed: float = 1.0
@@ -423,6 +637,105 @@ async def update_my_profile(
     return await get_my_profile(user=user, req_id=req_id, response=response)
 
 
+@app.get("/api/me/entitlements", response_model=Entitlements)
+async def get_my_entitlements(user: CurrentUser, req_id: RequestId, response: Response):
+    response.headers["X-Request-ID"] = req_id
+    db = get_firestore_client()
+    doc = db.collection("users").document(user["uid"]).get()
+    profile = doc.to_dict() or {} if doc.exists else {}
+    try:
+        if is_admin_user(db, user, profile):
+            profile["role"] = "admin"
+    except Exception as exc:
+        logging.getLogger("api").warning("Admin check failed: %s", exc)
+    return Entitlements(**_entitlements(profile, datetime.now(timezone.utc)))
+
+
+@app.get("/api/me/practice", response_model=PracticeProgress)
+async def get_my_practice(user: CurrentUser, req_id: RequestId, response: Response):
+    response.headers["X-Request-ID"] = req_id
+    db = get_firestore_client()
+    user_ref = db.collection("users").document(user["uid"])
+    practice = user_ref.collection("practice").document("progress").get()
+    profile = user_ref.get()
+    return PracticeProgress(**_practice_view(
+        practice.to_dict() or {} if practice.exists else {},
+        profile.to_dict() or {} if profile.exists else {},
+        datetime.now(timezone.utc),
+    ))
+
+
+def _invalid_practice_id(req_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=ErrorResponse(error=ErrorDetail(
+            code=ErrorCode.VALIDATION_ERROR, message="Invalid practice item.", request_id=req_id,
+        )).model_dump(mode="json"),
+    )
+
+
+@app.post("/api/me/practice/lessons/{lesson_id}/complete", response_model=PracticeProgress)
+async def complete_practice_lesson(
+    lesson_id: str, body: CompletePracticeLessonRequest, user: CurrentUser, req_id: RequestId, response: Response,
+):
+    """Record a finished free lesson. XP is computed here, never trusted from the client."""
+    response.headers["X-Request-ID"] = req_id
+    if not PRACTICE_ID_PATTERN.match(lesson_id) or body.correct > body.total:
+        raise _invalid_practice_id(req_id)
+    now = datetime.now(timezone.utc)
+    accuracy = body.correct / body.total
+    stars = 3 if accuracy >= 0.95 else 2 if accuracy >= 0.75 else 1
+
+    def apply(data: dict):
+        lesson = data.setdefault("lessons", {}).setdefault(lesson_id, {})
+        xp = 5 + body.correct + (5 if body.correct == body.total else 0)
+        if lesson.get("completed_count"):
+            xp = max(3, xp // 2)
+        lesson.update(
+            stars=max(stars, int(lesson.get("stars", 0) or 0)),
+            best_accuracy=round(max(accuracy, float(lesson.get("best_accuracy", 0) or 0)), 3),
+            completed_count=int(lesson.get("completed_count", 0) or 0) + 1,
+            last_completed_at=now,
+        )
+        return xp, {"lessons": 1}
+
+    data, profile = await asyncio.to_thread(_record_practice, get_firestore_client(), user["uid"], now, apply)
+    _bump_stats(now, lessons=1, xp=data.get("last_xp", 0))
+    return PracticeProgress(**_practice_view(data, profile, now))
+
+
+@app.post("/api/me/practice/review", response_model=PracticeProgress)
+async def submit_card_review(
+    body: SubmitCardReviewRequest, user: CurrentUser, req_id: RequestId, response: Response,
+):
+    """Spaced repetition: a correct answer moves a card up one box, a miss sends it back to today."""
+    response.headers["X-Request-ID"] = req_id
+    now = datetime.now(timezone.utc)
+
+    def apply(data: dict):
+        cards = data.setdefault("cards", {})
+        gained = 0
+        for result in body.results:
+            card = cards.get(result.card_id)
+            if card is None:
+                if len(cards) >= MAX_TRACKED_CARDS:
+                    continue
+                card = cards[result.card_id] = {"box": 0, "seen": 0, "correct": 0}
+            card["seen"] = int(card.get("seen", 0)) + 1
+            if result.correct:
+                card["correct"] = int(card.get("correct", 0)) + 1
+                card["box"] = min(int(card.get("box", 0)) + 1, len(SRS_INTERVAL_DAYS) - 1)
+                gained += 1
+            else:
+                card["box"] = 0
+            card["due"] = (now + timedelta(days=SRS_INTERVAL_DAYS[card["box"]])).strftime("%Y-%m-%d")
+        return min(gained, 20), {"cards": len(body.results)}
+
+    data, profile = await asyncio.to_thread(_record_practice, get_firestore_client(), user["uid"], now, apply)
+    _bump_stats(now, cards=len(body.results), xp=data.get("last_xp", 0))
+    return PracticeProgress(**_practice_view(data, profile, now))
+
+
 
 
 @app.get("/api/me/progress", response_model=ProgressSummary)
@@ -542,7 +855,7 @@ async def delete_my_account(user: CurrentUser, req_id: RequestId, response: Resp
 
     # Delete subcollections
     user_ref = db.collection("users").document(uid)
-    for subcollection_name in ["sessions", "mistakes", "vocabulary", "dailyStats", "proficiency_assessments", "daily_plans"]:
+    for subcollection_name in ["sessions", "mistakes", "vocabulary", "dailyStats", "proficiency_assessments", "daily_plans", "practice", "lessons"]:
         subcol_ref = user_ref.collection(subcollection_name)
         for doc in subcol_ref.stream():
             if subcollection_name == "sessions":
@@ -674,7 +987,7 @@ def _session_token_metadata(session_data: dict, uid: str, session_id: str) -> di
     keys = (
         "learner_name", "mode", "target_skill", "lesson_id", "topic", "conversation_goal",
         "roleplay_scenario", "pravaah_level", "hindi_support", "speech_language", "tts_voice",
-        "lesson_title", "rule_summary", "practice_activity", "recent_examples",
+        "lesson_title", "rule_summary", "practice_activity", "recent_examples", "max_duration_seconds", "plan",
     )
     metadata = {key: saved.get(key) for key in keys}
     metadata.update(user_id=uid, session_id=session_id)
@@ -764,6 +1077,7 @@ async def create_session(
     user: CurrentUser,
     req_id: RequestId,
     response: Response,
+    request: Request = None,
 ):
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
@@ -798,6 +1112,42 @@ async def create_session(
     context = await asyncio.to_thread(_resolve_tutor_context, body, user_ref, profile_data, db, uid)
     lesson_id = context["lesson_id"]
     target_skill = context["target_skill"]
+
+    allowance_field = None
+    max_duration_seconds = None
+    if profile_data.get("suspended"):
+        raise _account_suspended(req_id)
+    limits = await asyncio.to_thread(load_ai_limits, db)
+    premium = _is_premium(profile_data, now)
+    if not premium:
+        if mode != "assessment" and not profile_data.get("ai_demo_used_at") and request is not None \
+                and not allow_free_demo(client_ip(request)):
+            raise _limit_reached(req_id, "Too many free demos have been started from this network today. "
+                                          "Please try again tomorrow or upgrade to Premium.")
+        if mode == "assessment":
+            allowance_field, cooldown, max_duration_seconds = "free_assessment_at", FREE_ASSESSMENT_COOLDOWN, FREE_ASSESSMENT_SECONDS
+            denied = "The free speaking test can be taken once a week. Premium includes unlimited retakes."
+        else:
+            allowance_field, cooldown, max_duration_seconds = "ai_demo_used_at", None, DEMO_SECONDS
+            denied = "You've used your free 5-minute AI coach demo. Upgrade to Premium to keep practising with your coach."
+        claimed = await asyncio.to_thread(
+            _claim_free_allowance, db, user_ref, allowance_field, session_id, now, cooldown
+        )
+        if not claimed:
+            raise _premium_required(req_id, denied)
+
+    # Every AI session is time-boxed: the free demo by its allowance, Premium by daily,
+    # monthly and per-session caps, everyone by the global daily budget.
+    granted, denial = await asyncio.to_thread(
+        reserve_ai_time, db, uid, now, limits, max_duration_seconds or limits.max_session_minutes * 60,
+        premium, profile_data.get("role") == "admin",
+    )
+    if denial:
+        if allowance_field:
+            user_ref.set({allowance_field: profile_data.get(allowance_field)}, merge=True)
+        raise _limit_reached(req_id, denial)
+    max_duration_seconds = granted
+
     metadata = _session_token_metadata({
         **context,
         "learner_name": _compact_text(learner_name, 80) or None,
@@ -807,6 +1157,8 @@ async def create_session(
         "hindi_support": profile_data.get("hindi_support", "high"),
         "tts_voice": profile_data.get("tts_voice") or DEFAULT_TTS_VOICE,
         "speech_language": body.speech_language,
+        "max_duration_seconds": max_duration_seconds,
+        "plan": "premium" if premium else "free",
     }, uid, session_id)
 
     session_data = {
@@ -820,8 +1172,19 @@ async def create_session(
         "summary": None,
         "metrics": {},
         "state": "CREATED",
+        "reserved_seconds": granted,
     }
-    session_data = await asyncio.to_thread(_save_started_session, db, user_ref, session_id, session_data)
+    try:
+        session_data = await asyncio.to_thread(_save_started_session, db, user_ref, session_id, session_data)
+    except Exception:
+        if allowance_field:
+            # Starting failed, so give the free allowance back.
+            user_ref.set({allowance_field: profile_data.get(allowance_field)}, merge=True)
+        await asyncio.to_thread(refund_ai_time, db, uid, granted, 0, now)
+        raise
+    if session_data["session_id"] != session_id:
+        # Rejoined an unfinished session that already holds its own reservation.
+        await asyncio.to_thread(refund_ai_time, db, uid, granted, 0, now)
     # The transaction may have found an already-started session. Token, room and
     # response must all use that session's snapshot, never the discarded new ID.
     session_id = session_data["session_id"]
@@ -837,6 +1200,12 @@ async def create_session(
         }, merge=True)
     except Exception as exc:
         logging.getLogger("api").warning("Top-level session mirror failed for %s: %s", session_id, exc)
+    try:
+        usage_plan = "premium" if _is_premium(profile_data, now) else ("demo" if mode != "assessment" else "free")
+        await asyncio.to_thread(record_session_start, db, session_id, uid, user.get("email"), mode,
+                                usage_plan, now, metadata.get("max_duration_seconds"))
+    except Exception as exc:
+        logging.getLogger("api").warning("Usage record failed for %s: %s", session_id, exc)
 
     # If launching a targeted lesson, transition lesson to in_progress state
     if lesson_id and target_skill and session_data.get("context_source") != "daily_plan":
@@ -865,6 +1234,7 @@ async def create_session(
         session_id=session_id,
         livekit_token=token,
         room_name=room_name,
+        max_duration_seconds=metadata.get("max_duration_seconds"),
     )
 
 
@@ -953,6 +1323,19 @@ async def refresh_session_token(
 
     room_name = f"session_{session_id}"
     metadata = _session_token_metadata(session_data, uid, session_id)
+    limit = metadata.get("max_duration_seconds")
+    started = _as_utc(session_data.get("start_time"))
+    if limit and started and datetime.now(timezone.utc) > started + timedelta(seconds=int(limit) + 60):
+        raise HTTPException(
+            status_code=403,
+            detail=ErrorResponse(
+                error=ErrorDetail(
+                    code=ErrorCode.SESSION_EXPIRED,
+                    message="This session has reached its time limit.",
+                    request_id=req_id,
+                )
+            ).model_dump(),
+        )
     token, expires_at = _mint_livekit_token(
         room_name, participant_identity=uid,
         participant_name=metadata.get("learner_name"), metadata=metadata,
@@ -1051,6 +1434,20 @@ async def complete_session(
     session_ref = db.collection("users").document(uid).collection("sessions").document(session_id)
     session_data = await asyncio.to_thread(_finalize_session, db, uid, session_id, max(0, body.duration_seconds), now)
     duration_seconds = session_data.get("duration_seconds", 0)
+    try:
+        await asyncio.to_thread(record_session_end, db, session_id, duration_seconds, now)
+    except Exception as exc:
+        logging.getLogger("api").warning("Usage end record failed for %s: %s", session_id, exc)
+    reserved = int(session_data.get("reserved_seconds") or 0)
+    started = _as_utc(session_data.get("start_time"))
+    if reserved and started and not session_data.get("ai_refunded"):
+        # Charge the longer of the reported duration and wall-clock time, never the client's word alone.
+        used = min(reserved, max(int(duration_seconds or 0), int((now - started).total_seconds())))
+        try:
+            await asyncio.to_thread(refund_ai_time, db, uid, reserved, used, started)
+            session_ref.set({"ai_refunded": True}, merge=True)
+        except Exception as exc:
+            logging.getLogger("api").warning("AI time refund failed for %s: %s", session_id, exc)
     duration_minutes = session_data.get("duration_minutes", max(1, duration_seconds // 60))
     # The setup snapshot is authoritative; old clients can still send stale IDs but
     # cannot redirect completion to another lesson, skill or plan activity.
@@ -1089,7 +1486,16 @@ async def complete_session(
             for message in messages:
                 session_ref.collection("messages").document(f"client_{message['sequence']:04d}").set(message)
         if messages and not is_assessment and session_data.get("analysis_status") != "completed":
-            session_ref.set({"analysis_status": "pending"}, merge=True)
+            attempts = int(session_data.get("analysis_attempts", 0) or 0)
+            max_attempts = (await asyncio.to_thread(load_ai_limits, db)).analysis_attempts_per_session
+            if attempts >= max_attempts:
+                # Each attempt is a paid LLM call; stop retrying a session that keeps failing.
+                return {
+                    "status": "completed", "session_id": session_id,
+                    "duration_seconds": duration_seconds, "duration_minutes": duration_minutes,
+                    "analysis_status": "failed", "retryable": False,
+                }
+            session_ref.set({"analysis_status": "pending", "analysis_attempts": attempts + 1}, merge=True)
             await analyze_session_messages(uid, session_id, messages)
             session_ref.set({"analysis_status": "completed"}, merge=True)
             analysis_status = "completed"
@@ -1126,6 +1532,13 @@ async def submit_proficiency_assessment(
     """
     response.headers["X-Request-ID"] = req_id
     uid = user["uid"]
+    db = get_firestore_client()
+    profile = db.collection("users").document(uid).get().to_dict() or {}
+    if profile.get("suspended"):
+        raise _account_suspended(req_id)
+    limits = load_ai_limits(db)
+    if not take_user_budget(db, uid, "assessments", ist_day(datetime.now(timezone.utc)), limits.assessments_per_day):
+        raise _limit_reached(req_id, "You've reached today's limit for speaking test results. Please try again tomorrow.")
 
     result = await apply_proficiency_assessment(
         user_id=uid,
@@ -1228,6 +1641,11 @@ async def refresh_daily_plan(
 ):
     """Rebuild today's plan against the latest mistake evidence."""
     response.headers["X-Request-ID"] = req_id
+    db = get_firestore_client()
+    limits = load_ai_limits(db)
+    if not take_user_budget(db, user["uid"], "plan_refreshes", ist_day(datetime.now(timezone.utc)),
+                            limits.plan_refreshes_per_day):
+        raise _limit_reached(req_id, "You've rebuilt today's plan many times. Try again tomorrow.")
     plan = get_or_create_daily_plan(user_id=user["uid"], force_regenerate=True)
     return DailyLearningPlanModel(**plan)
 

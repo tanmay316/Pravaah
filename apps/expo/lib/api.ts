@@ -76,6 +76,40 @@ export interface CreateSessionResponse {
   session_id: string;
   livekit_token: string;
   room_name: string;
+  max_duration_seconds?: number | null;
+}
+
+export interface Entitlements {
+  plan: "free" | "premium";
+  is_premium: boolean;
+  premium_until?: string | null;
+  demo_available: boolean;
+  demo_seconds: number;
+  assessment_available: boolean;
+  next_assessment_at?: string | null;
+  is_admin?: boolean;
+  discount_code?: string | null;
+  discount_percent?: number;
+}
+
+export interface PracticeProgress {
+  xp_total: number;
+  xp_today: number;
+  daily_xp_goal: number;
+  lessons_today: number;
+  cards_reviewed_today: number;
+  today: string;
+  week_xp: { date: string; xp: number }[];
+  lessons: Record<string, { stars: number; best_accuracy: number; completed_count: number }>;
+  cards: Record<string, { box: number; due: string; seen: number; correct: number }>;
+  streak_days: number;
+}
+
+/** Thrown by API calls; `code` carries the server error code, e.g. PREMIUM_REQUIRED. */
+export class ApiError extends Error {
+  constructor(message: string, public code?: string, public status?: number) {
+    super(message);
+  }
 }
 
 export interface RefreshTokenResponse {
@@ -354,10 +388,16 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: n
     if (!response.ok) {
       const errorBody = await response.json().catch(() => null);
       const detail = errorBody?.detail;
+      const validation = Array.isArray(detail) && detail[0]?.msg
+        ? String(detail[0].msg).replace(/^Value error, /, "")
+        : null;
       const message = errorBody?.error?.message || detail?.error?.message ||
-        (typeof detail === "string" ? detail : null) ||
+        (typeof detail === "string" ? detail : null) || validation ||
         `API Error (${response.status}): ${response.statusText}`;
-      throw new Error(message);
+      if (response.status >= 500) {
+        reportClientError({ kind: "api", message: `${response.status} ${options.method || "GET"} ${path}: ${message}` });
+      }
+      throw new ApiError(message, errorBody?.error?.code || detail?.error?.code, response.status);
     }
 
     return response.json();
@@ -375,8 +415,333 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, timeoutMs: n
 // Real API Methods
 // ---------------------------------------------------------------------------
 
+export const APP_VERSION = "1.0.0";
+
+export interface ClientErrorInput {
+  message: string;
+  stack?: string;
+  screen?: string;
+  kind?: "crash" | "error" | "api";
+}
+
+let recentReports: number[] = [];
+
+/** Fire-and-forget error report for the admin error log. Never throws and never recurses. */
+export function reportClientError(input: ClientErrorInput): void {
+  if (!API_BASE) return;
+  const now = Date.now();
+  recentReports = recentReports.filter((t) => now - t < 60_000);
+  if (recentReports.length >= 5) return;
+  recentReports.push(now);
+  authHeaders()
+    .catch(() => ({ "Content-Type": "application/json" }) as Record<string, string>)
+    .then((headers) =>
+      fetch(`${API_BASE}/api/telemetry/errors`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          message: (input.message || "Unknown error").slice(0, 1000),
+          stack: (input.stack || "").slice(0, 4000),
+          screen: (input.screen || "").slice(0, 120),
+          platform: Platform.OS,
+          app_version: APP_VERSION,
+          kind: input.kind || "error",
+        }),
+      })
+    )
+    .catch(() => {});
+}
+
+export async function reportBug(description: string, screen = ""): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>("/api/me/bug-reports", {
+    method: "POST",
+    body: JSON.stringify({ description, screen, platform: Platform.OS, app_version: APP_VERSION }),
+  });
+}
+
+export interface CouponRedemption {
+  kind: "pro" | "discount";
+  message: string;
+  premium_until?: string | null;
+  percent_off?: number;
+}
+
+export async function redeemCoupon(code: string): Promise<CouponRedemption> {
+  return apiFetch<CouponRedemption>("/api/me/coupons/redeem", {
+    method: "POST",
+    body: JSON.stringify({ code: code.trim().toUpperCase() }),
+  });
+}
+
+export interface AiUsage {
+  sessions_today: number;
+  sessions_per_day: number;
+  minutes_today: number;
+  minutes_per_day: number;
+  minutes_this_month: number;
+  minutes_per_month: number;
+  max_session_minutes: number;
+  ai_enabled: boolean;
+}
+
+export async function getAiUsage(): Promise<AiUsage> {
+  return apiFetch<AiUsage>("/api/me/ai-usage", { method: "GET" });
+}
+
+export interface PublicPlan {
+  id: "monthly" | "yearly";
+  product_id: string;
+  title: string;
+  period: string;
+  price_inr: number;
+  sale_price_inr: number | null;
+  effective_price_inr: number;
+  sale_percent_off: number;
+  sale_label: string;
+  sale_ends_at: string | null;
+  save_vs_monthly_percent?: number;
+}
+
+/** Prices are public so the paywall can show them before sign-in. */
+export async function getPricing(): Promise<PublicPlan[]> {
+  const response = await fetch(`${API_BASE}/api/pricing`);
+  if (!response.ok) throw new ApiError(`Pricing unavailable (${response.status})`, undefined, response.status);
+  return (await response.json()).plans;
+}
+
+export interface PlanPrice {
+  price_inr: number;
+  sale_price_inr: number | null;
+  sale_label: string;
+  sale_ends_at: string | null;
+}
+
+export interface PricingConfig {
+  monthly: PlanPrice;
+  yearly: PlanPrice;
+}
+
+export interface AiLimits {
+  ai_enabled: boolean;
+  premium_sessions_per_day: number;
+  premium_minutes_per_day: number;
+  premium_minutes_per_month: number;
+  max_session_minutes: number;
+  global_minutes_per_day: number;
+  assessments_per_day: number;
+  plan_refreshes_per_day: number;
+  analysis_attempts_per_session: number;
+}
+
+// --- Admin console -------------------------------------------------------
+
+export interface AdminOverview {
+  generated_at: string;
+  days: number;
+  kpis: Record<string, number>;
+  money: {
+    spend_usd: number;
+    spend_inr: number;
+    breakdown_usd: Record<"llm" | "stt" | "tts" | "livekit", number>;
+    month_spend_usd: number;
+    monthly_budget_usd: number;
+    budget_used_percent: number;
+    cost_per_session_usd: number;
+    cost_per_minute_usd: number;
+    cost_per_active_user_usd: number;
+    cost_per_premium_user_usd: number;
+    mrr_inr: number;
+    premium_by_source: Record<string, number>;
+    usd_to_inr: number;
+  };
+  rate_limits: { label: string; used: number; limit: number; unit: string; percent: number }[];
+  series: { date: string; signups: number; sessions: number; cost_usd: number }[];
+  top_users: { uid: string; email: string; sessions: number; minutes: number; cost_usd: number }[];
+  models: {
+    model: string;
+    kind: string;
+    requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    audio_seconds: number;
+    characters: number;
+  }[];
+  errors_by_source: Record<string, number>;
+}
+
+export interface AdminUserRow {
+  uid: string;
+  email: string;
+  name: string;
+  role: string;
+  plan: "free" | "premium";
+  premium_until?: string | null;
+  premium_source?: string | null;
+  created_at?: string | null;
+  last_practice_date?: string | null;
+  streak_days: number;
+  level: string;
+  demo_used: boolean;
+  suspended?: boolean;
+  ai_sessions_90d: number;
+  ai_minutes_90d: number;
+  cost_usd_90d: number;
+}
+
+export interface Coupon {
+  code: string;
+  kind: "pro" | "discount";
+  pro_days?: number | null;
+  percent_off?: number | null;
+  max_redemptions: number;
+  redemptions: number;
+  active: boolean;
+  expires_at?: string | null;
+  note: string;
+  batch_id?: string | null;
+  created_at?: string | null;
+  created_by?: string;
+}
+
+export interface CreateCouponInput {
+  kind: "pro" | "discount";
+  code?: string;
+  count?: number;
+  prefix?: string;
+  pro_days?: number;
+  percent_off?: number;
+  max_redemptions?: number;
+  expires_at?: string | null;
+  note?: string;
+}
+
+export interface ErrorGroup {
+  fingerprint: string;
+  message: string;
+  source: string;
+  count: number;
+  users: number;
+  last_seen?: string;
+  screen: string;
+  platform: string;
+}
+
+export interface ErrorEvent {
+  id: string;
+  fingerprint?: string;
+  message: string;
+  source: string;
+  kind?: string;
+  screen?: string;
+  platform?: string;
+  email?: string;
+  stack?: string;
+  app_version?: string;
+  created_at?: string;
+}
+
+export interface BugReport {
+  id: string;
+  description: string;
+  email: string;
+  uid: string;
+  screen: string;
+  platform: string;
+  app_version: string;
+  status: "open" | "in_progress" | "resolved";
+  created_at?: string;
+}
+
+export interface CostSettings {
+  llm_input_per_million: number;
+  llm_output_per_million: number;
+  stt_per_hour: number;
+  tts_per_million_chars: number;
+  livekit_per_agent_minute: number;
+  monthly_budget_usd: number;
+  usd_to_inr: number;
+  llm_requests_per_day: number;
+  llm_tokens_per_day: number;
+  stt_requests_per_day: number;
+  stt_audio_seconds_per_day: number;
+  livekit_agent_minutes_per_month: number;
+}
+
+export const adminApi = {
+  overview: (days: number) => apiFetch<AdminOverview>(`/api/admin/overview?days=${days}`, { method: "GET" }, 90000),
+  users: (q: string) =>
+    apiFetch<AdminUserRow[]>(`/api/admin/users?q=${encodeURIComponent(q)}&limit=200`, { method: "GET" }, 90000),
+  setPremium: (uid: string, days: number | null, revoke = false) =>
+    apiFetch<{ plan: string }>(
+      `/api/admin/users/${encodeURIComponent(uid)}/premium?${revoke ? "revoke=true" : days ? `days=${days}` : ""}`,
+      { method: "POST" }
+    ),
+  resetDemo: (uid: string) =>
+    apiFetch<{ demo_available: boolean }>(`/api/admin/users/${encodeURIComponent(uid)}/reset-demo`, { method: "POST" }),
+  coupons: () => apiFetch<Coupon[]>("/api/admin/coupons", { method: "GET" }),
+  createCoupons: (input: CreateCouponInput) =>
+    apiFetch<Coupon[]>("/api/admin/coupons", { method: "POST", body: JSON.stringify(input) }),
+  updateCoupon: (code: string, changes: Partial<Pick<Coupon, "active" | "max_redemptions" | "note">>) =>
+    apiFetch<Coupon>(`/api/admin/coupons/${encodeURIComponent(code)}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  redemptions: (code: string) =>
+    apiFetch<{ uid: string; email: string; redeemed_at: string }[]>(
+      `/api/admin/coupons/${encodeURIComponent(code)}/redemptions`,
+      { method: "GET" }
+    ),
+  errors: (days: number) =>
+    apiFetch<{ groups: ErrorGroup[]; events: ErrorEvent[] }>(`/api/admin/errors?days=${days}`, { method: "GET" }),
+  bugs: (status: string) => apiFetch<BugReport[]>(`/api/admin/bugs?status=${status}`, { method: "GET" }),
+  updateBug: (id: string, status: BugReport["status"]) =>
+    apiFetch<{ status: string }>(`/api/admin/bugs/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+  costSettings: () => apiFetch<CostSettings>("/api/admin/settings/costs", { method: "GET" }),
+  saveCostSettings: (settings: CostSettings) =>
+    apiFetch<CostSettings>("/api/admin/settings/costs", { method: "PUT", body: JSON.stringify(settings) }),
+  limits: () => apiFetch<AiLimits>("/api/admin/settings/limits", { method: "GET" }),
+  saveLimits: (limits: AiLimits) =>
+    apiFetch<AiLimits>("/api/admin/settings/limits", { method: "PUT", body: JSON.stringify(limits) }),
+  pricing: () => apiFetch<PricingConfig>("/api/admin/pricing", { method: "GET" }),
+  savePricing: (pricing: PricingConfig) =>
+    apiFetch<PricingConfig>("/api/admin/pricing", { method: "PUT", body: JSON.stringify(pricing) }),
+  suspend: (uid: string, restore = false) =>
+    apiFetch<{ suspended: boolean }>(
+      `/api/admin/users/${encodeURIComponent(uid)}/suspend${restore ? "?restore=true" : ""}`,
+      { method: "POST" }
+    ),
+};
+
 export async function getProfile(): Promise<LearnerProfile> {
   return apiFetch<LearnerProfile>("/api/me/profile", { method: "GET" });
+}
+
+export async function getEntitlements(): Promise<Entitlements> {
+  return apiFetch<Entitlements>("/api/me/entitlements", { method: "GET" });
+}
+
+export async function getPractice(): Promise<PracticeProgress> {
+  return apiFetch<PracticeProgress>("/api/me/practice", { method: "GET" });
+}
+
+export async function completePracticeLesson(
+  lessonId: string,
+  correct: number,
+  total: number
+): Promise<PracticeProgress> {
+  return apiFetch<PracticeProgress>(`/api/me/practice/lessons/${encodeURIComponent(lessonId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ correct, total }),
+  });
+}
+
+export async function submitCardReview(
+  results: { card_id: string; correct: boolean }[]
+): Promise<PracticeProgress> {
+  return apiFetch<PracticeProgress>("/api/me/practice/review", {
+    method: "POST",
+    body: JSON.stringify({ results }),
+  });
 }
 
 export async function updateProfile(updates: Partial<LearnerProfile>): Promise<LearnerProfile> {

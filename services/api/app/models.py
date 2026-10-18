@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,10 @@ class ErrorCode(str, Enum):
     SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
     SESSION_EXPIRED = "SESSION_EXPIRED"
     FORBIDDEN = "FORBIDDEN"
+    PREMIUM_REQUIRED = "PREMIUM_REQUIRED"
+    COUPON_INVALID = "COUPON_INVALID"
+    LIMIT_REACHED = "LIMIT_REACHED"
+    ACCOUNT_SUSPENDED = "ACCOUNT_SUSPENDED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -88,6 +92,203 @@ class CreateSessionResponse(BaseModel):
     session_id: str
     livekit_token: str
     room_name: str
+    # Set for the free demo; the client and the agent both end the call at this limit.
+    max_duration_seconds: Optional[int] = None
+
+
+class Entitlements(BaseModel):
+    plan: Literal["free", "premium"] = "free"
+    is_premium: bool = False
+    premium_until: Optional[datetime] = None
+    demo_available: bool = True
+    demo_seconds: int = 300
+    assessment_available: bool = True
+    next_assessment_at: Optional[datetime] = None
+    is_admin: bool = False
+    # Discount coupon the learner redeemed, applied when they buy Premium.
+    discount_code: Optional[str] = None
+    discount_percent: int = 0
+
+
+COUPON_CODE_PATTERN = r"^[A-Z0-9][A-Z0-9_-]{2,31}$"
+
+
+class CreateCouponRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["pro", "discount"]
+    # Leave empty to generate random codes; set to name the coupon yourself.
+    code: Optional[str] = Field(default=None, pattern=COUPON_CODE_PATTERN)
+    count: int = Field(default=1, ge=1, le=200)
+    prefix: str = Field(default="PRAVAAH", pattern=r"^[A-Z0-9]{0,12}$")
+    pro_days: int = Field(default=30, ge=1, le=3650)
+    percent_off: int = Field(default=20, ge=1, le=100)
+    max_redemptions: int = Field(default=1, ge=1, le=100000)
+    expires_at: Optional[datetime] = None
+    note: str = Field(default="", max_length=200)
+
+
+class UpdateCouponRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active: Optional[bool] = None
+    max_redemptions: Optional[int] = Field(default=None, ge=1, le=100000)
+    expires_at: Optional[datetime] = None
+    note: Optional[str] = Field(default=None, max_length=200)
+
+
+class RedeemCouponRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=3, max_length=32)
+
+
+class ClientErrorReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=1000)
+    stack: str = Field(default="", max_length=4000)
+    screen: str = Field(default="", max_length=120)
+    platform: str = Field(default="", max_length=20)
+    app_version: str = Field(default="", max_length=40)
+    kind: Literal["crash", "error", "api"] = "error"
+
+
+class BugReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=5, max_length=2000)
+    screen: str = Field(default="", max_length=120)
+    platform: str = Field(default="", max_length=20)
+    app_version: str = Field(default="", max_length=40)
+
+
+class UpdateBugReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["open", "in_progress", "resolved"]
+
+
+class ModelUsageReport(BaseModel):
+    requests: int = Field(default=0, ge=0, le=100000)
+    prompt_tokens: int = Field(default=0, ge=0, le=20_000_000)
+    completion_tokens: int = Field(default=0, ge=0, le=5_000_000)
+    audio_seconds: float = Field(default=0, ge=0, le=36000)
+    characters: int = Field(default=0, ge=0, le=5_000_000)
+
+
+class AgentUsageReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=8, max_length=80)
+    llm: dict[str, ModelUsageReport] = Field(default_factory=dict, max_length=20)
+    stt: dict[str, ModelUsageReport] = Field(default_factory=dict, max_length=20)
+    tts: dict[str, ModelUsageReport] = Field(default_factory=dict, max_length=20)
+    errors: list[dict[str, str]] = Field(default_factory=list, max_length=50)
+    duration_seconds: float = Field(default=0, ge=0, le=36000)
+
+
+class CostSettings(BaseModel):
+    """USD rates the admin dashboard uses to estimate spend; edit them to match your invoices."""
+    model_config = ConfigDict(extra="forbid")
+
+    llm_input_per_million: float = Field(default=0.15, ge=0, le=1000)
+    llm_output_per_million: float = Field(default=0.60, ge=0, le=1000)
+    stt_per_hour: float = Field(default=0.04, ge=0, le=1000)
+    tts_per_million_chars: float = Field(default=0.0, ge=0, le=1000)
+    livekit_per_agent_minute: float = Field(default=0.01, ge=0, le=100)
+    monthly_budget_usd: float = Field(default=50.0, ge=0, le=1_000_000)
+    usd_to_inr: float = Field(default=84.0, ge=1, le=1000)
+    # Daily provider limits used for the rate-limit gauges (Groq free tier defaults).
+    llm_requests_per_day: int = Field(default=1000, ge=0, le=100_000_000)
+    llm_tokens_per_day: int = Field(default=500_000, ge=0, le=10_000_000_000)
+    stt_requests_per_day: int = Field(default=2000, ge=0, le=100_000_000)
+    stt_audio_seconds_per_day: int = Field(default=28_800, ge=0, le=100_000_000)
+    livekit_agent_minutes_per_month: int = Field(default=1000, ge=0, le=100_000_000)
+
+
+class AiLimits(BaseModel):
+    """Hard caps on AI spend, enforced by the API (and the agent) for every session."""
+    model_config = ConfigDict(extra="forbid")
+
+    ai_enabled: bool = True  # Kill switch: pauses every AI voice session except for admins.
+    premium_sessions_per_day: int = Field(default=10, ge=1, le=200)
+    premium_minutes_per_day: int = Field(default=60, ge=5, le=1440)
+    premium_minutes_per_month: int = Field(default=900, ge=10, le=44640)
+    max_session_minutes: int = Field(default=30, ge=5, le=180)
+    # All users combined; protects the monthly budget from a traffic spike or abuse.
+    global_minutes_per_day: int = Field(default=3000, ge=10, le=1_000_000)
+    assessments_per_day: int = Field(default=3, ge=1, le=50)
+    plan_refreshes_per_day: int = Field(default=20, ge=1, le=500)
+    analysis_attempts_per_session: int = Field(default=3, ge=1, le=10)
+
+
+class PlanPrice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    price_inr: int = Field(ge=0, le=1_000_000)
+    # Optional sale: shown as the regular price struck through next to this one.
+    sale_price_inr: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    sale_label: str = Field(default="", max_length=40)
+    sale_ends_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _sale_below_price(self):
+        if self.sale_price_inr is not None and self.sale_price_inr >= self.price_inr:
+            raise ValueError("The sale price must be lower than the regular price.")
+        return self
+
+
+class PricingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    monthly: PlanPrice = Field(default_factory=lambda: PlanPrice(price_inr=299))
+    yearly: PlanPrice = Field(default_factory=lambda: PlanPrice(price_inr=1999))
+
+
+class PracticeLessonResult(BaseModel):
+    stars: int = 0
+    best_accuracy: float = 0.0
+    completed_count: int = 0
+    last_completed_at: Optional[datetime] = None
+
+
+class PracticeCardState(BaseModel):
+    box: int = 0
+    due: str = ""
+    seen: int = 0
+    correct: int = 0
+
+
+class PracticeProgress(BaseModel):
+    xp_total: int = 0
+    xp_today: int = 0
+    daily_xp_goal: int = 30
+    lessons_today: int = 0
+    cards_reviewed_today: int = 0
+    today: str = ""
+    week_xp: list[dict] = Field(default_factory=list)
+    lessons: dict[str, PracticeLessonResult] = Field(default_factory=dict)
+    cards: dict[str, PracticeCardState] = Field(default_factory=dict)
+    streak_days: int = 0
+
+
+class CompletePracticeLessonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    correct: int = Field(ge=0, le=40)
+    total: int = Field(ge=1, le=40)
+
+
+class CardReviewResult(BaseModel):
+    card_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    correct: bool
+
+
+class SubmitCardReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[CardReviewResult] = Field(min_length=1, max_length=50)
 
 
 class RefreshTokenResponse(BaseModel):

@@ -3,12 +3,18 @@
  * shows what went wrong and a way out instead of a blank screen.
  */
 
+import { useEffect } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { router, type ErrorBoundaryProps } from "expo-router";
+import { router, usePathname, type ErrorBoundaryProps } from "expo-router";
+import { reportClientError } from "../lib/api";
 import { theme, useTheme } from "../lib/theme";
 
 export default function ScreenError({ error, retry }: ErrorBoundaryProps) {
   const { colors } = useTheme();
+  const pathname = usePathname();
+  useEffect(() => {
+    reportClientError({ kind: "crash", message: error?.message || String(error), stack: error?.stack, screen: pathname });
+  }, [error, pathname]);
   return (
     <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
       <View

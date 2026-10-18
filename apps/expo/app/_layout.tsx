@@ -14,6 +14,7 @@ import * as Font from "expo-font";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../lib/firebase";
 import { wakeBackend } from "../lib/api";
+import { installErrorReporting } from "../lib/telemetry";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import { PRAVAAH_FAVICON_DATA_URI, PRAVAAH_APP_TITLE } from "../lib/brand";
 
@@ -72,6 +73,7 @@ function RootLayoutNav() {
 
   useEffect(() => {
     wakeBackend();
+    installErrorReporting();
   }, []);
 
   // Inject Mobile Web meta tags, Design System CSS variables, Fonts, Favicon, and PWA setup
@@ -277,6 +279,10 @@ function RootLayoutNav() {
         <Stack.Screen name="assessment" />
         <Stack.Screen name="session" />
         <Stack.Screen name="voice" />
+        <Stack.Screen name="lesson/[id]" />
+        <Stack.Screen name="review" />
+        <Stack.Screen name="premium" options={{ presentation: "modal" }} />
+        <Stack.Screen name="admin" />
       </Stack>
     </>
   );
